@@ -202,10 +202,6 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_read_key() -> u8
             sys_read_key()
         }
-        11 => {
-            // sys_read_key() -> u8
-            sys_read_key()
-        }
         12 => {
             // sys_clear()
             sys_clear();
