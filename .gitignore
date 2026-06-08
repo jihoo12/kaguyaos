@@ -9,3 +9,5 @@ image.bin
 wakamo1.jpg
 .venv
 qemu.log
+.rustup
+.cargo

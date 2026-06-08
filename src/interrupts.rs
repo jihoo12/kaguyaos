@@ -45,6 +45,20 @@ unsafe extern "C" {
     // IRQ Handlers
     fn irq0();
     fn irq1();
+    fn irq2();
+    fn irq3();
+    fn irq4();
+    fn irq5();
+    fn irq6();
+    fn irq7();
+    fn irq8();
+    fn irq9();
+    fn irq10();
+    fn irq11();
+    fn irq12();
+    fn irq13();
+    fn irq14();
+    fn irq15();
 }
 
 #[derive(Copy, Clone, Default)]
@@ -165,6 +179,20 @@ pub unsafe fn init_idt() {
         // IRQs (start at 32)
         set_gate(32, irq0, KERNEL_CODE_SEL, 0x8E);
         set_gate(33, irq1, KERNEL_CODE_SEL, 0x8E);
+        set_gate(34, irq2, KERNEL_CODE_SEL, 0x8E);
+        set_gate(35, irq3, KERNEL_CODE_SEL, 0x8E);
+        set_gate(36, irq4, KERNEL_CODE_SEL, 0x8E);
+        set_gate(37, irq5, KERNEL_CODE_SEL, 0x8E);
+        set_gate(38, irq6, KERNEL_CODE_SEL, 0x8E);
+        set_gate(39, irq7, KERNEL_CODE_SEL, 0x8E);
+        set_gate(40, irq8, KERNEL_CODE_SEL, 0x8E);
+        set_gate(41, irq9, KERNEL_CODE_SEL, 0x8E);
+        set_gate(42, irq10, KERNEL_CODE_SEL, 0x8E);
+        set_gate(43, irq11, KERNEL_CODE_SEL, 0x8E);
+        set_gate(44, irq12, KERNEL_CODE_SEL, 0x8E);
+        set_gate(45, irq13, KERNEL_CODE_SEL, 0x8E);
+        set_gate(46, irq14, KERNEL_CODE_SEL, 0x8E);
+        set_gate(47, irq15, KERNEL_CODE_SEL, 0x8E);
 
         IDT_PTR.limit = (size_of::<[IdtEntry; 256]>() - 1) as u16;
         IDT_PTR.base = &raw const IDT as *const _ as u64;
@@ -213,21 +241,16 @@ const EXCEPTION_MESSAGES: [&str; 32] = [
 ];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn irq_handler(frame: *mut InterruptFrame) {
-    // Use read_unaligned for every field access since frame may not be 8-aligned
-     #[allow(static_mut_refs)]
-    if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
-        let _ = writeln!(writer, "irq_handler: frame={:#x}", frame as u64);
-        // print raw memory at frame + 120 bytes (expected int_no offset)
-        let int_no_ptr = (frame as u64 + 120) as *const u64;
-        let raw = unsafe { core::ptr::read_unaligned(int_no_ptr) };
-        let _ = writeln!(writer, "  raw[120]={:#x}", raw);
-        let raw2 = unsafe { core::ptr::read_unaligned((frame as u64 + 112) as *const u64) };
-        let _ = writeln!(writer, "  raw[112]={:#x}", raw2);
-        let raw3 = unsafe { core::ptr::read_unaligned((frame as u64 + 128) as *const u64) };
-        let _ = writeln!(writer, "  raw[128]={:#x}", raw3);
-    }
+pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) {
     let int_no = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).int_no)) };
+    if !(32..48).contains(&int_no) {
+        #[allow(static_mut_refs)]
+        if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
+            let _ = writeln!(writer, "Invalid IRQ vector: {:#x}", int_no);
+        }
+        return;
+    }
+
     let irq = int_no - 32;
 
     match irq {
@@ -248,7 +271,7 @@ pub unsafe extern "C" fn irq_handler(frame: *mut InterruptFrame) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn exception_handler(frame: *mut InterruptFrame) {
+pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {
     let int_no = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).int_no)) };
     let err_code = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).err_code)) };
     let rip = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rip)) };
@@ -300,7 +323,7 @@ pub unsafe extern "C" fn exception_handler(frame: *mut InterruptFrame) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn debug_print_int_no(frame: *mut u8, val: u64) {
+pub unsafe extern "sysv64" fn debug_print_int_no(frame: *mut u8, val: u64) {
     #[allow(static_mut_refs)]
     if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
         let _ = writeln!(
@@ -373,6 +396,20 @@ ISR_NOERR 31
 
 IRQ 0, 32
 IRQ 1, 33
+IRQ 2, 34
+IRQ 3, 35
+IRQ 4, 36
+IRQ 5, 37
+IRQ 6, 38
+IRQ 7, 39
+IRQ 8, 40
+IRQ 9, 41
+IRQ 10, 42
+IRQ 11, 43
+IRQ 12, 44
+IRQ 13, 45
+IRQ 14, 46
+IRQ 15, 47
 
 .global irq_common
 irq_common:
@@ -392,8 +429,14 @@ irq_common:
     pushq %r14
     pushq %r15
 
+    cld
     movq %rsp, %rdi
+    movq %rsp, %rax
+    andq $-16, %rsp
+    subq $16, %rsp
+    movq %rax, (%rsp)
     call irq_handler
+    movq (%rsp), %rsp
 
     popq %r15
     popq %r14
@@ -416,11 +459,6 @@ irq_common:
 
 .global isr_common
 isr_common:
-    testq $4, %rsp
-    jz isr_common_aligned
-    subq $4, %rsp
-
-isr_common_aligned:
     pushq %rax
     pushq %rbx
     pushq %rcx
@@ -437,8 +475,14 @@ isr_common_aligned:
     pushq %r14
     pushq %r15
 
+    cld
     movq %rsp, %rdi
+    movq %rsp, %rax
+    andq $-16, %rsp
+    subq $16, %rsp
+    movq %rax, (%rsp)
     call exception_handler
+    movq (%rsp), %rsp
 
     popq %r15
     popq %r14
