@@ -36,20 +36,11 @@ pub fn parse_operand(s: &str) -> Option<Operand> {
     }
 
     // Try parsing as immediate (hex or decimal)
-    if s.starts_with("0x") {
-        if let Ok(val) = u64::from_str_radix(&s[2..], 16) {
-            if val <= 0xFFFF_FFFF {
-                return Some(Operand::Imm32(val as i32));
-            } else {
-                return Some(Operand::Imm64(val));
-            }
-        }
-    } else {
-        if let Ok(val) = s.parse::<i32>() {
-            return Some(Operand::Imm32(val));
-        } else if let Ok(val) = s.parse::<u64>() {
-            return Some(Operand::Imm64(val));
-        }
+    if let Some(val) = parse_i32(s) {
+        return Some(Operand::Imm32(val));
+    }
+    if let Some(val) = parse_u64(s) {
+        return Some(Operand::Imm64(val));
     }
 
     // Try parsing as memory
@@ -72,11 +63,7 @@ pub fn parse_memory(s: &str) -> Option<MemoryAddr> {
         let reg_part = inner[..plus_idx].trim();
         let disp_part = inner[plus_idx + 1..].trim();
         let reg = parse_register(reg_part)?;
-        let disp = if disp_part.starts_with("0x") {
-            i32::from_str_radix(&disp_part[2..], 16).ok()?
-        } else {
-            disp_part.parse::<i32>().ok()?
-        };
+        let disp = parse_i32(disp_part)?;
         return Some(MemoryAddr {
             base: Some(reg),
             index: None,
@@ -89,11 +76,7 @@ pub fn parse_memory(s: &str) -> Option<MemoryAddr> {
         let reg_part = inner[..minus_idx].trim();
         let disp_part = inner[minus_idx + 1..].trim();
         let reg = parse_register(reg_part)?;
-        let disp = if disp_part.starts_with("0x") {
-            i32::from_str_radix(&disp_part[2..], 16).ok()?
-        } else {
-            disp_part.parse::<i32>().ok()?
-        };
+        let disp = parse_i32(disp_part)?;
         return Some(MemoryAddr {
             base: Some(reg),
             index: None,
@@ -113,11 +96,7 @@ pub fn parse_memory(s: &str) -> Option<MemoryAddr> {
     }
 
     // Just [disp] (absolute)
-    let disp = if inner.starts_with("0x") {
-        i32::from_str_radix(&inner[2..], 16).ok()?
-    } else {
-        inner.parse::<i32>().ok()?
-    };
+    let disp = parse_i32(inner)?;
 
     Some(MemoryAddr {
         base: None,
@@ -125,6 +104,36 @@ pub fn parse_memory(s: &str) -> Option<MemoryAddr> {
         scale: 1,
         disp,
     })
+}
+
+fn strip_hex_prefix(s: &str) -> Option<&str> {
+    s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))
+}
+
+fn parse_i32(s: &str) -> Option<i32> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix('-') {
+        let value = parse_i32(rest)?;
+        value.checked_neg()
+    } else if let Some(rest) = s.strip_prefix('+') {
+        parse_i32(rest)
+    } else if let Some(hex) = strip_hex_prefix(s) {
+        i32::from_str_radix(hex, 16).ok()
+    } else {
+        s.parse::<i32>().ok()
+    }
+}
+
+fn parse_u64(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.starts_with('-') || s.starts_with('+') {
+        return None;
+    }
+    if let Some(hex) = strip_hex_prefix(s) {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        s.parse::<u64>().ok()
+    }
 }
 
 pub fn parse_instruction(line: &str) -> Option<Instruction> {
@@ -181,5 +190,58 @@ pub fn parse_instruction(line: &str) -> Option<Instruction> {
         "syscall" => Some(Instruction::Syscall),
         "ret" => Some(Instruction::Ret),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::registers::Register;
+    use super::*;
+
+    #[test]
+    fn parse_uppercase_hex_immediates() {
+        assert_eq!(parse_operand("0X12"), Some(Operand::Imm32(0x12)));
+        assert_eq!(
+            parse_operand("0X1_0000_0000"),
+            None,
+            "underscores are not part of tinyasm numeric syntax"
+        );
+        assert_eq!(
+            parse_operand("0X100000000"),
+            Some(Operand::Imm64(0x1_0000_0000))
+        );
+    }
+
+    #[test]
+    fn parse_signed_hex_displacements() {
+        assert_eq!(
+            parse_memory("[rax-0X10]"),
+            Some(MemoryAddr {
+                base: Some(Register::RAX),
+                index: None,
+                scale: 1,
+                disp: -0x10,
+            })
+        );
+        assert_eq!(
+            parse_memory("[-0x20]"),
+            Some(MemoryAddr {
+                base: None,
+                index: None,
+                scale: 1,
+                disp: -0x20,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_instruction_is_case_insensitive() {
+        assert_eq!(
+            parse_instruction("MOV RAX, 0X2A"),
+            Some(Instruction::Mov(
+                Operand::Reg(Register::RAX),
+                Operand::Imm32(0x2A),
+            ))
+        );
     }
 }

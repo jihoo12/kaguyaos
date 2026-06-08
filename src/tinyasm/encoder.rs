@@ -52,7 +52,7 @@ impl fmt::Display for MemoryAddr {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operand {
     Reg(Register),
     Imm64(u64),
@@ -71,7 +71,7 @@ impl fmt::Display for Operand {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Instruction {
     Mov(Operand, Operand), // Destination, Source
     Add(Operand, Operand),
@@ -603,6 +603,37 @@ fn encode_mem_parts(
     mem: MemoryAddr,
     bytes: &mut Vec<u8>,
 ) -> Result<(u8, Option<u8>, usize), EncodeError> {
+    let (rex, modrm, sib, disp_size) = mem_parts(reg_val, reg_ext, mem)?;
+    bytes.push(rex);
+    Ok((modrm, sib, disp_size))
+}
+
+fn mem_parts(
+    reg_val: u8,
+    reg_ext: bool,
+    mem: MemoryAddr,
+) -> Result<(u8, u8, Option<u8>, usize), EncodeError> {
+    if !(reg_val < 8) {
+        return Err(EncodeError::Other(format!("Invalid ModR/M reg field {}", reg_val)));
+    }
+
+    let scale_bits = match mem.scale {
+        1 => 0,
+        2 => 1,
+        4 => 2,
+        8 => 3,
+        _ => return Err(EncodeError::InvalidScale(mem.scale)),
+    };
+
+    if let Some(index) = mem.index {
+        if index.code() == Register::RSP.code() {
+            return Err(EncodeError::UnsupportedOperand(format!(
+                "{} cannot be used as a SIB index",
+                index
+            )));
+        }
+    }
+
     let mut rex = 0x48;
     if reg_ext {
         rex |= 0x04;
@@ -617,43 +648,35 @@ fn encode_mem_parts(
             rex |= 0x02;
         }
     }
-    bytes.push(rex);
 
-    let (mod_bits, disp_size) = if mem.disp == 0
-        && mem.base.is_some()
-        && mem.base.unwrap() != Register::RBP
-        && mem.base.unwrap() != Register::R13
-    {
-        (0x00, 0)
-    } else if mem.disp >= -128 && mem.disp <= 127 {
-        (0x01, 1)
-    } else {
-        (0x10, 4)
+    let (mod_bits, disp_size) = match mem.base {
+        None => (0x00, 4),
+        Some(Register::RBP) | Some(Register::R13) if mem.disp == 0 => (0x01, 1),
+        Some(_) if mem.disp == 0 => (0x00, 0),
+        Some(_) if mem.disp >= -128 && mem.disp <= 127 => (0x01, 1),
+        Some(_) => (0x10, 4),
     };
 
-    let use_sib =
-        mem.index.is_some() || mem.base == Some(Register::RSP) || mem.base == Some(Register::R12);
+    let use_sib = mem.base.is_none()
+        || mem.index.is_some()
+        || mem.base == Some(Register::RSP)
+        || mem.base == Some(Register::R12);
     let rm_bits = if use_sib {
         0x04
     } else {
-        mem.base.unwrap().code()
+        mem.base
+            .ok_or_else(|| EncodeError::Other(String::from("Missing memory base")))?
+            .code()
     };
     let modrm = (mod_bits << 6) | (reg_val << 3) | rm_bits;
 
     if use_sib {
-        let scale_bits = match mem.scale {
-            1 => 0,
-            2 => 1,
-            4 => 2,
-            8 => 3,
-            _ => return Err(EncodeError::InvalidScale(mem.scale)),
-        };
         let index_bits = mem.index.map(|r| r.code()).unwrap_or(0x04);
         let base_bits = mem.base.map(|r| r.code()).unwrap_or(0x05);
         let sib = (scale_bits << 6) | (index_bits << 3) | base_bits;
-        Ok((modrm, Some(sib), disp_size))
+        Ok((rex, modrm, Some(sib), disp_size))
     } else {
-        Ok((modrm, None, disp_size))
+        Ok((rex, modrm, None, disp_size))
     }
 }
 
@@ -707,5 +730,83 @@ mod tests {
         // JMP 0x1234 (relative) -> E9 34 12 00 00
         encode_instruction(Instruction::Jmp(Operand::Imm32(0x1234)), &mut bytes).unwrap();
         assert_eq!(bytes, vec![0xE9, 0x34, 0x12, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_encode_memory_bases_that_require_sib_or_displacement() {
+        let mut bytes = Vec::new();
+
+        encode_instruction(
+            Instruction::Mov(
+                Operand::Reg(Register::RAX),
+                Operand::Mem(MemoryAddr {
+                    base: Some(Register::RSP),
+                    index: None,
+                    scale: 1,
+                    disp: 0,
+                }),
+            ),
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(bytes, vec![0x48, 0x8B, 0x04, 0x24]);
+
+        bytes.clear();
+        encode_instruction(
+            Instruction::Mov(
+                Operand::Reg(Register::RAX),
+                Operand::Mem(MemoryAddr {
+                    base: Some(Register::RBP),
+                    index: None,
+                    scale: 1,
+                    disp: 0,
+                }),
+            ),
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(bytes, vec![0x48, 0x8B, 0x45, 0x00]);
+    }
+
+    #[test]
+    fn test_encode_absolute_memory_uses_sib_disp32() {
+        let mut bytes = Vec::new();
+
+        encode_instruction(
+            Instruction::Mov(
+                Operand::Reg(Register::RAX),
+                Operand::Mem(MemoryAddr {
+                    base: None,
+                    index: None,
+                    scale: 1,
+                    disp: 0x1234,
+                }),
+            ),
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(bytes, vec![0x48, 0x8B, 0x04, 0x25, 0x34, 0x12, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_invalid_memory_scale_does_not_write_partial_prefix() {
+        let mut bytes = vec![0xAA];
+
+        let err = encode_instruction(
+            Instruction::Mov(
+                Operand::Reg(Register::RAX),
+                Operand::Mem(MemoryAddr {
+                    base: Some(Register::RAX),
+                    index: Some(Register::RBX),
+                    scale: 3,
+                    disp: 0,
+                }),
+            ),
+            &mut bytes,
+        )
+        .unwrap_err();
+
+        assert_eq!(err, EncodeError::InvalidScale(3));
+        assert_eq!(bytes, vec![0xAA]);
     }
 }
