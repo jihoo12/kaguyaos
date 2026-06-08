@@ -73,6 +73,11 @@ mod shell;
 mod syscall;
 mod writer;
 mod xhci;
+
+#[repr(align(16))]
+struct KernelStack([u8; 16384]);
+static mut KERNEL_STACK: KernelStack = KernelStack([0; 16384]);
+
 #[unsafe(no_mangle)]
 pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     // Initialize Global Writer (for interrupts and syscalls)
@@ -216,19 +221,28 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     }
     // Initialize Heap
     // Allocate 128 pages (512KB) for the heap
-    let heap_pages = 128; // 512KB
+    let heap_pages = 128;
     let heap_start = allocator
         .allocate_frame()
         .expect("Failed to allocate heap start");
     let mut current_addr = heap_start;
 
-    // Allocate the rest of the pages and ensure they are contiguous
     for _ in 1..heap_pages {
         let next_addr = allocator.allocate_frame().expect("Failed to allocate heap");
         if next_addr != current_addr + 4096 {
             panic!("Heap memory allocation failed: memory not contiguous!");
         }
         current_addr = next_addr;
+    }
+
+    // Map heap pages
+    unsafe {
+        let pml4 = memory::get_table_mut(pml4_phys);
+        let flags = memory::PAGE_WRITABLE | memory::PAGE_PRESENT | memory::PAGE_USER;
+        for i in 0..heap_pages as u64 {
+            let addr = heap_start + i * 4096;
+            memory::map_page(pml4, addr, addr, flags, &mut allocator);
+        }
     }
 
     unsafe {
@@ -240,13 +254,41 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     let user_stack_frame = allocator
         .allocate_frame()
         .expect("Failed to allocate user stack");
-    // Identity mapped, so virtual = physical (checked in memory.rs)
-    // Stack grows down, so top is end of page.
-    let user_top_stack = user_stack_frame + 4096;
-    // Switch to User Mode
+
     unsafe {
-        println!("Switching to User Mode...");
-        //writer::draw_image(100, 100, 500, 500);
+        let pml4 = memory::get_table_mut(pml4_phys);
+        let flags = memory::PAGE_WRITABLE | memory::PAGE_PRESENT | memory::PAGE_USER;
+        memory::map_page(
+            pml4,
+            user_stack_frame,
+            user_stack_frame,
+            flags,
+            &mut allocator,
+        );
+    }
+
+    let user_top_stack = user_stack_frame + 4096;
+
+    unsafe {
+        let stack_base = core::ptr::addr_of!(KERNEL_STACK) as u64;
+        let stack_top = stack_base + 16384; // no & !0xF needed, already 16-byte aligned due to repr(align(16))
+
+        // Map the kernel stack pages
+        let pml4 = memory::get_table_mut(pml4_phys);
+        let flags = memory::PAGE_WRITABLE | memory::PAGE_PRESENT;
+        for i in 0..(16384 / 4096) as u64 {
+            memory::map_page(
+                pml4,
+                stack_base + i * 4096,
+                stack_base + i * 4096,
+                flags,
+                &mut allocator,
+            );
+        }
+
+        println!("Kernel stack base={:#x} top={:#x}", stack_base, stack_top);
+        println!("TSS rsp0={:#x}", gdt::get_tss_stack());
+
         enter_usermode(user_top_stack);
     }
 }

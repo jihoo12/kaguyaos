@@ -198,3 +198,7 @@ pub unsafe fn set_tss_stack(stack: u64) {
         TSS.rsp0 = stack;
     }
 }
+
+pub unsafe fn get_tss_stack() -> u64 {
+    unsafe { TSS.rsp0 }
+}
