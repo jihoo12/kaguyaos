@@ -30,6 +30,7 @@ To build and run this OS, you need the following tools installed:
 Use the provided helper script to compile the kernel, create the disk image, and launch QEMU.
 
 ```bash
+nix-shell # if you use nix
 ./run.sh
 ```
 
