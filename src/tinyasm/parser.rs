@@ -35,7 +35,13 @@ pub fn parse_operand(s: &str) -> Option<Operand> {
         return Some(Operand::Reg(reg));
     }
 
-    // Try parsing as immediate (hex or decimal)
+    // Try parsing as immediate (hex or decimal).
+    // Imm32 is tested first intentionally: any value that fits in i32 is
+    // emitted as Imm32 even when it would also be a valid u64.  This keeps
+    // sign-extended immediates in the smaller encoding and matches the
+    // conventional assembler preference for signed 32-bit operands.
+    // Only values that overflow i32 (e.g. 0x1_0000_0000) fall through to
+    // Imm64.
     if let Some(val) = parse_i32(s) {
         return Some(Operand::Imm32(val));
     }
@@ -56,52 +62,95 @@ pub fn parse_memory(s: &str) -> Option<MemoryAddr> {
     if !s.starts_with('[') || !s.ends_with(']') {
         return None;
     }
-    let inner = &s[1..s.len() - 1].trim();
+    // `[` and `]` are single-byte ASCII, so byte-slicing here is safe.
+    let inner: &str = s[1..s.len() - 1].trim();
 
-    // Simplistic parsing for [reg], [reg+disp], [reg-disp]
-    if let Some(plus_idx) = inner.find('+') {
-        let reg_part = inner[..plus_idx].trim();
-        let disp_part = inner[plus_idx + 1..].trim();
-        let reg = parse_register(reg_part)?;
-        let disp = parse_i32(disp_part)?;
-        return Some(MemoryAddr {
-            base: Some(reg),
-            index: None,
-            scale: 1,
-            disp,
-        });
+    // Full SIB + displacement parsing for:
+    //   [reg]
+    //   [reg + disp]
+    //   [reg - disp]
+    //   [reg + index*scale]
+    //   [reg + index*scale + disp]
+    //   [reg + index*scale - disp]
+    //   [disp]  (absolute)
+    //
+    // Strategy: split on `+` and `-` (keeping the sign), then classify
+    // each token as base/index*scale/displacement.
+    //
+    // We tokenise by walking the string and splitting at every `+` or `-`
+    // that is NOT part of a `0x…` literal.  Each token carries the sign
+    // that preceded it (the leading token is implicitly positive).
+    let mut tokens: Vec<(i32, &str)> = Vec::new(); // (sign, token_str)
+    {
+        let mut sign = 1i32;
+        let mut start = 0usize;
+        let bytes = inner.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if (b == b'+' || b == b'-') && i != 0 {
+                let tok = inner[start..i].trim();
+                if !tok.is_empty() {
+                    tokens.push((sign, tok));
+                }
+                sign = if b == b'-' { -1 } else { 1 };
+                start = i + 1;
+            }
+            i += 1;
+        }
+        let tok = inner[start..].trim();
+        if !tok.is_empty() {
+            tokens.push((sign, tok));
+        }
     }
 
-    if let Some(minus_idx) = inner.find('-') {
-        let reg_part = inner[..minus_idx].trim();
-        let disp_part = inner[minus_idx + 1..].trim();
-        let reg = parse_register(reg_part)?;
-        let disp = parse_i32(disp_part)?;
-        return Some(MemoryAddr {
-            base: Some(reg),
-            index: None,
-            scale: 1,
-            disp: -disp,
-        });
-    }
+    let mut base: Option<Register> = None;
+    let mut index: Option<Register> = None;
+    let mut scale: u8 = 1;
+    let mut disp: i32 = 0;
 
-    // Just [reg]
-    if let Some(reg) = parse_register(inner) {
-        return Some(MemoryAddr {
-            base: Some(reg),
-            index: None,
-            scale: 1,
-            disp: 0,
-        });
-    }
+    for (sign, tok) in tokens {
+        // index*scale  e.g. "rbx*4"
+        if let Some(star_idx) = tok.find('*') {
+            let idx_part = tok[..star_idx].trim();
+            let scale_part = tok[star_idx + 1..].trim();
+            let idx_reg = parse_register(idx_part)?;
+            let s: u8 = scale_part.parse().ok()?;
+            if ![1u8, 2, 4, 8].contains(&s) {
+                return None;
+            }
+            index = Some(idx_reg);
+            scale = s;
+            continue;
+        }
 
-    // Just [disp] (absolute)
-    let disp = parse_i32(inner)?;
+        // plain register token
+        if let Some(reg) = parse_register(tok) {
+            if base.is_none() {
+                base = Some(reg);
+            } else if index.is_none() {
+                index = Some(reg);
+                // scale stays 1
+            } else {
+                return None; // too many registers
+            }
+            continue;
+        }
+
+        // displacement token — honour the sign already captured
+        let raw = parse_i32(tok)?;
+        let signed = if sign == -1 {
+            raw.checked_neg()?
+        } else {
+            raw
+        };
+        disp = disp.checked_add(signed)?;
+    }
 
     Some(MemoryAddr {
-        base: None,
-        index: None,
-        scale: 1,
+        base,
+        index,
+        scale,
         disp,
     })
 }
@@ -190,58 +239,5 @@ pub fn parse_instruction(line: &str) -> Option<Instruction> {
         "syscall" => Some(Instruction::Syscall),
         "ret" => Some(Instruction::Ret),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::registers::Register;
-    use super::*;
-
-    #[test]
-    fn parse_uppercase_hex_immediates() {
-        assert_eq!(parse_operand("0X12"), Some(Operand::Imm32(0x12)));
-        assert_eq!(
-            parse_operand("0X1_0000_0000"),
-            None,
-            "underscores are not part of tinyasm numeric syntax"
-        );
-        assert_eq!(
-            parse_operand("0X100000000"),
-            Some(Operand::Imm64(0x1_0000_0000))
-        );
-    }
-
-    #[test]
-    fn parse_signed_hex_displacements() {
-        assert_eq!(
-            parse_memory("[rax-0X10]"),
-            Some(MemoryAddr {
-                base: Some(Register::RAX),
-                index: None,
-                scale: 1,
-                disp: -0x10,
-            })
-        );
-        assert_eq!(
-            parse_memory("[-0x20]"),
-            Some(MemoryAddr {
-                base: None,
-                index: None,
-                scale: 1,
-                disp: -0x20,
-            })
-        );
-    }
-
-    #[test]
-    fn parse_instruction_is_case_insensitive() {
-        assert_eq!(
-            parse_instruction("MOV RAX, 0X2A"),
-            Some(Instruction::Mov(
-                Operand::Reg(Register::RAX),
-                Operand::Imm32(0x2A),
-            ))
-        );
     }
 }

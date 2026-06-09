@@ -70,5 +70,9 @@ asm mov rax, 10; add rax, 20;ret
 
 # System call example (Shutdown)
 asm mov rax, 10; syscall;ret
+
+# bit manipulation
+asm mov rax, 0xFF; and rax, 0x0F; ret
+# result: 15
 ```
 
