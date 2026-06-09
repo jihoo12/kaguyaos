@@ -179,12 +179,12 @@ extern "sysv64" fn syscall_dispatcher_impl(
             0
         }
         7 => {
-            // sys_nvme_read(nsid, lba, ptr, count)
-            sys_nvme_read(arg1, arg2, arg3, arg4) as usize
+            // sys_nvme_read(lba, ptr, count)
+            sys_nvme_read(arg1, arg2, arg3) as usize
         }
         8 => {
-            // sys_nvme_write(nsid, lba, ptr, count)
-            sys_nvme_write(arg1, arg2, arg3, arg4) as usize
+            // sys_nvme_write(lba, ptr, count)
+            sys_nvme_write(arg1, arg2, arg3) as usize
         }
         9 => {
             // sys_xhci_poll()
@@ -281,8 +281,7 @@ fn sys_terminate_task() {
     crate::scheduler::terminate_task();
 }
 
-fn sys_nvme_read(nsid: usize, lba: usize, ptr: usize, count: usize) -> i32 {
-    let _ = nsid;
+fn sys_nvme_read(lba: usize, ptr: usize, count: usize) -> i32 {
     let buf = ptr as *mut u8;
     let Ok(count) = u32::try_from(count) else {
         return crate::fs::FsError::InvalidArgument.code();
@@ -293,8 +292,7 @@ fn sys_nvme_read(nsid: usize, lba: usize, ptr: usize, count: usize) -> i32 {
     }
 }
 
-fn sys_nvme_write(nsid: usize, lba: usize, ptr: usize, count: usize) -> i32 {
-    let _ = nsid;
+fn sys_nvme_write(lba: usize, ptr: usize, count: usize) -> i32 {
     let buf = ptr as *const u8;
     let Ok(count) = u32::try_from(count) else {
         return crate::fs::FsError::InvalidArgument.code();

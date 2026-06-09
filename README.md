@@ -65,14 +65,23 @@ The OS includes a lightweight JIT assembler called **TinyASM**. It allows you to
 
 ```bash
 # Basic arithmetic
-asm mov rax, 10; add rax, 20;ret
+asm 
+mov rax, 10; 
+add rax, 20;
+done
 # Result: 30
 
 # System call example (Shutdown)
-asm mov rax, 10; syscall;ret
+asm 
+mov rax, 10; 
+syscall;
+done
 
 # bit manipulation
-asm mov rax, 0xFF; and rax, 0x0F; ret
+asm 
+mov rax, 0xFF;
+and rax, 0x0F;
+done
 # result: 15
 ```
 
