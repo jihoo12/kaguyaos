@@ -282,15 +282,27 @@ fn sys_terminate_task() {
 }
 
 fn sys_nvme_read(nsid: usize, lba: usize, ptr: usize, count: usize) -> i32 {
+    let _ = nsid;
     let buf = ptr as *mut u8;
-    // Basic verification - ensure ptr is in user range?
-    // For now we trust it or let it page fault if invalid.
-    unsafe { crate::nvme::nvme_read(nsid as u32, lba as u64, buf, count as u32) }
+    let Ok(count) = u32::try_from(count) else {
+        return crate::fs::FsError::InvalidArgument.code();
+    };
+    match crate::fs::read_blocks(lba as u64, count, buf) {
+        Ok(()) => 0,
+        Err(e) => e.code(),
+    }
 }
 
 fn sys_nvme_write(nsid: usize, lba: usize, ptr: usize, count: usize) -> i32 {
-    let buf = ptr as *mut u8;
-    unsafe { crate::nvme::nvme_write(nsid as u32, lba as u64, buf, count as u32) }
+    let _ = nsid;
+    let buf = ptr as *const u8;
+    let Ok(count) = u32::try_from(count) else {
+        return crate::fs::FsError::InvalidArgument.code();
+    };
+    match crate::fs::write_blocks(lba as u64, count, buf) {
+        Ok(()) => 0,
+        Err(e) => e.code(),
+    }
 }
 
 fn sys_shutdown() {

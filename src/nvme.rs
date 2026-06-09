@@ -464,6 +464,18 @@ pub unsafe fn nvme_write(nsid: u32, lba: u64, buffer: *mut u8, count: u32) -> i3
     0
 }
 
+pub unsafe fn default_nsid() -> Option<u32> {
+    unsafe {
+        let ctx_ptr = addr_of_mut!(NVME_CTX);
+        let ctx = &*ctx_ptr;
+        if ctx.regs.is_null() || ctx.io_queue.size == 0 || ctx.nsid == 0 {
+            None
+        } else {
+            Some(ctx.nsid)
+        }
+    }
+}
+
 pub unsafe fn shutdown() {
     let ctx_ptr = addr_of_mut!(NVME_CTX);
     let ctx = &mut *ctx_ptr;

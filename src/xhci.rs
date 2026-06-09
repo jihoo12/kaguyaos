@@ -391,6 +391,7 @@ const HID_ASCII_TABLE: [u8; 128] = {
     table[0x2f] = b'[';
     table[0x30] = b']';
     table[0x31] = b'\\';
+    table[0x35] = b'`';
     table[0x33] = b';';
     table[0x34] = b'\'';
     table[0x36] = b',';
@@ -405,6 +406,86 @@ const HID_ASCII_TABLE: [u8; 128] = {
 
     table
 };
+
+const HID_ASCII_SHIFT_TABLE: [u8; 128] = {
+    let mut table = [0u8; 128];
+    table[0x04] = b'A';
+    table[0x05] = b'B';
+    table[0x06] = b'C';
+    table[0x07] = b'D';
+    table[0x08] = b'E';
+    table[0x09] = b'F';
+    table[0x0a] = b'G';
+    table[0x0b] = b'H';
+    table[0x0c] = b'I';
+    table[0x0d] = b'J';
+    table[0x0e] = b'K';
+    table[0x0f] = b'L';
+    table[0x10] = b'M';
+    table[0x11] = b'N';
+    table[0x12] = b'O';
+    table[0x13] = b'P';
+    table[0x14] = b'Q';
+    table[0x15] = b'R';
+    table[0x16] = b'S';
+    table[0x17] = b'T';
+    table[0x18] = b'U';
+    table[0x19] = b'V';
+    table[0x1a] = b'W';
+    table[0x1b] = b'X';
+    table[0x1c] = b'Y';
+    table[0x1d] = b'Z';
+    table[0x1e] = b'!';
+    table[0x1f] = b'@';
+    table[0x20] = b'#';
+    table[0x21] = b'$';
+    table[0x22] = b'%';
+    table[0x23] = b'^';
+    table[0x24] = b'&';
+    table[0x25] = b'*';
+    table[0x26] = b'(';
+    table[0x27] = b')';
+    table[0x28] = b'\n'; // Enter
+    table[0x2a] = 0x08; // Backspace
+    table[0x2b] = b'\t'; // Tab
+    table[0x2c] = b' '; // Space
+    table[0x2d] = b'_';
+    table[0x2e] = b'+';
+    table[0x2f] = b'{';
+    table[0x30] = b'}';
+    table[0x31] = b'|';
+    table[0x35] = b'~';
+    table[0x33] = b':';
+    table[0x34] = b'"';
+    table[0x36] = b'<';
+    table[0x37] = b'>';
+    table[0x38] = b'?';
+
+    // Arrow Keys
+    table[0x4F] = 0x80; // Right
+    table[0x50] = 0x81; // Left
+    table[0x51] = 0x82; // Down
+    table[0x52] = 0x83; // Up
+
+    table
+};
+
+const HID_MOD_LEFT_SHIFT: u8 = 1 << 1;
+const HID_MOD_RIGHT_SHIFT: u8 = 1 << 5;
+
+fn hid_key_to_ascii(key: u8, modifier: u8) -> u8 {
+    let table = if modifier & (HID_MOD_LEFT_SHIFT | HID_MOD_RIGHT_SHIFT) != 0 {
+        &HID_ASCII_SHIFT_TABLE
+    } else {
+        &HID_ASCII_TABLE
+    };
+
+    if (key as usize) < table.len() {
+        table[key as usize]
+    } else {
+        0
+    }
+}
 
 // Input Context for command execution (one at a time is fine for now)
 pub static mut INPUT_CONTEXT_BUFFER: AlignedPage = AlignedPage([0; 4096]);
@@ -662,6 +743,7 @@ pub unsafe fn process_events() {
                         let prev_report =
                             &mut (*core::ptr::addr_of_mut!(PREVIOUS_KEYBOARD_REPORTS))
                                 [slot_id as usize - 1];
+                        let modifier = report[0];
                         // Process new key presses (Boot Protocol: bytes 2-7 are keycodes)
                         for i in 2..8 {
                             let key = report[i];
@@ -676,12 +758,10 @@ pub unsafe fn process_events() {
                                 }
                                 if !found {
                                     // New key press!
-                                    if (key as usize) < HID_ASCII_TABLE.len() {
-                                        let ascii = HID_ASCII_TABLE[key as usize];
-                                        if ascii != 0 {
-                                            // print!("{}", ascii as char);
-                                            push_key(ascii);
-                                        }
+                                    let ascii = hid_key_to_ascii(key, modifier);
+                                    if ascii != 0 {
+                                        // print!("{}", ascii as char);
+                                        push_key(ascii);
                                     }
                                 }
                             }

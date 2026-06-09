@@ -61,6 +61,7 @@ pub struct BootInfo {
 }
 
 mod allocator;
+mod fs;
 mod gdt;
 mod interrupts;
 mod io;

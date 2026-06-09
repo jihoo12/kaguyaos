@@ -25,7 +25,7 @@ pub fn parse_register(s: &str) -> Option<Register> {
 }
 
 pub fn parse_operand(s: &str) -> Option<Operand> {
-    let s = s.trim();
+    let s = strip_size_prefix(s.trim());
     if s.is_empty() {
         return None;
     }
@@ -58,7 +58,7 @@ pub fn parse_operand(s: &str) -> Option<Operand> {
 }
 
 pub fn parse_memory(s: &str) -> Option<MemoryAddr> {
-    let s = s.trim();
+    let s = strip_size_prefix(s.trim());
     if !s.starts_with('[') || !s.ends_with(']') {
         return None;
     }
@@ -112,6 +112,9 @@ pub fn parse_memory(s: &str) -> Option<MemoryAddr> {
     for (sign, tok) in tokens {
         // index*scale  e.g. "rbx*4"
         if let Some(star_idx) = tok.find('*') {
+            if sign == -1 || index.is_some() {
+                return None;
+            }
             let idx_part = tok[..star_idx].trim();
             let scale_part = tok[star_idx + 1..].trim();
             let idx_reg = parse_register(idx_part)?;
@@ -126,6 +129,9 @@ pub fn parse_memory(s: &str) -> Option<MemoryAddr> {
 
         // plain register token
         if let Some(reg) = parse_register(tok) {
+            if sign == -1 {
+                return None;
+            }
             if base.is_none() {
                 base = Some(reg);
             } else if index.is_none() {
@@ -139,11 +145,7 @@ pub fn parse_memory(s: &str) -> Option<MemoryAddr> {
 
         // displacement token — honour the sign already captured
         let raw = parse_i32(tok)?;
-        let signed = if sign == -1 {
-            raw.checked_neg()?
-        } else {
-            raw
-        };
+        let signed = if sign == -1 { raw.checked_neg()? } else { raw };
         disp = disp.checked_add(signed)?;
     }
 
@@ -153,6 +155,28 @@ pub fn parse_memory(s: &str) -> Option<MemoryAddr> {
         scale,
         disp,
     })
+}
+
+fn strip_size_prefix(s: &str) -> &str {
+    let s = s.trim();
+    for prefix in [
+        "qword ptr",
+        "qword",
+        "dword ptr",
+        "dword",
+        "word ptr",
+        "word",
+        "byte ptr",
+        "byte",
+    ] {
+        if s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
+            let rest = s[prefix.len()..].trim_start();
+            if rest.starts_with('[') {
+                return rest;
+            }
+        }
+    }
+    s
 }
 
 fn strip_hex_prefix(s: &str) -> Option<&str> {
@@ -167,7 +191,8 @@ fn parse_i32(s: &str) -> Option<i32> {
     } else if let Some(rest) = s.strip_prefix('+') {
         parse_i32(rest)
     } else if let Some(hex) = strip_hex_prefix(s) {
-        i32::from_str_radix(hex, 16).ok()
+        let value = u32::from_str_radix(hex, 16).ok()?;
+        Some(value as i32)
     } else {
         s.parse::<i32>().ok()
     }
@@ -186,17 +211,18 @@ fn parse_u64(s: &str) -> Option<u64> {
 }
 
 pub fn parse_instruction(line: &str) -> Option<Instruction> {
-    let line = line.trim();
+    let line = strip_comment(line).trim();
     if line.is_empty() {
         return None;
     }
 
     let mut parts = line.split_whitespace();
-    let mnemonic = parts.next()?.to_lowercase();
-    let rest = line[mnemonic.len()..].trim();
+    let mnemonic_raw = parts.next()?;
+    let mnemonic = mnemonic_raw.to_lowercase();
+    let rest = line[mnemonic_raw.len()..].trim();
 
     match mnemonic.as_str() {
-        "mov" | "add" | "sub" | "and" | "or" | "xor" | "cmp" | "shl" | "shr" => {
+        "mov" | "add" | "sub" | "and" | "or" | "xor" | "lea" | "cmp" | "shl" | "shr" => {
             let operands: Vec<&str> = rest.split(',').collect();
             if operands.len() == 2 {
                 let dst = parse_operand(operands[0])?;
@@ -208,6 +234,7 @@ pub fn parse_instruction(line: &str) -> Option<Instruction> {
                     "and" => Some(Instruction::And(dst, src)),
                     "or" => Some(Instruction::Or(dst, src)),
                     "xor" => Some(Instruction::Xor(dst, src)),
+                    "lea" => Some(Instruction::Lea(dst, src)),
                     "cmp" => Some(Instruction::Cmp(dst, src)),
                     "shl" => Some(Instruction::Shl(dst, src)),
                     "shr" => Some(Instruction::Shr(dst, src)),
@@ -236,8 +263,21 @@ pub fn parse_instruction(line: &str) -> Option<Instruction> {
                 _ => unreachable!(),
             }
         }
-        "syscall" => Some(Instruction::Syscall),
-        "ret" => Some(Instruction::Ret),
+        "syscall" if rest.is_empty() => Some(Instruction::Syscall),
+        "ret" if rest.is_empty() => Some(Instruction::Ret),
         _ => None,
     }
+}
+
+fn strip_comment(line: &str) -> &str {
+    let mut in_brackets = false;
+    for (idx, ch) in line.char_indices() {
+        match ch {
+            '[' => in_brackets = true,
+            ']' => in_brackets = false,
+            '#' if !in_brackets => return &line[..idx],
+            _ => {}
+        }
+    }
+    line
 }

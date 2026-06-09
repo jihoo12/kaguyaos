@@ -9,6 +9,7 @@ pub enum EncodeError {
     UnsupportedOperand(String),
     InvalidScale(u8),
     InvalidDisplacement(String),
+    InvalidImmediate(String),
     Other(String),
 }
 
@@ -18,6 +19,7 @@ impl fmt::Display for EncodeError {
             EncodeError::UnsupportedOperand(msg) => write!(f, "Unsupported operand: {}", msg),
             EncodeError::InvalidScale(scale) => write!(f, "Invalid scale: {}", scale),
             EncodeError::InvalidDisplacement(msg) => write!(f, "Invalid displacement: {}", msg),
+            EncodeError::InvalidImmediate(msg) => write!(f, "Invalid immediate: {}", msg),
             EncodeError::Other(msg) => write!(f, "Encoding error: {}", msg),
         }
     }
@@ -79,6 +81,7 @@ pub enum Instruction {
     And(Operand, Operand),
     Or(Operand, Operand),
     Xor(Operand, Operand),
+    Lea(Operand, Operand),
     Not(Operand),
     Shl(Operand, Operand),
     Shr(Operand, Operand),
@@ -102,6 +105,7 @@ impl fmt::Display for Instruction {
             Instruction::And(dst, src) => write!(f, "and {}, {}", dst, src),
             Instruction::Or(dst, src) => write!(f, "or {}, {}", dst, src),
             Instruction::Xor(dst, src) => write!(f, "xor {}, {}", dst, src),
+            Instruction::Lea(dst, src) => write!(f, "lea {}, {}", dst, src),
             Instruction::Not(op) => write!(f, "not {}", op),
             Instruction::Shl(dst, count) => write!(f, "shl {}, {}", dst, count),
             Instruction::Shr(dst, count) => write!(f, "shr {}, {}", dst, count),
@@ -126,6 +130,7 @@ pub fn encode_instruction(instr: Instruction, bytes: &mut Vec<u8>) -> Result<(),
         Instruction::And(dst, src) => encode_arithmetic(0x21, 0x23, 4, dst, src, bytes)?,
         Instruction::Or(dst, src) => encode_arithmetic(0x09, 0x0B, 1, dst, src, bytes)?,
         Instruction::Xor(dst, src) => encode_arithmetic(0x31, 0x33, 6, dst, src, bytes)?,
+        Instruction::Lea(dst, src) => encode_lea(dst, src, bytes)?,
         Instruction::Shl(dst, count) => encode_shift(4, dst, count, bytes)?,
         Instruction::Shr(dst, count) => encode_shift(5, dst, count, bytes)?,
         Instruction::Not(op) => encode_unary(0xF7, 2, op, bytes)?,
@@ -254,9 +259,15 @@ fn encode_push(op: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
             bytes.push(0x50 + reg.code());
         }
         Operand::Imm32(imm) => {
-            // PUSH imm32 -> 68 id
-            bytes.push(0x68);
-            bytes.extend_from_slice(&imm.to_le_bytes());
+            if imm >= -128 && imm <= 127 {
+                // PUSH imm8 -> 6A ib
+                bytes.push(0x6A);
+                bytes.push(imm as u8);
+            } else {
+                // PUSH imm32 -> 68 id
+                bytes.push(0x68);
+                bytes.extend_from_slice(&imm.to_le_bytes());
+            }
         }
         Operand::Mem(mem) => {
             // PUSH r/m64 -> FF /6
@@ -313,7 +324,8 @@ fn encode_shift(
                     bytes.push(0xC0 | (ext_idx << 3) | reg.code());
                 }
                 Operand::Mem(mem) => {
-                    let (modrm, sib, disp_size) = encode_mem_parts(ext_idx, false, true, mem, bytes)?;
+                    let (modrm, sib, disp_size) =
+                        encode_mem_parts(ext_idx, false, true, mem, bytes)?;
                     bytes.push(0xD3);
                     bytes.push(modrm);
                     if let Some(s) = sib {
@@ -330,6 +342,12 @@ fn encode_shift(
             }
         }
         Operand::Imm32(imm) => {
+            if !(0..=255).contains(&imm) {
+                return Err(EncodeError::InvalidImmediate(format!(
+                    "shift count {} is outside imm8 range 0..=255",
+                    imm
+                )));
+            }
             if imm == 1 {
                 // SHL r/m64, 1 -> D1 /ext
                 match dst {
@@ -339,7 +357,8 @@ fn encode_shift(
                         bytes.push(0xC0 | (ext_idx << 3) | reg.code());
                     }
                     Operand::Mem(mem) => {
-                        let (modrm, sib, disp_size) = encode_mem_parts(ext_idx, false, true, mem, bytes)?;
+                        let (modrm, sib, disp_size) =
+                            encode_mem_parts(ext_idx, false, true, mem, bytes)?;
                         bytes.push(0xD1);
                         bytes.push(modrm);
                         if let Some(s) = sib {
@@ -364,7 +383,8 @@ fn encode_shift(
                         bytes.push(imm as u8);
                     }
                     Operand::Mem(mem) => {
-                        let (modrm, sib, disp_size) = encode_mem_parts(ext_idx, false, true, mem, bytes)?;
+                        let (modrm, sib, disp_size) =
+                            encode_mem_parts(ext_idx, false, true, mem, bytes)?;
                         bytes.push(0xC1);
                         bytes.push(modrm);
                         if let Some(s) = sib {
@@ -487,6 +507,28 @@ fn encode_mov(dst: Operand, src: Operand, bytes: &mut Vec<u8>) -> Result<(), Enc
         _ => {
             return Err(EncodeError::UnsupportedOperand(format!(
                 "MOV {} -> {}",
+                src, dst
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn encode_lea(dst: Operand, src: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
+    match (dst, src) {
+        (Operand::Reg(dst_reg), Operand::Mem(mem)) => {
+            let (modrm, sib, disp_size) =
+                encode_mem_parts(dst_reg.code(), dst_reg.is_extended(), true, mem, bytes)?;
+            bytes.push(0x8D);
+            bytes.push(modrm);
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
+            push_displacement(mem.disp, disp_size, bytes);
+        }
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(format!(
+                "LEA {} -> {}",
                 src, dst
             )));
         }
@@ -618,7 +660,10 @@ fn mem_parts(
     mem: MemoryAddr,
 ) -> Result<(u8, u8, Option<u8>, usize), EncodeError> {
     if reg_val >= 8 {
-        return Err(EncodeError::Other(format!("Invalid ModR/M reg field {}", reg_val)));
+        return Err(EncodeError::Other(format!(
+            "Invalid ModR/M reg field {}",
+            reg_val
+        )));
     }
 
     let scale_bits = match mem.scale {
