@@ -15,6 +15,7 @@ pkgs.mkShell {
 
     # 처음 한 번만 실행
     if [ ! -d "$CARGO_HOME/bin/cargo" ]; then
+      rustup default stable
       rustup target add x86_64-unknown-uefi
     fi
 

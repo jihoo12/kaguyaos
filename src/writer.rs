@@ -17,8 +17,6 @@ pub struct Writer {
     x_pos: usize,
     y_pos: usize,
 }
-//choose my favorite image
-//static IMAGE_DATA: &[u8] = include_bytes!("../image.bin");
 impl Writer {
     pub fn new(info: BootInfo) -> self::Writer {
         Self {
@@ -113,21 +111,6 @@ impl Writer {
         self.x_pos = 0;
         self.y_pos = 0;
     }
-
-    /***
-    //test draw image
-    pub fn draw_embedded_image(&mut self, x_pos: usize, y_pos: usize, width: usize, height: usize) {
-        // u8 배열을 u32(픽셀) 포인터로 해석
-        let pixel_ptr = IMAGE_DATA.as_ptr() as *const u32;
-
-        for y in 0..height {
-            for x in 0..width {
-                let color = unsafe { *pixel_ptr.add(y * width + x) };
-                self.write_pixel(x_pos + x, y_pos + y, color);
-            }
-        }
-    }
-    ***/
 }
 
 pub fn clear() {
@@ -167,14 +150,3 @@ macro_rules! println {
     () => ($crate::print!("\n"));
     ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
 }
-
-/***
-pub fn draw_image(x: usize, y: usize, w: usize, h: usize) {
-    unsafe {
-        #[allow(static_mut_refs)]
-        if let Some(writer) = GLOBAL_WRITER.as_mut() {
-            writer.draw_embedded_image(x, y, w, h);
-        }
-    }
-}
-***/
