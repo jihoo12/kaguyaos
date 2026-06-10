@@ -231,43 +231,28 @@ impl Shell {
     }
 
     fn eval_asm(&self, asm_str: &str) {
-        use crate::tinyasm::encoder::{encode_instruction, Instruction};
+        use crate::tinyasm::encoder::assemble;
         use crate::tinyasm::jit::JitMemory;
-        use crate::tinyasm::parser::parse_instruction;
+        use crate::tinyasm::parser::parse_asm_line;
 
-        let mut instrs: alloc::vec::Vec<Instruction> = alloc::vec::Vec::new();
+        let lines: alloc::vec::Vec<_> = asm_str
+            .split(';')
+            .filter_map(|part| parse_asm_line(part.trim()))
+            .collect();
 
-        for part in asm_str.split(';') {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
-            match parse_instruction(part) {
-                Some(inst) => instrs.push(inst),
-                None => {
-                    print("Failed to parse instruction: ");
-                    print(part);
-                    print("\n");
-                    return;
-                }
-            }
-        }
-
-        if instrs.is_empty() {
+        if lines.is_empty() {
             print("No valid instructions found.\n");
             return;
         }
 
-        instrs.push(Instruction::Ret);
-
-        let mut machine_code: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-        for inst in instrs.iter() {
-            if let Err(e) = encode_instruction(*inst, &mut machine_code) {
+        let machine_code = match assemble(&lines) {
+            Ok(code) => code,
+            Err(e) => {
                 let msg = alloc::format!("Encoding error: {}\n", e);
                 print(&msg);
                 return;
             }
-        }
+        };
 
         match JitMemory::new(4096) {
             Ok(mut jit) => {

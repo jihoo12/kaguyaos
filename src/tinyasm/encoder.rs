@@ -1,4 +1,5 @@
 use super::registers::Register;
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -22,6 +23,64 @@ impl fmt::Display for EncodeError {
             EncodeError::InvalidImmediate(msg) => write!(f, "Invalid immediate: {}", msg),
             EncodeError::Other(msg) => write!(f, "Encoding error: {}", msg),
         }
+    }
+}
+
+/// Condition codes for Jcc instructions (Intel manual naming).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConditionCode {
+    // Unsigned / flags
+    O,   // overflow          JO   0x70 / 0F 80
+    No,  // no overflow       JNO  0x71 / 0F 81
+    B,   // below (CF=1)      JB   0x72 / 0F 82  (also JC / JNAE)
+    Nb,  // not below         JNB  0x73 / 0F 83  (also JNC / JAE)
+    Z,   // zero (ZF=1)       JZ   0x74 / 0F 84  (also JE)
+    Nz,  // not zero          JNZ  0x75 / 0F 85  (also JNE)
+    Be,  // below or equal    JBE  0x76 / 0F 86  (also JNA)
+    Nbe, // above             JNBE 0x77 / 0F 87  (also JA)
+    S,   // sign              JS   0x78 / 0F 88
+    Ns,  // no sign           JNS  0x79 / 0F 89
+    P,   // parity            JP   0x7A / 0F 8A  (also JPE)
+    Np,  // no parity         JNP  0x7B / 0F 8B  (also JPO)
+    L,   // less              JL   0x7C / 0F 8C  (also JNGE)
+    Nl,  // greater or equal  JNL  0x7D / 0F 8D  (also JGE)
+    Le,  // less or equal     JLE  0x7E / 0F 8E  (also JNG)
+    Nle, // greater           JNLE 0x7F / 0F 8F  (also JG)
+}
+
+impl ConditionCode {
+    /// Short opcode byte for `Jcc rel8` (0x70..=0x7F).
+    pub fn short_opcode(self) -> u8 {
+        0x70 + self as u8
+    }
+
+    /// Near opcode byte for `0F 8x rel32`.
+    pub fn near_opcode(self) -> u8 {
+        0x80 + self as u8
+    }
+}
+
+impl fmt::Display for ConditionCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            ConditionCode::O => "o",
+            ConditionCode::No => "no",
+            ConditionCode::B => "b",
+            ConditionCode::Nb => "nb",
+            ConditionCode::Z => "z",
+            ConditionCode::Nz => "nz",
+            ConditionCode::Be => "be",
+            ConditionCode::Nbe => "nbe",
+            ConditionCode::S => "s",
+            ConditionCode::Ns => "ns",
+            ConditionCode::P => "p",
+            ConditionCode::Np => "np",
+            ConditionCode::L => "l",
+            ConditionCode::Nl => "nl",
+            ConditionCode::Le => "le",
+            ConditionCode::Nle => "nle",
+        };
+        write!(f, "j{}", s)
     }
 }
 
@@ -73,7 +132,7 @@ impl fmt::Display for Operand {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction {
     Mov(Operand, Operand), // Destination, Source
     Add(Operand, Operand),
@@ -94,6 +153,12 @@ pub enum Instruction {
     Ret,
     Push(Operand),
     Pop(Operand),
+    /// Conditional jump to a label (resolved in the two-pass assembler).
+    Jcc(ConditionCode, String),
+    /// Unconditional jump to a label.
+    JmpLabel(String),
+    /// Call to a label.
+    CallLabel(String),
 }
 
 impl fmt::Display for Instruction {
@@ -118,6 +183,9 @@ impl fmt::Display for Instruction {
             Instruction::Ret => write!(f, "ret"),
             Instruction::Push(op) => write!(f, "push {}", op),
             Instruction::Pop(op) => write!(f, "pop {}", op),
+            Instruction::Jcc(cc, label) => write!(f, "{} {}", cc, label),
+            Instruction::JmpLabel(label) => write!(f, "jmp {}", label),
+            Instruction::CallLabel(label) => write!(f, "call {}", label),
         }
     }
 }
@@ -143,8 +211,143 @@ pub fn encode_instruction(instr: Instruction, bytes: &mut Vec<u8>) -> Result<(),
         Instruction::Ret => bytes.push(0xC3),
         Instruction::Push(op) => encode_push(op, bytes)?,
         Instruction::Pop(op) => encode_pop(op, bytes)?,
+        Instruction::Jcc(_, _) | Instruction::JmpLabel(_) | Instruction::CallLabel(_) => {
+            return Err(EncodeError::Other(String::from(
+                "Label references must be resolved with assemble() before encoding",
+            )));
+        }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Two-pass label-aware assembler
+// ---------------------------------------------------------------------------
+
+/// A line in the assembler source: either a label definition or an instruction.
+#[derive(Debug, Clone)]
+pub enum AsmLine {
+    /// A label definition, e.g. `loop_start:`.
+    Label(String),
+    /// An instruction (may contain label references in `JmpLabel` / `CallLabel` / `Jcc`).
+    Instr(Instruction),
+}
+
+/// Assembles a slice of [`AsmLine`]s into machine code, resolving all label
+/// references to PC-relative `rel32` offsets.
+///
+/// # Algorithm (two-pass)
+///
+/// **Pass 1 – size estimation.**  
+/// Every instruction is encoded into a temporary buffer using placeholder zeros
+/// for as-yet-unknown label offsets.  Label definitions record the byte offset
+/// they land on.  Because a label-referencing jump is always emitted as
+/// `rel32` (5 bytes for `jmp`/`call`, 6 bytes for `jcc`), the size estimate is
+/// exact and no iteration is needed.
+///
+/// **Pass 2 – final encoding.**  
+/// Each instruction is re-encoded with the real `rel32` displacement computed
+/// as `target_offset - (instr_offset + instr_size)`.
+pub fn assemble(lines: &[AsmLine]) -> Result<Vec<u8>, EncodeError> {
+    // ---- pass 1: record label positions and instruction byte offsets ----
+    let mut label_offsets: BTreeMap<&str, usize> = BTreeMap::new();
+    // (byte_offset, instruction_ref)
+    let mut instr_positions: Vec<(usize, &Instruction)> = Vec::new();
+    let mut cursor: usize = 0;
+
+    for line in lines {
+        match line {
+            AsmLine::Label(name) => {
+                if label_offsets.insert(name.as_str(), cursor).is_some() {
+                    return Err(EncodeError::Other(format!(
+                        "Duplicate label '{}'",
+                        name
+                    )));
+                }
+            }
+            AsmLine::Instr(instr) => {
+                instr_positions.push((cursor, instr));
+                cursor += instr_encoded_size(instr);
+            }
+        }
+    }
+
+    // ---- pass 2: encode with real offsets ----
+    let mut out: Vec<u8> = Vec::with_capacity(cursor);
+
+    for (instr_offset, instr) in &instr_positions {
+        match instr {
+            Instruction::JmpLabel(label) => {
+                let target = resolve_label(&label_offsets, label)?;
+                // JMP rel32: E9 <rel32>  (5 bytes)
+                let rel = compute_rel32(target, *instr_offset, 5)?;
+                out.push(0xE9);
+                out.extend_from_slice(&rel.to_le_bytes());
+            }
+            Instruction::CallLabel(label) => {
+                let target = resolve_label(&label_offsets, label)?;
+                // CALL rel32: E8 <rel32>  (5 bytes)
+                let rel = compute_rel32(target, *instr_offset, 5)?;
+                out.push(0xE8);
+                out.extend_from_slice(&rel.to_le_bytes());
+            }
+            Instruction::Jcc(cc, label) => {
+                let target = resolve_label(&label_offsets, label)?;
+                // Jcc rel32: 0F 8x <rel32>  (6 bytes)
+                let rel = compute_rel32(target, *instr_offset, 6)?;
+                out.push(0x0F);
+                out.push(cc.near_opcode());
+                out.extend_from_slice(&rel.to_le_bytes());
+            }
+            other => {
+                encode_instruction((*other).clone(), &mut out)?;
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+/// Returns the number of bytes the instruction will occupy (used in pass 1).
+/// Label-referencing instructions always use the `rel32` near form.
+fn instr_encoded_size(instr: &Instruction) -> usize {
+    // Encode into a scratch buffer and measure.  For label-referencing
+    // instructions that cannot be encoded directly we return the fixed size.
+    match instr {
+        Instruction::JmpLabel(_) | Instruction::CallLabel(_) => 5,
+        Instruction::Jcc(_, _) => 6,
+        other => {
+            let mut tmp = Vec::new();
+            // If encoding fails (shouldn't for well-formed instructions in pass 1)
+            // we return 0; the error will surface in pass 2.
+            let _ = encode_instruction(other.clone(), &mut tmp);
+            tmp.len()
+        }
+    }
+}
+
+fn resolve_label<'a>(
+    map: &BTreeMap<&'a str, usize>,
+    name: &str,
+) -> Result<usize, EncodeError> {
+    map.get(name)
+        .copied()
+        .ok_or_else(|| EncodeError::Other(format!("Undefined label '{}'", name)))
+}
+
+/// Computes a signed 32-bit PC-relative displacement.
+/// `target`       – byte offset of the target label in the output buffer.
+/// `instr_offset` – byte offset of the start of the current instruction.
+/// `instr_size`   – total encoded size of the current instruction in bytes.
+fn compute_rel32(target: usize, instr_offset: usize, instr_size: usize) -> Result<i32, EncodeError> {
+    let next_pc = instr_offset + instr_size;
+    let rel = (target as i64) - (next_pc as i64);
+    i32::try_from(rel).map_err(|_| {
+        EncodeError::Other(format!(
+            "Label displacement {} is out of rel32 range",
+            rel
+        ))
+    })
 }
 
 fn encode_rex(

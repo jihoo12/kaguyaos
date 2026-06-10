@@ -1,5 +1,6 @@
-use super::encoder::{Instruction, MemoryAddr, Operand};
+use super::encoder::{AsmLine, ConditionCode, Instruction, MemoryAddr, Operand};
 use super::registers::Register;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 pub fn parse_register(s: &str) -> Option<Register> {
@@ -280,4 +281,90 @@ fn strip_comment(line: &str) -> &str {
         }
     }
     line
+}
+
+/// Returns `true` if `s` is a valid label identifier: starts with a letter or
+/// underscore and contains only alphanumeric characters, underscores, or dots.
+fn is_label_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '.' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+}
+
+/// Parses a condition-code suffix (the part after the leading `j`), e.g.
+/// `"z"` → `Some(ConditionCode::Z)`.
+pub fn parse_condition_code(suffix: &str) -> Option<ConditionCode> {
+    match suffix {
+        "o" => Some(ConditionCode::O),
+        "no" => Some(ConditionCode::No),
+        "b" | "c" | "nae" => Some(ConditionCode::B),
+        "nb" | "nc" | "ae" => Some(ConditionCode::Nb),
+        "z" | "e" => Some(ConditionCode::Z),
+        "nz" | "ne" => Some(ConditionCode::Nz),
+        "be" | "na" => Some(ConditionCode::Be),
+        "nbe" | "a" => Some(ConditionCode::Nbe),
+        "s" => Some(ConditionCode::S),
+        "ns" => Some(ConditionCode::Ns),
+        "p" | "pe" => Some(ConditionCode::P),
+        "np" | "po" => Some(ConditionCode::Np),
+        "l" | "nge" => Some(ConditionCode::L),
+        "nl" | "ge" => Some(ConditionCode::Nl),
+        "le" | "ng" => Some(ConditionCode::Le),
+        "nle" | "g" => Some(ConditionCode::Nle),
+        _ => None,
+    }
+}
+
+/// Parses a single source line into an [`AsmLine`].
+///
+/// Handles:
+/// - Empty lines and comment-only lines → `None`
+/// - Label definitions (`loop:`) → `Some(AsmLine::Label(...))`
+/// - `jmp <label>` / `call <label>` with a bare identifier → label-ref variants
+/// - `j<cc> <label>` conditional jumps
+/// - All other instructions via [`parse_instruction`]
+pub fn parse_asm_line(line: &str) -> Option<AsmLine> {
+    let line = strip_comment(line).trim();
+    if line.is_empty() {
+        return None;
+    }
+
+    // ---- label definition: "loop_start:" ----
+    if let Some(name) = line.strip_suffix(':') {
+        let name = name.trim();
+        if is_label_ident(name) {
+            return Some(AsmLine::Label(String::from(name)));
+        }
+    }
+
+    // ---- split into mnemonic + rest ----
+    let mut parts = line.split_whitespace();
+    let mnemonic_raw = parts.next()?;
+    let mnemonic = mnemonic_raw.to_lowercase();
+    let rest = line[mnemonic_raw.len()..].trim();
+
+    // ---- jmp <label> ----
+    if mnemonic == "jmp" && is_label_ident(rest) {
+        return Some(AsmLine::Instr(Instruction::JmpLabel(String::from(rest))));
+    }
+
+    // ---- call <label> ----
+    if mnemonic == "call" && is_label_ident(rest) {
+        return Some(AsmLine::Instr(Instruction::CallLabel(String::from(rest))));
+    }
+
+    // ---- j<cc> <label> ----
+    if let Some(suffix) = mnemonic.strip_prefix('j') {
+        if let Some(cc) = parse_condition_code(suffix) {
+            if is_label_ident(rest) {
+                return Some(AsmLine::Instr(Instruction::Jcc(cc, String::from(rest))));
+            }
+        }
+    }
+
+    // ---- fall back to the original instruction parser ----
+    parse_instruction(line).map(AsmLine::Instr)
 }
