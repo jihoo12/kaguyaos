@@ -19,8 +19,10 @@ use crate::tinyasm::jit::JitMemory;
 /// # Supported grammar
 /// One or more functions of the form:
 /// ```c
-/// uint64_t <name>() { return <integer>; }
+/// uint64_t <name>(<params>) { <body> }
 /// ```
+/// where `<params>` is empty or a comma-separated list of `uint64_t <name>` pairs
+/// (up to 6 parameters following the System V AMD64 ABI).
 /// One function must be named `main`.
 ///
 /// # Example
@@ -36,6 +38,15 @@ use crate::tinyasm::jit::JitMemory;
 ///     uint64_t main()   { return 7; }
 /// ";
 /// assert_eq!(compile_and_run(src).unwrap(), 7);
+/// ```
+///
+/// Functions with arguments:
+/// ```
+/// let src = "
+///     uint64_t add(uint64_t a, uint64_t b) { return a; }
+///     uint64_t main() { return add(20, 22); }
+/// ";
+/// assert_eq!(compile_and_run(src).unwrap(), 20);
 /// ```
 pub fn compile_and_run(src: &str) -> Result<u64, String> {
     // 1. Lex

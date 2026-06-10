@@ -9,7 +9,7 @@ use super::lexer::Token;
 pub enum Expr {
     Number(u64),
     Variable(String),
-    Call(String),
+    Call(String, Vec<Expr>),
 }
 
 #[derive(Debug, Clone)]
@@ -21,8 +21,15 @@ pub enum Stmt {
 }
 
 #[derive(Debug, Clone)]
+pub struct Param {
+    pub ty: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
+    pub params: Vec<Param>,
     pub body: Vec<Stmt>,
 }
 
@@ -53,8 +60,17 @@ fn parse_expr(tokens: &[Token], i: &mut usize) -> Result<Expr, String> {
             // Check if it's a function call (followed by LParen)
             if let Some(Token::LParen) = tokens.get(*i) {
                 *i += 1; // Consume LParen
+                let mut args = Vec::new();
+                // Parse argument list (may be empty)
+                if tokens.get(*i) != Some(&Token::RParen) {
+                    args.push(parse_expr(tokens, i)?);
+                    while tokens.get(*i) == Some(&Token::Comma) {
+                        *i += 1; // Consume comma
+                        args.push(parse_expr(tokens, i)?);
+                    }
+                }
                 expect(tokens, i, &Token::RParen)?;
-                Ok(Expr::Call(name))
+                Ok(Expr::Call(name, args))
             } else {
                 Ok(Expr::Variable(name))
             }
@@ -124,6 +140,36 @@ fn parse_function(tokens: &[Token], i: &mut usize) -> Result<Function, String> {
     };
 
     expect(tokens, i, &Token::LParen)?;
+
+    // Parse parameter list: e.g. (uint64_t a, uint64_t b)
+    let mut params = Vec::new();
+    if tokens.get(*i) != Some(&Token::RParen) {
+        // First parameter
+        let param_ty = match tokens.get(*i) {
+            Some(Token::Ident(t)) => { let s = t.clone(); *i += 1; s }
+            _ => return Err("Expected parameter type".to_string()),
+        };
+        let param_name = match tokens.get(*i) {
+            Some(Token::Ident(n)) => { let s = n.clone(); *i += 1; s }
+            _ => return Err("Expected parameter name".to_string()),
+        };
+        params.push(Param { ty: param_ty, name: param_name });
+
+        // Additional parameters
+        while tokens.get(*i) == Some(&Token::Comma) {
+            *i += 1; // Consume comma
+            let param_ty = match tokens.get(*i) {
+                Some(Token::Ident(t)) => { let s = t.clone(); *i += 1; s }
+                _ => return Err("Expected parameter type".to_string()),
+            };
+            let param_name = match tokens.get(*i) {
+                Some(Token::Ident(n)) => { let s = n.clone(); *i += 1; s }
+                _ => return Err("Expected parameter name".to_string()),
+            };
+            params.push(Param { ty: param_ty, name: param_name });
+        }
+    }
+
     expect(tokens, i, &Token::RParen)?;
 
     expect(tokens, i, &Token::LBrace)?;
@@ -138,7 +184,7 @@ fn parse_function(tokens: &[Token], i: &mut usize) -> Result<Function, String> {
 
     expect(tokens, i, &Token::RBrace)?;
 
-    Ok(Function { name, body })
+    Ok(Function { name, params, body })
 }
 
 pub fn parse_return_value(tokens: &[Token]) -> Result<u64, String> {

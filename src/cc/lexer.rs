@@ -12,6 +12,7 @@ pub enum Token {
     LBrace,
     RBrace,
     Semicolon,
+    Comma,
     Return,
     Equal,
 }
@@ -28,6 +29,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
             '{' => { tokens.push(Token::LBrace);    chars.next(); }
             '}' => { tokens.push(Token::RBrace);    chars.next(); }
             ';' => { tokens.push(Token::Semicolon); chars.next(); }
+            ',' => { tokens.push(Token::Comma);     chars.next(); }
             '=' => { tokens.push(Token::Equal);     chars.next(); }
             '"' => {
                 chars.next(); // Consume opening quote

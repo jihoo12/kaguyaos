@@ -7,6 +7,19 @@ use super::parser::{Function, Stmt, Expr};
 use crate::tinyasm::parser::parse_asm_line;
 use crate::tinyasm::encoder::assemble;
 
+/// System V AMD64 ABI: first 6 integer argument registers.
+/// Each entry is the REX.B‑extended register number used in ModR/M encoding.
+const ARG_REGS: &[(u8, u8)] = &[
+    // (REX prefix, reg-in-modrm)  for "mov [rbp+disp32], reg"
+    // rdi=7, rsi=6, rdx=2, rcx=1, r8=0(+REX.R), r9=1(+REX.R)
+    (0x48, 0xBD),  // rdi  -> mov [rbp+disp32], rdi  (opcode bytes: REX.W 89 /r)
+    (0x48, 0xB5),  // rsi
+    (0x48, 0x95),  // rdx
+    (0x48, 0x8D),  // rcx
+    (0x4C, 0x85),  // r8
+    (0x4C, 0x8D),  // r9
+];
+
 struct Relocation {
     target: String,
     patch_offset: usize,
@@ -41,9 +54,19 @@ pub fn compile_program(functions: &BTreeMap<String, Function>) -> Result<Vec<u8>
         code.push(0x89);
         code.push(0xE5); // mov rbp, rsp
 
-        // Pre-pass to count unique variable declarations and assign offsets from RBP
+        // Pre-pass to count unique variable declarations and assign offsets from RBP.
+        // Parameters are allocated first so they can be referenced like local variables.
         let mut var_offsets = BTreeMap::new();
         let mut next_offset = 8;
+
+        // Allocate stack slots for parameters
+        for param in &func.params {
+            if !var_offsets.contains_key(&param.name) {
+                var_offsets.insert(param.name.clone(), next_offset);
+                next_offset += 8;
+            }
+        }
+
         for stmt in &func.body {
             if let Stmt::VarDecl { name, .. } = stmt {
                 if !var_offsets.contains_key(name) {
@@ -61,6 +84,21 @@ pub fn compile_program(functions: &BTreeMap<String, Function>) -> Result<Vec<u8>
             code.push(0x81); // SUB
             code.push(0xEC); // ModR/M or opcode extension for RSP
             code.extend_from_slice(&(stack_space as u32).to_le_bytes());
+        }
+
+        // Move parameter registers into their stack slots.
+        for (idx, param) in func.params.iter().enumerate() {
+            if idx >= ARG_REGS.len() {
+                return Err(format!("Too many parameters (max {})", ARG_REGS.len()));
+            }
+            let offset = *var_offsets.get(&param.name).unwrap();
+            let disp = -(offset as i32);
+            let (rex, modrm) = ARG_REGS[idx];
+            // mov [rbp + disp32], <reg>
+            code.push(rex);
+            code.push(0x89);
+            code.push(modrm);
+            code.extend_from_slice(&disp.to_le_bytes());
         }
 
         // Compile statements
@@ -145,7 +183,33 @@ fn compile_expr(
             code.push(0x85);
             code.extend_from_slice(&disp.to_le_bytes());
         }
-        Expr::Call(func_name) => {
+        Expr::Call(func_name, args) => {
+            if args.len() > ARG_REGS.len() {
+                return Err(format!("Too many arguments (max {})", ARG_REGS.len()));
+            }
+
+            // Evaluate each argument onto the stack first to avoid clobbering registers.
+            // Push all evaluated args (in rax) onto the machine stack.
+            for arg in args.iter() {
+                compile_expr(arg, code, var_offsets, relocs)?;
+                // push rax
+                code.push(0x50);
+            }
+
+            // Pop them into the correct argument registers in reverse order.
+            // Registers: rdi, rsi, rdx, rcx, r8, r9
+            for idx in (0..args.len()).rev() {
+                match idx {
+                    0 => { code.push(0x5F); }                    // pop rdi
+                    1 => { code.push(0x5E); }                    // pop rsi
+                    2 => { code.push(0x5A); }                    // pop rdx
+                    3 => { code.push(0x59); }                    // pop rcx
+                    4 => { code.push(0x41); code.push(0x58); }   // pop r8
+                    5 => { code.push(0x41); code.push(0x59); }   // pop r9
+                    _ => unreachable!(),
+                }
+            }
+
             // call func_name
             code.push(0xE8);
             let patch_offset = code.len();
