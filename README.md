@@ -85,5 +85,16 @@ and rax, 0x0F
 ret
 done
 # result: 15
+
+# use label
+asm> mov rax,0
+asm> mov rcx,5
+asm> loop_start:
+asm> add rax,rcx
+asm> sub rcx,1
+asm> jnz loop_start
+asm> ret
+asm> done
+# Result: 15
 ```
 
