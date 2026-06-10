@@ -127,12 +127,18 @@ impl Shell {
         if let Some(cmd) = parts.next() {
             match cmd {
                 "help" => {
-                    print("Commands: help, echo, history, clear, shutdown, asm, c, fsformat, fsls, fswrite, fsread, fsrm\n");
+                    print("Commands: help, echo, history, clear, shutdown, asm, c, load, fsformat, fsls, fswrite, fsread, fsrm\n");
+                    print("  help                 - show this help menu\n");
+                    print("  echo [args...]       - print the arguments to the screen\n");
+                    print("  history              - show the command history\n");
+                    print("  clear                - clear the screen\n");
+                    print("  shutdown             - shut down the machine\n");
                     print("  asm <instr>          - assemble and run a single instruction\n");
                     print("  asm                  - enter multi-line asm mode\n");
                     print("  Use ';' to separate multiple instructions inline\n");
                     print("  c <code>             - JIT-compile and run a tiny C function\n");
                     print("  c                    - enter multi-line C mode\n");
+                    print("  load <file>          - load a file and run it using cc (.c) or tinyasm (.asm/.s)\n");
                     print("  fsformat             - format the NVMe drive with SimpleFS\n");
                     print("  fsls                 - list files in the filesystem\n");
                     print("  fswrite <file> <msg> - write a file with text message (inline)\n");
@@ -293,6 +299,44 @@ impl Shell {
                         print("Usage: fsrm <filename>\n");
                     }
                 }
+                "load" => {
+                    if let Some(filename) = parts.next() {
+                        let mut size_buf = [];
+                        match crate::std::fs_read(filename, &mut size_buf) {
+                            Ok(size) => {
+                                let mut data = alloc::vec![0u8; size];
+                                match crate::std::fs_read(filename, &mut data) {
+                                    Ok(_) => {
+                                        match core::str::from_utf8(&data) {
+                                            Ok(content_str) => {
+                                                if filename.ends_with(".c") || filename.ends_with(".C") {
+                                                    self.eval_c(content_str);
+                                                } else if filename.ends_with(".asm") || filename.ends_with(".s") || filename.ends_with(".ASM") || filename.ends_with(".S") {
+                                                    self.eval_asm(content_str);
+                                                } else {
+                                                    print("Error: Unsupported file extension. Only .c, .asm, and .s files are supported.\n");
+                                                }
+                                            }
+                                            Err(_) => {
+                                                print("Error: File content is not valid UTF-8.\n");
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let msg = alloc::format!("Error reading file: {}\n", e);
+                                        print(&msg);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let msg = alloc::format!("Error reading file: {}\n", e);
+                                print(&msg);
+                            }
+                        }
+                    } else {
+                        print("Usage: load <filename>\n");
+                    }
+                }
                 _ => {
                     print("Unknown command: ");
                     print(cmd);
@@ -357,7 +401,7 @@ impl Shell {
         use crate::tinyasm::parser::parse_asm_line;
 
         let lines: alloc::vec::Vec<_> = asm_str
-            .split(';')
+            .split(|c| c == ';' || c == '\n')
             .filter_map(|part| parse_asm_line(part.trim()))
             .collect();
 

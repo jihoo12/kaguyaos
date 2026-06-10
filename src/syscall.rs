@@ -462,7 +462,7 @@ fn sys_fsread(
     };
     match crate::fs::read_file(filename) {
         Ok(data) => {
-            if buffer_ptr == 0 {
+            if buffer_ptr == 0 || buffer_len == 0 {
                 return data.len() as isize;
             }
             let copy_len = data.len().min(buffer_len);

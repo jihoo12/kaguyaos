@@ -15,8 +15,7 @@ pkgs.mkShell {
 
     # 처음 한 번만 실행
     if [ ! -d "$CARGO_HOME/bin/cargo" ]; then
-      rustup toolchain install nightly --profile minimal
-      rustup target add x86_64-unknown-uefi --toolchain nightly
+      rustup target add x86_64-unknown-uefi
     fi
 
     echo "🦀 UEFI dev environment ready"
