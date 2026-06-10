@@ -125,3 +125,24 @@ pub fn fs_rm(filename: &str) -> Result<(), i32> {
         Err(ret)
     }
 }
+
+pub fn spawn_process(entry: usize, user_rsp: usize) -> usize {
+    unsafe { syscall(4, entry, user_rsp, 0, 0, 0, 0) }
+}
+
+pub fn yield_process() {
+    unsafe { syscall(5, 0, 0, 0, 0, 0, 0) };
+}
+
+pub fn exit_process(exit_code: usize) -> ! {
+    unsafe { syscall(6, exit_code, 0, 0, 0, 0, 0) };
+    loop {}
+}
+
+pub fn get_process_status(pid: usize) -> usize {
+    unsafe { syscall(19, pid, 0, 0, 0, 0, 0) }
+}
+
+pub fn get_process_exit_code(pid: usize) -> usize {
+    unsafe { syscall(20, pid, 0, 0, 0, 0, 0) }
+}

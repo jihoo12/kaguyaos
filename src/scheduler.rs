@@ -20,6 +20,7 @@ pub struct Task {
     pub status: TaskStatus,
     pub kernel_stack_bottom: u64,
     pub gs_base: u64, // Pointer to KernelGsBase struct
+    pub exit_code: usize,
 }
 
 pub struct Scheduler {
@@ -48,6 +49,7 @@ pub unsafe fn init() {
         status: TaskStatus::Running,
         kernel_stack_bottom: 0,
         gs_base: unsafe { crate::syscall::get_global_gs_base() },
+        exit_code: 0,
     };
 
     if let Some(scheduler) = unsafe { SCHEDULER.as_mut() } {
@@ -55,7 +57,7 @@ pub unsafe fn init() {
     }
 }
 
-pub fn add_new_user_task(entry_point: u64, user_stack_bottom: u64, stack_size: usize) {
+pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize) -> usize {
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_mut() {
             let id = NEXT_TASK_ID.fetch_add(1, Ordering::SeqCst);
@@ -67,7 +69,7 @@ pub fn add_new_user_task(entry_point: u64, user_stack_bottom: u64, stack_size: u
             // 2. Setup KernelGsBase
             let kgs_base = Box::new(crate::syscall::KernelGsBase {
                 kernel_stack: kernel_stack_top,
-                user_stack: user_stack_bottom + stack_size as u64, // Initial user RSP
+                user_stack: user_rsp, // Initial user RSP
                 scratch: 0,
             });
             let gs_base_ptr = Box::into_raw(kgs_base) as u64;
@@ -88,7 +90,7 @@ pub fn add_new_user_task(entry_point: u64, user_stack_bottom: u64, stack_size: u
             sp = sp.sub(1);
             *sp = crate::gdt::USER_DATA_SEL as u64; // SS
             sp = sp.sub(1);
-            *sp = user_stack_bottom + stack_size as u64; // RSP
+            *sp = user_rsp; // RSP
             sp = sp.sub(1);
             *sp = 0x202; // RFLAGS
             sp = sp.sub(1);
@@ -115,13 +117,17 @@ pub fn add_new_user_task(entry_point: u64, user_stack_bottom: u64, stack_size: u
             let task = Task {
                 id,
                 stack_top: sp as u64,
-                stack_bottom: user_stack_bottom,
+                stack_bottom: user_rsp - stack_size as u64,
                 status: TaskStatus::Ready,
                 kernel_stack_bottom,
                 gs_base: gs_base_ptr,
+                exit_code: 0,
             };
 
             scheduler.tasks.push(task);
+            id
+        } else {
+            0
         }
     }
 }
@@ -181,6 +187,7 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
                 status: TaskStatus::Ready,
                 kernel_stack_bottom: 0,
                 gs_base: 0,
+                exit_code: 0,
             };
 
             scheduler.tasks.push(task);
@@ -264,21 +271,14 @@ unsafe fn wrmsr(msr: u32, value: u64) {
     }
 }
 
-pub fn terminate_task() {
+pub fn terminate_task(exit_code: usize) {
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_mut() {
             let current_index = scheduler.current_task_index;
             scheduler.tasks[current_index].status = TaskStatus::Terminated;
+            scheduler.tasks[current_index].exit_code = exit_code;
 
-            // Free stack?
-            // If we free the stack NOW, we are still using it!
-            // We cannot free the stack we are currently running on until we switch away.
-            // Simplest for now: Don't free immediately, or have a "cleanup" task.
-            // For this simple implementation, we LEAK the stack of the terminated task
-            // OR we rely on the next task to clean it up?
-            // Let's just mark Terminated and NOT free for this simple version.
-
-            crate::println!("Task {} terminated.", scheduler.tasks[current_index].id);
+            crate::println!("Task {} terminated with exit code {}.", scheduler.tasks[current_index].id, exit_code);
 
             // Force switch
             switch_task();
@@ -318,5 +318,35 @@ pub fn current_task_id() -> usize {
         } else {
             0
         }
+    }
+}
+
+pub fn get_task_status(task_id: usize) -> usize {
+    unsafe {
+        if let Some(scheduler) = SCHEDULER.as_ref() {
+            for task in &scheduler.tasks {
+                if task.id == task_id {
+                    return match task.status {
+                        TaskStatus::Ready => 0,
+                        TaskStatus::Running => 1,
+                        TaskStatus::Terminated => 2,
+                    };
+                }
+            }
+        }
+        3 // Not found
+    }
+}
+
+pub fn get_task_exit_code(task_id: usize) -> usize {
+    unsafe {
+        if let Some(scheduler) = SCHEDULER.as_ref() {
+            for task in &scheduler.tasks {
+                if task.id == task_id {
+                    return task.exit_code;
+                }
+            }
+        }
+        0
     }
 }

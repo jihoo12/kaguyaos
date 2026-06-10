@@ -276,6 +276,7 @@ pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {
     let err_code = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).err_code)) };
     let rip = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rip)) };
     let rsp = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rsp)) };
+    let cs = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).cs)) };
     let rax = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rax)) };
     let rbx = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rbx)) };
     let rcx = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rcx)) };
@@ -315,6 +316,22 @@ pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {
         }
     }
 
+    // If the exception occurred in user mode (ring 3), kill the faulting
+    // process and switch back to the next ready task (the shell) instead
+    // of halting the entire system.
+    let cpl = cs & 0x3;
+    if cpl == 3 {
+        #[allow(static_mut_refs)]
+        if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
+            let _ = writeln!(writer, "Killing user process due to exception.");
+        }
+        // terminate_task marks the current task Terminated, records an error
+        // exit code, then calls switch_task which context-switches away.
+        // We should never return here.
+        crate::scheduler::terminate_task(0xDEAD);
+    }
+
+    // Kernel-mode fault (or no other task to switch to) — halt.
     loop {
         unsafe {
             core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));

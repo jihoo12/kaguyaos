@@ -164,9 +164,8 @@ extern "sysv64" fn syscall_dispatcher_impl(
             0
         }
         4 => {
-            // sys_add_task(entry, user_stack)
-            sys_add_task(arg1, arg2);
-            0
+            // sys_add_task(entry, user_rsp)
+            sys_add_task(arg1, arg2)
         }
         5 => {
             // sys_switch_task()
@@ -174,8 +173,8 @@ extern "sysv64" fn syscall_dispatcher_impl(
             0
         }
         6 => {
-            // sys_terminate_task()
-            sys_terminate_task();
+            // sys_terminate_task(exit_code)
+            sys_terminate_task(arg1);
             0
         }
         7 => {
@@ -230,6 +229,14 @@ extern "sysv64" fn syscall_dispatcher_impl(
         18 => {
             // sys_fsrm(filename_ptr, filename_len) -> i32
             sys_fsrm(arg1, arg2) as usize
+        }
+        19 => {
+            // sys_get_task_status(task_id) -> usize
+            sys_get_task_status(arg1)
+        }
+        20 => {
+            // sys_get_task_exit_code(task_id) -> usize
+            sys_get_task_exit_code(arg1)
         }
         _ => {
             // Unknown syscall
@@ -287,18 +294,18 @@ fn sys_free(ptr: usize) {
     }
 }
 
-fn sys_add_task(entry: usize, user_stack: usize) {
+fn sys_add_task(entry: usize, user_rsp: usize) -> usize {
     // We assume stack size 16KB for new user tasks
     let stack_size = 16384;
-    crate::scheduler::add_new_user_task(entry as u64, user_stack as u64, stack_size);
+    crate::scheduler::add_new_user_task(entry as u64, user_rsp as u64, stack_size)
 }
 
 fn sys_switch_task() {
     crate::scheduler::switch_task();
 }
 
-fn sys_terminate_task() {
-    crate::scheduler::terminate_task();
+fn sys_terminate_task(exit_code: usize) {
+    crate::scheduler::terminate_task(exit_code);
 }
 
 fn sys_nvme_read(lba: usize, ptr: usize, count: usize) -> i32 {
@@ -484,4 +491,12 @@ fn sys_fsrm(filename_ptr: usize, filename_len: usize) -> i32 {
         Ok(()) => 0,
         Err(e) => e.code(),
     }
+}
+
+fn sys_get_task_status(task_id: usize) -> usize {
+    crate::scheduler::get_task_status(task_id)
+}
+
+fn sys_get_task_exit_code(task_id: usize) -> usize {
+    crate::scheduler::get_task_exit_code(task_id)
 }
