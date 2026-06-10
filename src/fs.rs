@@ -149,6 +149,7 @@ pub const DIR_BLOCKS: u64 = 16;
 pub const DATA_START_LBA: u64 = 1 + DIR_BLOCKS; // 17
 pub const MAX_FILES: usize = (DIR_BLOCKS as usize) * 8; // 128 (8 entries of 64 bytes per block)
 pub const SFS_MAGIC: u64 = 0x5349_4d50_4c45_4653; // "SIMPLEFS" in ASCII
+pub const MAX_BLOCKS: u64 = 2_097_152; // 1GB NVMe capacity (2097152 blocks of 512 bytes)
 
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
@@ -307,20 +308,17 @@ pub fn create_file(name: &str, data: &[u8]) -> FsResult<()> {
     // Calculate blocks needed
     let blocks_needed = (data.len() + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-    // Write data to blocks
+    // Check capacity bounds
     let start_block = sb.next_free_block;
-    let mut block_buf = [0u8; BLOCK_SIZE];
-    for i in 0..blocks_needed {
-        let lba = start_block + (i as u64);
-        let data_offset = i * BLOCK_SIZE;
-        let data_len = (data.len() - data_offset).min(BLOCK_SIZE);
+    if start_block + blocks_needed as u64 > MAX_BLOCKS {
+        return Err(FsError::NoSpace);
+    }
 
-        block_buf[..data_len].copy_from_slice(&data[data_offset..data_offset + data_len]);
-        if data_len < BLOCK_SIZE {
-            block_buf[data_len..].fill(0);
-        }
-
-        write_block(lba, &block_buf)?;
+    if blocks_needed > 0 {
+        // Write data in a single contiguous operation
+        let mut write_buf = alloc::vec![0u8; blocks_needed * BLOCK_SIZE];
+        write_buf[..data.len()].copy_from_slice(data);
+        write_blocks(start_block, blocks_needed as u32, write_buf.as_ptr())?;
     }
 
     // Construct the new directory entry
@@ -346,23 +344,15 @@ pub fn create_file(name: &str, data: &[u8]) -> FsResult<()> {
 pub fn read_file(name: &str) -> FsResult<alloc::vec::Vec<u8>> {
     if let Some((_idx, entry)) = find_file(name)? {
         let size = entry.size as usize;
-        let mut data = alloc::vec![0u8; size];
         if size == 0 {
-            return Ok(data);
+            return Ok(alloc::vec::Vec::new());
         }
 
         let blocks_to_read = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        let mut block_buf = [0u8; BLOCK_SIZE];
-        for i in 0..blocks_to_read {
-            let lba = entry.start_block + (i as u64);
-            read_block(lba, &mut block_buf)?;
-
-            let data_offset = i * BLOCK_SIZE;
-            let data_len = (size - data_offset).min(BLOCK_SIZE);
-            data[data_offset..data_offset + data_len].copy_from_slice(&block_buf[..data_len]);
-        }
-
-        Ok(data)
+        let mut buf = alloc::vec![0u8; blocks_to_read * BLOCK_SIZE];
+        read_blocks(entry.start_block, blocks_to_read as u32, buf.as_mut_ptr())?;
+        buf.truncate(size);
+        Ok(buf)
     } else {
         Err(FsError::FileNotFound)
     }
@@ -377,19 +367,99 @@ pub fn delete_file(name: &str) -> FsResult<()> {
 }
 
 fn delete_file_at(index: usize) -> FsResult<()> {
-    let entry = FileEntry {
+    // 1. Read the target file entry to find its size and start block.
+    let block_offset = index / 8;
+    let entry_offset = (index % 8) * 64;
+    let lba = DIR_START_LBA + (block_offset as u64);
+    let mut buf = [0u8; BLOCK_SIZE];
+    read_block(lba, &mut buf)?;
+    let entry = unsafe {
+        core::ptr::read_unaligned(buf[entry_offset..].as_ptr() as *const FileEntry)
+    };
+
+    if entry.in_use == 0 {
+        return Ok(());
+    }
+
+    let deleted_start = entry.start_block;
+    let reclaimed_blocks = (entry.size + BLOCK_SIZE as u64 - 1) / BLOCK_SIZE as u64;
+
+    // 2. Clear the directory entry slot
+    let zero_entry = FileEntry {
         name: [0; 47],
         start_block: 0,
         size: 0,
         in_use: 0,
     };
-    write_directory_entry(index, &entry)?;
+    let entry_bytes = unsafe {
+        core::slice::from_raw_parts(&zero_entry as *const FileEntry as *const u8, 64)
+    };
+    buf[entry_offset..entry_offset + 64].copy_from_slice(entry_bytes);
+    write_block(lba, &buf)?;
 
+    // Update superblock file count
     let mut sb = read_superblock()?;
     if sb.file_count > 0 {
         sb.file_count -= 1;
         write_superblock(&sb)?;
     }
+
+    // 3. Compact files that are after deleted_start
+    if reclaimed_blocks > 0 {
+        // Collect all active entries with start_block > deleted_start
+        let mut active_entries = alloc::vec::Vec::new();
+        for idx in 0..MAX_FILES {
+            let b_offset = idx / 8;
+            let e_offset = (idx % 8) * 64;
+            let dir_lba = DIR_START_LBA + (b_offset as u64);
+            let mut dir_buf = [0u8; BLOCK_SIZE];
+            read_block(dir_lba, &mut dir_buf)?;
+            let ent = unsafe {
+                core::ptr::read_unaligned(dir_buf[e_offset..].as_ptr() as *const FileEntry)
+            };
+            if ent.in_use == 1 && ent.start_block > deleted_start {
+                active_entries.push((idx, ent.start_block, ent.size));
+            }
+        }
+
+        // Sort them by start_block ascending to copy them safely from left to right (low to high addresses)
+        active_entries.sort_by_key(|&(_, start_block, _)| start_block);
+
+        // Shift blocks for each file and update directory entries
+        for (idx, start_block, size) in active_entries {
+            let file_blocks = (size + BLOCK_SIZE as u64 - 1) / BLOCK_SIZE as u64;
+            let new_start = start_block - reclaimed_blocks;
+
+            // Copy blocks one-by-one in ascending order
+            for i in 0..file_blocks {
+                let mut temp_buf = [0u8; BLOCK_SIZE];
+                read_block(start_block + i, &mut temp_buf)?;
+                write_block(new_start + i, &temp_buf)?;
+            }
+
+            // Update entry start_block
+            let b_offset = idx / 8;
+            let e_offset = (idx % 8) * 64;
+            let dir_lba = DIR_START_LBA + (b_offset as u64);
+            let mut dir_buf = [0u8; BLOCK_SIZE];
+            read_block(dir_lba, &mut dir_buf)?;
+            let mut ent = unsafe {
+                core::ptr::read_unaligned(dir_buf[e_offset..].as_ptr() as *const FileEntry)
+            };
+            ent.start_block = new_start;
+            let ent_bytes = unsafe {
+                core::slice::from_raw_parts(&ent as *const FileEntry as *const u8, 64)
+            };
+            dir_buf[e_offset..e_offset + 64].copy_from_slice(ent_bytes);
+            write_block(dir_lba, &dir_buf)?;
+        }
+
+        // 4. Update next_free_block in Superblock
+        let mut sb = read_superblock()?;
+        sb.next_free_block -= reclaimed_blocks;
+        write_superblock(&sb)?;
+    }
+
     Ok(())
 }
 

@@ -54,6 +54,10 @@ fn parse_expr(tokens: &[Token], i: &mut usize) -> Result<Expr, String> {
             *i += 1;
             Ok(Expr::Number(*n))
         }
+        Some(Token::CharLiteral(n)) => {
+            *i += 1;
+            Ok(Expr::Number(*n))
+        }
         Some(Token::Ident(name)) => {
             let name = name.clone();
             *i += 1;
