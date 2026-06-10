@@ -383,6 +383,7 @@ const HID_ASCII_TABLE: [u8; 128] = {
     table[0x26] = b'9';
     table[0x27] = b'0';
     table[0x28] = b'\n'; // Enter
+    table[0x29] = 0x1B; // Escape
     table[0x2a] = 0x08; // Backspace
     table[0x2b] = b'\t'; // Tab
     table[0x2c] = b' '; // Space
@@ -446,6 +447,7 @@ const HID_ASCII_SHIFT_TABLE: [u8; 128] = {
     table[0x26] = b'(';
     table[0x27] = b')';
     table[0x28] = b'\n'; // Enter
+    table[0x29] = 0x1B; // Escape
     table[0x2a] = 0x08; // Backspace
     table[0x2b] = b'\t'; // Tab
     table[0x2c] = b' '; // Space
@@ -711,10 +713,10 @@ pub unsafe fn process_events() {
             let code = trb.completion_code();
             let slot_id = trb.slot_id();
             let param = trb.param;
-            println!(
-                "xHCI: Event: Command Completion. Code={}, SlotID={}, Param={:#x}",
-                code, slot_id, param
-            );
+            //println!(
+            //    "xHCI: Event: Command Completion. Code={}, SlotID={}, Param={:#x}",
+            //    code, slot_id, param
+            //);
             unsafe {
                 write_volatile(core::ptr::addr_of_mut!(LAST_COMPLETION_CODE), code);
                 write_volatile(core::ptr::addr_of_mut!(LAST_SLOT_ID), slot_id);
