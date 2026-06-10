@@ -2,6 +2,7 @@
 
 ## need update
 ## ⚠️ Note:there is no asm keyword anymore
+## src/cc/cc_syntax.md
 
 A custom Operating System written in Rust, targeting the x86_64 UEFI architecture. This project demonstrates key OS concepts including UEFI booting, graphical user interface, user-mode execution, system calls, and device driver support (NVMe & xHCI).
 
