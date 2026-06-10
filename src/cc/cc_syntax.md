@@ -2,7 +2,7 @@
 
 This document describes the syntax accepted by the tiny C JIT compiler (`src/cc/`).
 
-All values are **`uint64_t`** (unsigned 64-bit integers). There are no other types.
+All values are **`uint64_t`** (unsigned 64-bit integers). **`char`** is also accepted as a type name and behaves identically to `uint64_t` — it is stored as a `u64`.
 
 ---
 
@@ -125,8 +125,29 @@ An expression evaluates to a `uint64_t` value (placed in `rax`).
 | Form | Description | Example |
 |------|-------------|---------|
 | `<number>` | Unsigned 64-bit integer literal (decimal) | `42` |
+| `'<char>'` | Character literal (stored as its byte value, a `u64`) | `'A'` |
 | `<name>` | Variable / parameter reference | `x` |
 | `<name>(<args>)` | Function call with 0–6 arguments | `add(1, 2)` |
+
+### Character Literals
+
+A character literal is a single character enclosed in single quotes. It evaluates to the ASCII byte value of the character as a `u64`.
+
+Supported escape sequences:
+
+| Escape | Value |
+|--------|-------|
+| `\n` | Newline (10) |
+| `\r` | Carriage return (13) |
+| `\t` | Tab (9) |
+| `\\` | Backslash (92) |
+| `\'` | Single quote (39) |
+| `\0` | Null (0) |
+
+```c
+char c = 'A';        // c == 65
+char nl = '\n';      // nl == 10
+```
 
 > **Note:** There are no arithmetic operators (`+`, `-`, `*`, `/`, etc.). Computation must be done via inline assembly or helper functions.
 
@@ -140,6 +161,7 @@ The lexer recognizes the following tokens:
 |-------|---------|
 | Identifier | `[a-zA-Z_][a-zA-Z0-9_]*` |
 | Number | `[0-9]+` (parsed as `u64`) |
+| Char literal | `'<char>'` with escape sequences `\n \r \t \\ \' \0` |
 | String literal | `"..."` with escape sequences `\n \r \t \\ \"` |
 | `(` | Left parenthesis |
 | `)` | Right parenthesis |
@@ -156,7 +178,7 @@ Whitespace (spaces, tabs, newlines) is ignored between tokens.
 
 ## Limitations
 
-- **Only `uint64_t` values.** No other types, no pointers, no structs, no arrays.
+- **Only `uint64_t` / `char` values.** Both are stored as `u64`. No pointers, no structs, no arrays.
 - **No arithmetic operators.** Use `asm(...)` for arithmetic.
 - **No control flow.** No `if`, `while`, `for`, `goto`, etc.
 - **Max 6 function parameters** (System V AMD64 ABI register limit).

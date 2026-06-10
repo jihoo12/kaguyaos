@@ -6,6 +6,7 @@ use alloc::format;
 pub enum Token {
     Ident(String),
     Number(u64),
+    CharLiteral(u64),
     StringLiteral(String),
     LParen,
     RParen,
@@ -31,6 +32,35 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
             ';' => { tokens.push(Token::Semicolon); chars.next(); }
             ',' => { tokens.push(Token::Comma);     chars.next(); }
             '=' => { tokens.push(Token::Equal);     chars.next(); }
+            '\'' => {
+                chars.next(); // Consume opening quote
+                let ch_val = if let Some(&c) = chars.peek() {
+                    if c == '\\' {
+                        chars.next();
+                        match chars.next() {
+                            Some('n')  => b'\n' as u64,
+                            Some('r')  => b'\r' as u64,
+                            Some('t')  => b'\t' as u64,
+                            Some('\\') => b'\\' as u64,
+                            Some('\'') => b'\'' as u64,
+                            Some('0')  => 0u64,
+                            Some(other) => return Err(format!("Unknown char escape: '\\{}'", other)),
+                            None => return Err(format!("Unterminated char literal")),
+                        }
+                    } else {
+                        chars.next();
+                        c as u64
+                    }
+                } else {
+                    return Err(format!("Unterminated char literal"));
+                };
+                // Expect closing single quote
+                match chars.next() {
+                    Some('\'') => {}
+                    _ => return Err(format!("Unterminated char literal, expected closing '")),
+                }
+                tokens.push(Token::CharLiteral(ch_val));
+            }
             '"' => {
                 chars.next(); // Consume opening quote
                 let mut content = String::new();

@@ -68,13 +68,14 @@ impl Shell {
         if let Some(cmd) = parts.next() {
             match cmd {
                 "help" => {
-                    print("Commands: help, echo, history, clear, shutdown, load, fsformat, fsls, fswrite, fsread, fsrm\n");
+                    print("Commands: help, echo, history, clear, shutdown, compile, load, fsformat, fsls, fswrite, fsread, fsrm\n");
                     print("  help                 - show this help menu\n");
                     print("  echo [args...]       - print the arguments to the screen\n");
                     print("  history              - show the command history\n");
                     print("  clear                - clear the screen\n");
                     print("  shutdown             - shut down the machine\n");
-                    print("  load <file>          - load a file and run it as a process using cc (.c) or tinyasm (.asm/.s)\n");
+                    print("  compile <src> <dest> - compile/assemble a source file (.c/.asm/.s) to machine code\n");
+                    print("  load <file...>       - load one or more files and run them as processes (compiles .c/.asm/.s, runs others as raw machine code)\n");
                     print("  fsformat             - format the NVMe drive with SimpleFS\n");
                     print("  fsls                 - list files in the filesystem\n");
                     print("  fswrite <file> <msg> - write a file with text message (inline)\n");
@@ -234,58 +235,106 @@ impl Shell {
                         print("Usage: fsrm <filename>\n");
                     }
                 }
-                "load" => {
-                    if let Some(filename) = parts.next() {
+                "compile" => {
+                    let mut src_file = "";
+                    let mut dest_file = "";
+                    if let Some(src) = parts.next() {
+                        src_file = src;
+                    }
+                    if let Some(dest) = parts.next() {
+                        dest_file = dest;
+                    }
+                    if src_file.is_empty() || dest_file.is_empty() {
+                        print("Usage: compile <src_file> <dest_file>\n");
+                    } else {
                         let mut size_buf = [];
-                        match crate::std::fs_read(filename, &mut size_buf) {
+                        match crate::std::fs_read(src_file, &mut size_buf) {
                             Ok(size) => {
                                 let mut data = alloc::vec![0u8; size];
-                                match crate::std::fs_read(filename, &mut data) {
+                                match crate::std::fs_read(src_file, &mut data) {
                                     Ok(_) => {
-                                        match core::str::from_utf8(&data) {
-                                            Ok(content_str) => {
-                                                let compile_res = if filename.ends_with(".c") || filename.ends_with(".C") {
-                                                    compile_c_to_bytes(content_str)
-                                                } else if filename.ends_with(".asm") || filename.ends_with(".s") || filename.ends_with(".ASM") || filename.ends_with(".S") {
-                                                    assemble_to_bytes(content_str)
-                                                } else {
-                                                    Err(alloc::string::String::from("Unsupported file extension. Only .c, .asm, and .s files are supported."))
-                                                };
-
-                                                match compile_res {
-                                                    Ok(code) => {
-                                                        match run_as_process(&code) {
-                                                            Ok(_) => {}
-                                                            Err(e) => {
-                                                                let msg = alloc::format!("Process run error: {}\n", e);
-                                                                print(&msg);
-                                                            }
-                                                        }
+                                        match compile_data_by_ext(src_file, &data) {
+                                            Ok(code) => {
+                                                match crate::std::fs_write(dest_file, &code) {
+                                                    Ok(_) => {
+                                                        let msg = alloc::format!("Compiled {} successfully to {}\n", src_file, dest_file);
+                                                        print(&msg);
                                                     }
                                                     Err(e) => {
-                                                        let msg = alloc::format!("Compile/Assemble error: {}\n", e);
+                                                        let msg = alloc::format!("Error writing compiled output: {}\n", e);
                                                         print(&msg);
                                                     }
                                                 }
                                             }
-                                            Err(_) => {
-                                                print("Error: File content is not valid UTF-8.\n");
+                                            Err(e) => {
+                                                let msg = alloc::format!("Compile/Assemble error: {}\n", e);
+                                                print(&msg);
                                             }
                                         }
                                     }
                                     Err(e) => {
-                                        let msg = alloc::format!("Error reading file: {}\n", e);
+                                        let msg = alloc::format!("Error reading source file: {}\n", e);
                                         print(&msg);
                                     }
                                 }
                             }
                             Err(e) => {
-                                let msg = alloc::format!("Error reading file: {}\n", e);
+                                let msg = alloc::format!("Error reading source file: {}\n", e);
                                 print(&msg);
                             }
                         }
+                    }
+                }
+                "load" => {
+                    let files: alloc::vec::Vec<&str> = parts.collect();
+                    if files.is_empty() {
+                        print("Usage: load <file1> [file2...]\n");
                     } else {
-                        print("Usage: load <filename>\n");
+                        for filename in files {
+                            let mut size_buf = [];
+                            match crate::std::fs_read(filename, &mut size_buf) {
+                                Ok(size) => {
+                                    let mut data = alloc::vec![0u8; size];
+                                    match crate::std::fs_read(filename, &mut data) {
+                                        Ok(_) => {
+                                            let is_c = filename.ends_with(".c") || filename.ends_with(".C");
+                                            let is_asm = filename.ends_with(".asm") || filename.ends_with(".ASM") ||
+                                                         filename.ends_with(".s") || filename.ends_with(".S");
+                                            let compile_res = if is_c || is_asm {
+                                                compile_data_by_ext(filename, &data)
+                                            } else {
+                                                // Execute raw machine code directly
+                                                Ok(data)
+                                            };
+
+                                            match compile_res {
+                                                Ok(code) => {
+                                                    match run_as_process(&code) {
+                                                        Ok(_) => {}
+                                                        Err(e) => {
+                                                            let msg = alloc::format!("Process run error for {}: {}\n", filename, e);
+                                                            print(&msg);
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    let msg = alloc::format!("Compile/Assemble/Load error for {}: {}\n", filename, e);
+                                                    print(&msg);
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            let msg = alloc::format!("Error reading file {}: {}\n", filename, e);
+                                            print(&msg);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let msg = alloc::format!("Error reading file {}: {}\n", filename, e);
+                                    print(&msg);
+                                }
+                            }
+                        }
                     }
                 }
                 _ => {
@@ -332,6 +381,23 @@ impl Shell {
                 }
             }
         }
+    }
+}
+
+fn compile_data_by_ext(filename: &str, data: &[u8]) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
+    let is_c = filename.ends_with(".c") || filename.ends_with(".C");
+    let is_asm = filename.ends_with(".asm") || filename.ends_with(".ASM") ||
+                 filename.ends_with(".s") || filename.ends_with(".S");
+    if is_c {
+        let content_str = core::str::from_utf8(data)
+            .map_err(|_| alloc::string::String::from("File content is not valid UTF-8 for compilation."))?;
+        compile_c_to_bytes(content_str)
+    } else if is_asm {
+        let content_str = core::str::from_utf8(data)
+            .map_err(|_| alloc::string::String::from("File content is not valid UTF-8 for assembly."))?;
+        assemble_to_bytes(content_str)
+    } else {
+        Err(alloc::string::String::from("Unsupported file extension. Only .c, .asm, and .s files are supported."))
     }
 }
 
