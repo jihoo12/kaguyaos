@@ -24,6 +24,8 @@ pub(crate) static mut KERNEL_GS_BASE: KernelGsBase = KernelGsBase {
     scratch: 0,
 };
 
+static XHCI_LOCK: crate::interrupts::InterruptSpinlock<()> = crate::interrupts::InterruptSpinlock::new(());
+
 pub unsafe fn get_global_gs_base() -> u64 {
     core::ptr::addr_of_mut!(KERNEL_GS_BASE) as u64
 }
@@ -187,6 +189,7 @@ extern "sysv64" fn syscall_dispatcher_impl(
         }
         9 => {
             // sys_xhci_poll()
+            let _guard = XHCI_LOCK.lock();
             unsafe {
                 crate::xhci::process_events();
             }
@@ -339,6 +342,7 @@ fn sys_shutdown() {
 }
 
 fn sys_read_key() -> usize {
+    let _guard = XHCI_LOCK.lock();
     if let Some(key) = crate::xhci::get_key() {
         key as usize
     } else {

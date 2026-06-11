@@ -3,12 +3,11 @@ use core::fmt;
 use core::fmt::Write;
 use font8x8::{BASIC_FONTS, UnicodeFonts};
 
-pub static mut GLOBAL_WRITER: Option<Writer> = None;
+pub static GLOBAL_WRITER: crate::interrupts::InterruptSpinlock<Option<Writer>> = crate::interrupts::InterruptSpinlock::new(None);
 
 pub unsafe fn init_global_writer(info: BootInfo) {
-    unsafe {
-        GLOBAL_WRITER = Some(Writer::new(info));
-    }
+    let mut writer = GLOBAL_WRITER.lock();
+    *writer = Some(Writer::new(info));
 }
 
 pub struct Writer {
@@ -17,6 +16,8 @@ pub struct Writer {
     x_pos: usize,
     y_pos: usize,
 }
+unsafe impl Send for Writer {}
+
 impl Writer {
     pub fn new(info: BootInfo) -> self::Writer {
         Self {
@@ -114,11 +115,9 @@ impl Writer {
 }
 
 pub fn clear() {
-    unsafe {
-        #[allow(static_mut_refs)]
-        if let Some(writer) = GLOBAL_WRITER.as_mut() {
-            writer.clear_screen();
-        }
+    let mut writer = GLOBAL_WRITER.lock();
+    if let Some(w) = writer.as_mut() {
+        w.clear_screen();
     }
 }
 
@@ -132,11 +131,9 @@ impl fmt::Write for Writer {
 }
 
 pub fn _print(args: fmt::Arguments) {
-    unsafe {
-        #[allow(static_mut_refs)]
-        if let Some(writer) = GLOBAL_WRITER.as_mut() {
-            writer.write_fmt(args).unwrap();
-        }
+    let mut writer = GLOBAL_WRITER.lock();
+    if let Some(w) = writer.as_mut() {
+        w.write_fmt(args).unwrap();
     }
 }
 

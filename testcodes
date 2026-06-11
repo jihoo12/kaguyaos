@@ -1,8 +1,0 @@
-asm mov rbx, 100; lea rax, [rbx + 23]
-# Expected Result: 123
-
-asm mov rbx, 10; mov rcx, 7; lea rax, [rbx + rcx*4 + 5]
-# Expected Result: 43
-
-asm mov r8, 1000; mov r9, 3; lea rax, [r8 + r9*8 - 24]
-# Expected Result: 1000

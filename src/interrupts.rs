@@ -7,6 +7,116 @@ use core::mem::size_of;
 
 pub const KERNEL_CODE_SEL: u16 = 0x08;
 
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::cell::UnsafeCell;
+use core::ops::{Deref, DerefMut};
+
+pub struct InterruptSpinlock<T> {
+    lock: AtomicBool,
+    data: UnsafeCell<T>,
+}
+
+unsafe impl<T: Send> Sync for InterruptSpinlock<T> {}
+unsafe impl<T: Send> Send for InterruptSpinlock<T> {}
+
+impl<T> InterruptSpinlock<T> {
+    pub const fn new(data: T) -> Self {
+        Self {
+            lock: AtomicBool::new(false),
+            data: UnsafeCell::new(data),
+        }
+    }
+
+    pub fn lock(&self) -> InterruptSpinlockGuard<T> {
+        let rflags = unsafe {
+            let r: u64;
+            core::arch::asm!("pushfq; pop {}", out(reg) r, options(nomem, preserves_flags));
+            r
+        };
+        unsafe {
+            core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+        }
+        let interrupts_enabled = (rflags & (1 << 9)) != 0;
+
+        while self
+            .lock
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+
+        InterruptSpinlockGuard {
+            lock: self,
+            interrupts_enabled,
+        }
+    }
+
+    pub fn try_lock(&self) -> Option<InterruptSpinlockGuard<T>> {
+        let rflags = unsafe {
+            let r: u64;
+            core::arch::asm!("pushfq; pop {}", out(reg) r, options(nomem, preserves_flags));
+            r
+        };
+        unsafe {
+            core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+        }
+        let interrupts_enabled = (rflags & (1 << 9)) != 0;
+
+        if self
+            .lock
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            Some(InterruptSpinlockGuard {
+                lock: self,
+                interrupts_enabled,
+            })
+        } else {
+            if interrupts_enabled {
+                unsafe {
+                    core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+                }
+            }
+            None
+        }
+    }
+
+    pub unsafe fn force_unlock(&self) {
+        self.lock.store(false, Ordering::Release);
+    }
+}
+
+pub struct InterruptSpinlockGuard<'a, T> {
+    lock: &'a InterruptSpinlock<T>,
+    interrupts_enabled: bool,
+}
+
+impl<'a, T> Deref for InterruptSpinlockGuard<'a, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        unsafe { &*self.lock.data.get() }
+    }
+}
+
+impl<'a, T> DerefMut for InterruptSpinlockGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        unsafe { &mut *self.lock.data.get() }
+    }
+}
+
+impl<'a, T> Drop for InterruptSpinlockGuard<'a, T> {
+    fn drop(&mut self) {
+        self.lock.lock.store(false, Ordering::Release);
+        if self.interrupts_enabled {
+            unsafe {
+                core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+            }
+        }
+    }
+}
+
+
 #[allow(dead_code)]
 unsafe extern "C" {
     fn isr0();
@@ -244,8 +354,8 @@ const EXCEPTION_MESSAGES: [&str; 32] = [
 pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) {
     let int_no = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).int_no)) };
     if !(32..48).contains(&int_no) {
-        #[allow(static_mut_refs)]
-        if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
+        let mut writer_guard = GLOBAL_WRITER.lock();
+        if let Some(writer) = writer_guard.as_mut() {
             let _ = writeln!(writer, "Invalid IRQ vector: {:#x}", int_no);
         }
         return;
@@ -260,8 +370,8 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) {
         }
         _ =>
         {
-            #[allow(static_mut_refs)]
-            if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
+            let mut writer_guard = GLOBAL_WRITER.lock();
+            if let Some(writer) = writer_guard.as_mut() {
                 let _ = writeln!(writer, "Unknown IRQ: {}", irq);
             }
         }
@@ -285,8 +395,16 @@ pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {
     let rdi = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rdi)) };
     let rbp = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rbp)) };
 
-    #[allow(static_mut_refs)]
-    if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
+    let mut writer_guard = if let Some(guard) = GLOBAL_WRITER.try_lock() {
+        guard
+    } else {
+        unsafe {
+            GLOBAL_WRITER.force_unlock();
+        }
+        GLOBAL_WRITER.lock()
+    };
+
+    if let Some(writer) = writer_guard.as_mut() {
         let _ = writeln!(writer, "\nEXCEPTION OCCURRED!");
         let _ = write!(writer, "INTERRUPT: {:#x} ", int_no);
         if (int_no as usize) < EXCEPTION_MESSAGES.len() {
@@ -321,10 +439,10 @@ pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {
     // of halting the entire system.
     let cpl = cs & 0x3;
     if cpl == 3 {
-        #[allow(static_mut_refs)]
-        if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
+        if let Some(writer) = writer_guard.as_mut() {
             let _ = writeln!(writer, "Killing user process due to exception.");
         }
+        core::mem::drop(writer_guard);
         // terminate_task marks the current task Terminated, records an error
         // exit code, then calls switch_task which context-switches away.
         // We should never return here.
@@ -341,8 +459,8 @@ pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn debug_print_int_no(frame: *mut u8, val: u64) {
-    #[allow(static_mut_refs)]
-    if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
+    let mut writer_guard = GLOBAL_WRITER.lock();
+    if let Some(writer) = writer_guard.as_mut() {
         let _ = writeln!(
             writer,
             "DEBUG: RSP={:#x}, offset120={:#x}",

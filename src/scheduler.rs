@@ -30,10 +30,12 @@ pub struct Scheduler {
 
 static mut SCHEDULER: Option<Scheduler> = None;
 static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1); // 0 is reserved for main kernel task
+static SCHEDULER_LOCK: crate::interrupts::InterruptSpinlock<()> = crate::interrupts::InterruptSpinlock::new(());
 
 /// Initialize the global scheduler.
 /// This must be called only once.
 pub unsafe fn init() {
+    let _guard = SCHEDULER_LOCK.lock();
     unsafe {
         SCHEDULER = Some(Scheduler {
             tasks: Vec::new(),
@@ -58,6 +60,7 @@ pub unsafe fn init() {
 }
 
 pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize) -> usize {
+    let _guard = SCHEDULER_LOCK.lock();
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_mut() {
             let id = NEXT_TASK_ID.fetch_add(1, Ordering::SeqCst);
@@ -138,6 +141,7 @@ unsafe extern "C" fn user_task_trampoline() {
 }
 
 pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size: usize) {
+    let _guard = SCHEDULER_LOCK.lock();
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_mut() {
             let id = NEXT_TASK_ID.fetch_add(1, Ordering::SeqCst);
@@ -197,6 +201,7 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
 
 pub fn switch_task() {
     unsafe {
+        let guard = SCHEDULER_LOCK.lock();
         if let Some(scheduler) = SCHEDULER.as_mut() {
             let current_index = scheduler.current_task_index;
 
@@ -224,6 +229,7 @@ pub fn switch_task() {
                 // If no other task is Ready, check if current is still runnable.
                 if scheduler.tasks[current_index].status == TaskStatus::Terminated {
                     // We are terminated and no one else to run? deadlock/halt
+                    core::mem::drop(guard);
                     crate::println!("All tasks could be terminated, or deadlock. Halting.");
                     loop {
                         core::arch::asm!("hlt");
@@ -257,6 +263,9 @@ pub fn switch_task() {
                 wrmsr(0xC0000101, new_gs_base);
             }
 
+            // Drop SCHEDULER_LOCK immediately before context switch to prevent deadlock
+            core::mem::drop(guard);
+
             // Perform the low-level switch
             context_switch(old_stack_ref, new_stack);
         }
@@ -272,6 +281,7 @@ unsafe fn wrmsr(msr: u32, value: u64) {
 }
 
 pub fn terminate_task(exit_code: usize) {
+    let guard = SCHEDULER_LOCK.lock();
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_mut() {
             let current_index = scheduler.current_task_index;
@@ -280,7 +290,8 @@ pub fn terminate_task(exit_code: usize) {
 
             crate::println!("Task {} terminated with exit code {}.", scheduler.tasks[current_index].id, exit_code);
 
-            // Force switch
+            // Drop lock before calling switch_task which has its own lock!
+            core::mem::drop(guard);
             switch_task();
         }
     }
@@ -312,6 +323,7 @@ unsafe extern "sysv64" fn context_switch(old_stack_ptr: *mut u64, new_stack_ptr:
 
 // Helper to get current task id
 pub fn current_task_id() -> usize {
+    let _guard = SCHEDULER_LOCK.lock();
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_ref() {
             scheduler.tasks[scheduler.current_task_index].id
@@ -322,6 +334,7 @@ pub fn current_task_id() -> usize {
 }
 
 pub fn get_task_status(task_id: usize) -> usize {
+    let _guard = SCHEDULER_LOCK.lock();
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_ref() {
             for task in &scheduler.tasks {
@@ -339,6 +352,7 @@ pub fn get_task_status(task_id: usize) -> usize {
 }
 
 pub fn get_task_exit_code(task_id: usize) -> usize {
+    let _guard = SCHEDULER_LOCK.lock();
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_ref() {
             for task in &scheduler.tasks {
