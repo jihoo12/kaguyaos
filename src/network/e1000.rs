@@ -266,6 +266,14 @@ impl NetworkDriver for E1000 {
         ctx.rx_next = (idx + 1) % RING_SIZE;
         copy_len
     }
+
+    unsafe fn mac_address(&self) -> [u8; 6] {
+        let ctx = &*addr_of_mut!(E1000_CTX);
+        if ctx.mmio.is_null() {
+            return [0u8; 6];
+        }
+        read_mac(ctx.mmio)
+    }
 }
 
 unsafe fn read_reg(mmio: *mut u8, offset: u32) -> u32 {
@@ -282,9 +290,26 @@ unsafe fn reset(mmio: *mut u8) {
 }
 
 unsafe fn setup_mac(mmio: *mut u8) {
-    // QEMU e1000 default MAC; good enough for a bring-up driver.
-    write_reg(mmio, REG_RAL, 0x52_54_00_12);
-    write_reg(mmio, REG_RAH, 0x80_00_00_34);
+    // QEMU e1000 default MAC 52:54:00:12:34:56, packed as the hardware expects:
+    //   RAL[31:0]  = bytes 0-3 of MAC => 52:54:00:12 => 0x1200_5452 (little-endian)
+    //   RAH[15:0]  = bytes 4-5 of MAC => 34:56       => 0x5634      (little-endian)
+    //   RAH[31]    = Address Valid bit
+    write_reg(mmio, REG_RAL, 0x1200_5452_u32);
+    write_reg(mmio, REG_RAH, 0x8000_5634_u32);
+}
+
+/// Read the MAC address that was programmed into the Receive Address registers.
+pub unsafe fn read_mac(mmio: *mut u8) -> [u8; 6] {
+    let ral = read_reg(mmio, REG_RAL);
+    let rah = read_reg(mmio, REG_RAH);
+    [
+        (ral & 0xFF) as u8,
+        ((ral >> 8) & 0xFF) as u8,
+        ((ral >> 16) & 0xFF) as u8,
+        ((ral >> 24) & 0xFF) as u8,
+        (rah & 0xFF) as u8,
+        ((rah >> 8) & 0xFF) as u8,
+    ]
 }
 
 unsafe fn setup_rx_ring(mmio: *mut u8) {

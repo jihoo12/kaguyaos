@@ -14,7 +14,7 @@ qemu-system-x86_64 \
     -device qemu-xhci,id=xhci,msi=off,msix=off \
     -device usb-kbd,bus=xhci.0 \
     -device e1000,netdev=net0 \
-    -netdev user,id=net0 \
+    -netdev user,id=net0,hostfwd=udp::5555-:5555 \
     -serial stdio \
     -d int,cpu_reset \
     -no-reboot \
