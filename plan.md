@@ -1,0 +1,1 @@
+implement spinlock for prepare interrupt and xhci,nvme,network in multicore 
