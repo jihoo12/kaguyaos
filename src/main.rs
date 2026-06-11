@@ -9,9 +9,9 @@ use core::ffi::c_void;
 use uefi::*;
 
 use crate::shell::shell;
+pub mod cc;
 pub mod std;
 pub mod tinyasm;
-pub mod cc;
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -158,7 +158,10 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             match fs::read_superblock() {
                 Ok(sb) => {
                     let file_count = sb.file_count;
-                    println!("FS: SimpleFS mounted successfully. Active files: {}", file_count);
+                    println!(
+                        "FS: SimpleFS mounted successfully. Active files: {}",
+                        file_count
+                    );
                 }
                 Err(_) => {
                     println!("FS: SimpleFS is not formatted.");
@@ -235,6 +238,10 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             let pml4 = memory::get_table_mut(pml4_phys);
             network::init(pml4, &mut allocator, device);
         }
+        let ip = network::get_ip_address();
+        let mac = unsafe { network::get_mac_address() };
+        println!("ip:{:?}", ip);
+        println!("mac:{:?}", mac);
     } else {
         println!("No Ethernet device found!");
     }
