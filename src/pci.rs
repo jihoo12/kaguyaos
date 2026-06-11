@@ -12,6 +12,9 @@ pub const PCI_CLASS_SERIAL_BUS: u8 = 0x0C;
 pub const PCI_SUBCLASS_USB: u8 = 0x03;
 pub const PCI_PROG_IF_XHCI: u8 = 0x30;
 
+pub const PCI_CLASS_NETWORK: u8 = 0x02;
+pub const PCI_SUBCLASS_ETHERNET: u8 = 0x00;
+
 #[derive(Debug, Clone, Copy)]
 pub struct PciDevice {
     pub bus: u8,
@@ -25,6 +28,7 @@ pub struct PciDevice {
 
 static mut NVME_DEVICE: Option<PciDevice> = None;
 static mut XHCI_DEVICE: Option<PciDevice> = None;
+static mut ETHERNET_DEVICE: Option<PciDevice> = None;
 
 pub fn init() {
     unsafe {
@@ -38,6 +42,20 @@ pub fn get_nvme_device() -> Option<PciDevice> {
 
 pub fn get_xhci_device() -> Option<PciDevice> {
     unsafe { XHCI_DEVICE }
+}
+
+pub fn get_ethernet_device() -> Option<PciDevice> {
+    unsafe { ETHERNET_DEVICE }
+}
+
+/// Decode the physical MMIO base address for a device's BAR0.
+pub fn mmio_bar0(device: &PciDevice) -> u64 {
+    let mut base = (device.bar0 as u64) & 0xFFFF_FFF0;
+    let bar_type = (device.bar0 >> 1) & 0x3;
+    if bar_type == 2 {
+        base |= (device.bar1 as u64) << 32;
+    }
+    base
 }
 
 unsafe fn scan_bus() {
@@ -148,6 +166,37 @@ unsafe fn check_function(bus: u8, dev: u8, func: u8) {
         // Enable Bus Master and Memory Space in Command Register (Offset 0x04)
         let mut cmd = unsafe { read_config_16(bus, dev, func, 0x04) };
         cmd |= 0x0006; // Bit 1: Memory Space, Bit 2: Bus Master
+        unsafe {
+            write_config_32(bus, dev, func, 0x04, cmd as u32);
+        }
+    } else if class_code == PCI_CLASS_NETWORK && sub_class == PCI_SUBCLASS_ETHERNET {
+        let bar0 = unsafe { read_config_32(bus, dev, func, 0x10) };
+        let bar1 = unsafe { read_config_32(bus, dev, func, 0x14) };
+
+        let device = PciDevice {
+            bus,
+            device: dev,
+            function: func,
+            vendor_id,
+            device_id,
+            bar0,
+            bar1,
+        };
+
+        unsafe {
+            ETHERNET_DEVICE = Some(device);
+        }
+        println!(
+            "PCI: Found Ethernet controller at {}:{}:{}",
+            bus, dev, func
+        );
+        println!(
+            "Vendor ID: {:#04x}, Device ID: {:#04x}",
+            vendor_id, device_id
+        );
+
+        let mut cmd = unsafe { read_config_16(bus, dev, func, 0x04) };
+        cmd |= 0x0006;
         unsafe {
             write_config_32(bus, dev, func, 0x04, cmd as u32);
         }

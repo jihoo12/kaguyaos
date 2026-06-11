@@ -13,7 +13,8 @@ qemu-system-x86_64 \
     -device nvme,serial=deadbeef,drive=nvm \
     -device qemu-xhci,id=xhci,msi=off,msix=off \
     -device usb-kbd,bus=xhci.0 \
-    -net none \
+    -device e1000,netdev=net0 \
+    -netdev user,id=net0 \
     -serial stdio \
     -d int,cpu_reset \
     -no-reboot \
