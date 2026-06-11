@@ -60,6 +60,7 @@ pub struct BootInfo {
     pub runtime_services: u64,
 }
 
+mod acpi;
 mod allocator;
 mod fs;
 mod gdt;
