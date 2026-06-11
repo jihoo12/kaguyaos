@@ -26,7 +26,6 @@ A custom Operating System written in Rust, targeting the x86_64 UEFI architectur
 
 To build and run this OS, you need the following tools installed:
 
-- **Rust Nightly**: Required for experimental OS features (inline assembly, naked functions, etc.).
 - **QEMU**: For system emulation (`qemu-system-x86_64`).
 - **OVMF**: UEFI firmware for QEMU.
 
