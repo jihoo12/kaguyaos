@@ -389,7 +389,7 @@ pub unsafe fn find_rsdp_in_range(start: usize, len: usize) -> Option<*const Rsdp
 /// Requires identity-mapped access to the low 1 MiB of physical memory.
 pub unsafe fn find_rsdp() -> Option<*const Rsdp> {
     // 1. Try EBDA: read its segment from 0x040E, then search first 1 KiB.
-    let ebda_segment = unsafe { *(0x040E as *const u16) } as usize;
+    let ebda_segment = unsafe { (0x040E as *const u16).read_unaligned() } as usize;
     let ebda_base = ebda_segment << 4;
     if ebda_base != 0 {
         if let Some(p) = unsafe { find_rsdp_in_range(ebda_base, 1024) } {
@@ -454,7 +454,7 @@ where
     let entry_count = (len - core::mem::size_of::<SdtHeader>()) / 4;
     let entries = unsafe { (rsdt as *const u8).add(core::mem::size_of::<SdtHeader>()) as *const u32 };
     for i in 0..entry_count {
-        let addr = unsafe { *entries.add(i) } as u64;
+        let addr = unsafe { entries.add(i).read_unaligned() } as u64;
         callback(addr);
     }
 }
@@ -473,7 +473,7 @@ where
     let entry_count = (len - core::mem::size_of::<SdtHeader>()) / 8;
     let entries = unsafe { (xsdt as *const u8).add(core::mem::size_of::<SdtHeader>()) as *const u64 };
     for i in 0..entry_count {
-        let addr = unsafe { *entries.add(i) };
+        let addr = unsafe { entries.add(i).read_unaligned() };
         callback(addr);
     }
 }
@@ -596,7 +596,7 @@ pub unsafe fn parse_madt(madt: *const SdtHeader) -> MadtInfo {
                     // 64-bit override for the Local APIC address.
                     // Layout: [header(2)] [reserved(2)] [address(8)]
                     let addr_ptr = (entry as *const u8).add(4) as *const u64;
-                    info.local_apic_address = *addr_ptr;
+                    info.local_apic_address = unsafe { addr_ptr.read_unaligned() };
                 }
                 _ => {}
             }
@@ -939,6 +939,148 @@ pub unsafe fn dump_tables(tables: &AcpiTables) {
                     "[ACPI]   PCIe segment {} buses {}-{} base {:#x}",
                     seg, sbus, ebus, base
                 );
+            });
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Page-mapping helpers (call these before accessing any ACPI data)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Map the memory regions that `find_rsdp()` must be able to read:
+///
+/// * The first 1 KiB of the Extended BIOS Data Area (EBDA), whose segment is
+///   read from physical address `0x040E`.
+/// * The BIOS ROM region `0xE0000 – 0xFFFFF` (128 KiB).
+///
+/// These regions are usually `EFI_RESERVED_MEMORY_TYPE` and therefore **not**
+/// covered by `init_paging`. Call this function right after `init_paging`
+/// returns, before calling `find_rsdp()`.
+///
+/// # Safety
+/// * `pml4` must be the active page-table root.
+/// * `allocator` must be valid.
+pub unsafe fn map_rsdp_scan_regions(
+    pml4: &mut crate::memory::PageTable,
+    allocator: &mut crate::memory::FrameAllocator,
+) {
+    use crate::memory::{map_page, PAGE_PRESENT, PAGE_WRITABLE};
+
+    const PAGE: u64 = 4096;
+    let flags = PAGE_PRESENT | PAGE_WRITABLE;
+
+    // ── EBDA ──────────────────────────────────────────────────────────────
+    // The EBDA segment is stored as a 16-bit value at physical 0x040E.
+    // We must map that word's page first so we can read it.
+    unsafe { map_page(pml4, 0x0000, 0x0000, flags, allocator) };
+
+    let ebda_segment = unsafe { (0x040E as *const u16).read_unaligned() } as u64;
+    let ebda_base = (ebda_segment << 4) & !0xFFF; // align down to page boundary
+    if ebda_base != 0 {
+        // Map the first two pages of the EBDA (covers the 1 KiB search window).
+        unsafe { map_page(pml4, ebda_base, ebda_base, flags, allocator) };
+        unsafe { map_page(pml4, ebda_base + PAGE, ebda_base + PAGE, flags, allocator) };
+    }
+
+    // ── BIOS ROM: 0xE0000 – 0xFFFFF (32 pages × 4 KiB = 128 KiB) ─────────
+    let mut addr: u64 = 0xE0000;
+    while addr < 0x100000 {
+        unsafe { map_page(pml4, addr, addr, flags, allocator) };
+        addr += PAGE;
+    }
+}
+
+/// Map every page that holds an ACPI table discovered in `tables`.
+///
+/// `find_rsdp` and `AcpiTables::from_rsdp` only store pointers — they do
+/// **not** map the pointed-to memory. Call this after `from_rsdp` returns
+/// and before dereferencing any table (including `dump_tables` or
+/// `madt_info`).
+///
+/// Tables are rounded up to 4 KiB boundaries to ensure all bytes are covered.
+///
+/// # Safety
+/// * `pml4` must be the active page-table root.
+/// * `allocator` must be valid.
+/// * All addresses inside `tables` must be physical addresses in an
+///   identity-mapped kernel.
+pub unsafe fn map_acpi_tables(
+    pml4: &mut crate::memory::PageTable,
+    allocator: &mut crate::memory::FrameAllocator,
+    tables: &AcpiTables,
+) {
+    use crate::memory::{map_page, PAGE_PRESENT, PAGE_WRITABLE};
+
+    const PAGE: u64 = 4096;
+    let flags = PAGE_PRESENT | PAGE_WRITABLE;
+
+    /// Map `len` bytes starting at `base`, rounding up to full pages.
+    unsafe fn map_region(
+        pml4: &mut crate::memory::PageTable,
+        allocator: &mut crate::memory::FrameAllocator,
+        base: u64,
+        len: usize,
+        flags: u64,
+    ) {
+        let page_base = base & !0xFFF;
+        let page_end = (base + len as u64 + 0xFFF) & !0xFFF;
+        let mut addr = page_base;
+        while addr < page_end {
+            unsafe { map_page(pml4, addr, addr, flags, allocator) };
+            addr += 4096;
+        }
+    }
+
+    // ── RSDP (20 bytes for v1, 36 for v2) ────────────────────────────────
+    let rsdp_len = if unsafe { (*tables.rsdp).revision } >= 2 {
+        core::mem::size_of::<RsdpV2>()
+    } else {
+        core::mem::size_of::<Rsdp>()
+    };
+    unsafe { map_region(pml4, allocator, tables.rsdp as u64, rsdp_len, flags) };
+
+    // Helper: map an SDT given its pointer. The SDT header's `length` field
+    // tells us the full table size (including any variable-length payload).
+    unsafe fn map_sdt(
+        pml4: &mut crate::memory::PageTable,
+        allocator: &mut crate::memory::FrameAllocator,
+        hdr: *const SdtHeader,
+        flags: u64,
+    ) {
+        // First map just the header so we can safely read `length`.
+        unsafe {
+            map_region(
+                pml4,
+                allocator,
+                hdr as u64,
+                core::mem::size_of::<SdtHeader>(),
+                flags,
+            )
+        };
+        // Now read the real length and map the rest.
+        let total = unsafe { (*hdr).length as usize };
+        if total > core::mem::size_of::<SdtHeader>() {
+            unsafe { map_region(pml4, allocator, hdr as u64, total, flags) };
+        }
+    }
+
+    // ── Root table (XSDT or RSDT) ─────────────────────────────────────────
+    if let Some(xsdt) = tables.xsdt {
+        unsafe { map_sdt(pml4, allocator, xsdt, flags) };
+        // Walk entries and map every child table.
+        unsafe {
+            iter_xsdt(xsdt, |addr| {
+                let child = addr as *const SdtHeader;
+                map_sdt(pml4, allocator, child, flags);
+            });
+        }
+    } else if let Some(rsdt) = tables.rsdt {
+        unsafe { map_sdt(pml4, allocator, rsdt, flags) };
+        unsafe {
+            iter_rsdt(rsdt, |addr| {
+                let child = addr as *const SdtHeader;
+                map_sdt(pml4, allocator, child, flags);
             });
         }
     }

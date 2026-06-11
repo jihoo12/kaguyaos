@@ -1,0 +1,1172 @@
+   Compiling os v0.1.0 (/home/jihoo/kaguyaos)
+error[E0425]: cannot find value `tables` in this scope
+   --> src/main.rs:330:42
+    |
+330 |     let madt = unsafe { acpi::parse_madt(tables.madt.unwrap()) };
+    |                                          ^^^^^^ not found in this scope
+
+warning: unused `#[macro_use]` import
+ --> src/main.rs:4:1
+  |
+4 | #[macro_use]
+  | ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `outb`
+  --> src/processor.rs:28:26
+   |
+28 | use crate::io::{io_wait, outb};
+   |                          ^^^^
+
+warning: unused import: `crate::print`
+ --> src/xhci.rs:5:5
+  |
+5 | use crate::print;
+  |     ^^^^^^^^^^^^
+
+warning[E0133]: use of mutable static is unsafe and requires unsafe block
+   --> src/uefi.rs:232:5
+    |
+232 |     RUNTIME_SERVICES = rt;
+    |     ^^^^^^^^^^^^^^^^ use of mutable static
+    |
+    = note: mutable statics can be mutated by multiple threads: aliasing violations or data races will cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/uefi.rs:231:1
+    |
+231 | pub unsafe fn init_runtime_services(rt: *mut EFI_RUNTIME_SERVICES) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: use of mutable static is unsafe and requires unsafe block
+   --> src/uefi.rs:236:9
+    |
+236 |     if !RUNTIME_SERVICES.is_null() {
+    |         ^^^^^^^^^^^^^^^^ use of mutable static
+    |
+    = note: mutable statics can be mutated by multiple threads: aliasing violations or data races will cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/uefi.rs:235:1
+    |
+235 | pub unsafe fn system_reset(reset_type: EFI_RESET_TYPE, status: EFI_STATUS) -> ! {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function is unsafe and requires unsafe block
+   --> src/uefi.rs:237:9
+    |
+237 |         ((*RUNTIME_SERVICES).ResetSystem)(reset_type, status, 0, core::ptr::null());
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/uefi.rs:237:10
+    |
+237 |         ((*RUNTIME_SERVICES).ResetSystem)(reset_type, status, 0, core::ptr::null());
+    |          ^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: use of mutable static is unsafe and requires unsafe block
+   --> src/uefi.rs:237:12
+    |
+237 |         ((*RUNTIME_SERVICES).ResetSystem)(reset_type, status, 0, core::ptr::null());
+    |            ^^^^^^^^^^^^^^^^ use of mutable static
+    |
+    = note: mutable statics can be mutated by multiple threads: aliasing violations or data races will cause undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: use of inline assembly is unsafe and requires unsafe block
+   --> src/uefi.rs:240:9
+    |
+240 |         core::arch::asm!("hlt");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^ use of inline assembly
+    |
+    = note: inline assembly is entirely unchecked and can cause undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: use of inline assembly is unsafe and requires unsafe block
+  --> src/std/mod.rs:16:5
+   |
+16 | /     asm!(
+17 | |         "syscall",
+18 | |         in("rax") id,
+19 | |         in("rdi") arg1,
+...  |
+28 | |         options(nostack, preserves_flags)
+29 | |     );
+   | |_____^ use of inline assembly
+   |
+   = note: inline assembly is entirely unchecked and can cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> src/std/mod.rs:6:1
+   |
+ 6 | / pub unsafe fn syscall(
+ 7 | |     id: usize,
+ 8 | |     arg1: usize,
+ 9 | |     arg2: usize,
+...  |
+13 | |     arg6: usize,
+14 | | ) -> usize {
+   | |__________^
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning: unnecessary `unsafe` block
+   --> src/acpi.rs:599:47
+    |
+572 |     unsafe {
+    |     ------ because it's nested under this `unsafe` block
+...
+599 |                     info.local_apic_address = unsafe { addr_ptr.read_unaligned() };
+    |                                               ^^^^^^ unnecessary `unsafe` block
+    |
+    = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+
+warning[E0133]: call to unsafe function `allocator::user_alloc` is unsafe and requires unsafe block
+   --> src/allocator.rs:248:20
+    |
+248 |             return user_alloc(layout);
+    |                    ^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/allocator.rs:245:5
+    |
+245 |     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `allocator::user_free` is unsafe and requires unsafe block
+   --> src/allocator.rs:305:13
+    |
+305 |             user_free(ptr);
+    |             ^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/allocator.rs:299:5
+    |
+299 |     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning: unused variable: `layout`
+   --> src/allocator.rs:299:44
+    |
+299 |     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+    |                                            ^^^^^^ help: if this is intentional, prefix it with an underscore: `_layout`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning[E0133]: call to unsafe function `allocator::user_realloc` is unsafe and requires unsafe block
+   --> src/allocator.rs:323:20
+    |
+323 |             return user_realloc(ptr, layout, new_size);
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/allocator.rs:321:5
+    |
+321 |     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::driver::NetworkDriver::map_dma_buffers` is unsafe and requires unsafe block
+  --> src/network/driver.rs:63:30
+   |
+63 |             Nic::E1000(d) => d.map_dma_buffers(pml4, allocator),
+   |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> src/network/driver.rs:57:5
+   |
+57 | /     unsafe fn map_dma_buffers(
+58 | |         &self,
+59 | |         pml4: &mut PageTable,
+60 | |         allocator: &mut FrameAllocator,
+61 | |     ) {
+   | |_____^
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::driver::NetworkDriver::init` is unsafe and requires unsafe block
+  --> src/network/driver.rs:69:30
+   |
+69 |             Nic::E1000(d) => d.init(device),
+   |                              ^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> src/network/driver.rs:67:5
+   |
+67 |     unsafe fn init(&mut self, device: PciDevice) {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::driver::NetworkDriver::transmit` is unsafe and requires unsafe block
+  --> src/network/driver.rs:75:30
+   |
+75 |             Nic::E1000(d) => d.transmit(data),
+   |                              ^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> src/network/driver.rs:73:5
+   |
+73 |     unsafe fn transmit(&mut self, data: &[u8]) -> bool {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::driver::NetworkDriver::poll_rx` is unsafe and requires unsafe block
+  --> src/network/driver.rs:81:30
+   |
+81 |             Nic::E1000(d) => d.poll_rx(out),
+   |                              ^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> src/network/driver.rs:79:5
+   |
+79 |     unsafe fn poll_rx(&mut self, out: &mut [u8]) -> usize {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::driver::NetworkDriver::mac_address` is unsafe and requires unsafe block
+  --> src/network/driver.rs:87:30
+   |
+87 |             Nic::E1000(d) => d.mac_address(),
+   |                              ^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> src/network/driver.rs:85:5
+   |
+85 |     unsafe fn mac_address(&self) -> [u8; 6] {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `memory::map_page` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:176:17
+    |
+176 |                 crate::memory::map_page(pml4, addr, addr, flags, allocator);
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/network/e1000.rs:147:5
+    |
+147 | /     unsafe fn map_dma_buffers(
+148 | |         &self,
+149 | |         pml4: &mut crate::memory::PageTable,
+150 | |         allocator: &mut FrameAllocator,
+151 | |     ) {
+    | |_____^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/network/e1000.rs:182:24
+    |
+182 |         let ctx = &mut *addr_of_mut!(E1000_CTX);
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/network/e1000.rs:181:5
+    |
+181 |     unsafe fn init(&mut self, device: PciDevice) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::reset` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:193:9
+    |
+193 |         reset(ctx.mmio);
+    |         ^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::setup_mac` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:194:9
+    |
+194 |         setup_mac(ctx.mmio);
+    |         ^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::setup_rx_ring` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:195:9
+    |
+195 |         setup_rx_ring(ctx.mmio);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::setup_tx_ring` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:196:9
+    |
+196 |         setup_tx_ring(ctx.mmio);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:198:9
+    |
+198 | /         write_reg(
+199 | |             ctx.mmio,
+200 | |             REG_CTRL,
+201 | |             read_reg(ctx.mmio, REG_CTRL) | CTRL_SLU,
+202 | |         );
+    | |_________^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::read_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:201:13
+    |
+201 |             read_reg(ctx.mmio, REG_CTRL) | CTRL_SLU,
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::read_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:204:22
+    |
+204 |         let status = read_reg(ctx.mmio, REG_STATUS);
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/network/e1000.rs:212:24
+    |
+212 |         let ctx = &mut *addr_of_mut!(E1000_CTX);
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/network/e1000.rs:211:5
+    |
+211 |     unsafe fn transmit(&mut self, data: &[u8]) -> bool {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/network/e1000.rs:222:28
+    |
+222 |         let tx_ring = &mut *addr_of_mut!(TX_DESC_RING);
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/network/e1000.rs:229:24
+    |
+229 |         let buf = &mut (*addr_of_mut!(TX_PACKET_BUFFERS)).0[idx];
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:238:9
+    |
+238 |         write_reg(ctx.mmio, REG_TDT, ctx.tx_next as u32);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/network/e1000.rs:244:24
+    |
+244 |         let ctx = &mut *addr_of_mut!(E1000_CTX);
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/network/e1000.rs:243:5
+    |
+243 |     unsafe fn poll_rx(&mut self, out: &mut [u8]) -> usize {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/network/e1000.rs:250:24
+    |
+250 |         let rx_ring = &*addr_of_mut!(RX_DESC_RING);
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/network/e1000.rs:259:20
+    |
+259 |         let buf = &(*addr_of_mut!(RX_PACKET_BUFFERS)).0[idx];
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/network/e1000.rs:262:32
+    |
+262 |         let rx_ring_mut = &mut *addr_of_mut!(RX_DESC_RING);
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:264:9
+    |
+264 |         write_reg(ctx.mmio, REG_RDT, idx as u32);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/network/e1000.rs:271:20
+    |
+271 |         let ctx = &*addr_of_mut!(E1000_CTX);
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/network/e1000.rs:270:5
+    |
+270 |     unsafe fn mac_address(&self) -> [u8; 6] {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::read_mac` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:275:9
+    |
+275 |         read_mac(ctx.mmio)
+    |         ^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:280:5
+    |
+280 |     read_volatile(mmio.add(offset as usize) as *const u32)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/network/e1000.rs:279:1
+    |
+279 | unsafe fn read_reg(mmio: *mut u8, offset: u32) -> u32 {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:280:19
+    |
+280 |     read_volatile(mmio.add(offset as usize) as *const u32)
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::ptr::write_volatile` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:284:5
+    |
+284 |     write_volatile(mmio.add(offset as usize) as *mut u32, val);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/network/e1000.rs:283:1
+    |
+283 | unsafe fn write_reg(mmio: *mut u8, offset: u32, val: u32) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:284:20
+    |
+284 |     write_volatile(mmio.add(offset as usize) as *mut u32, val);
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:288:5
+    |
+288 |     write_reg(mmio, REG_CTRL, read_reg(mmio, REG_CTRL) | CTRL_RST);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/network/e1000.rs:287:1
+    |
+287 | unsafe fn reset(mmio: *mut u8) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::read_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:288:31
+    |
+288 |     write_reg(mmio, REG_CTRL, read_reg(mmio, REG_CTRL) | CTRL_RST);
+    |                               ^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::read_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:289:12
+    |
+289 |     while (read_reg(mmio, REG_CTRL) & CTRL_RST) != 0 {}
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:297:5
+    |
+297 |     write_reg(mmio, REG_RAL, 0x1200_5452_u32);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/network/e1000.rs:292:1
+    |
+292 | unsafe fn setup_mac(mmio: *mut u8) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:298:5
+    |
+298 |     write_reg(mmio, REG_RAH, 0x8000_5634_u32);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::read_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:303:15
+    |
+303 |     let ral = read_reg(mmio, REG_RAL);
+    |               ^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/network/e1000.rs:302:1
+    |
+302 | pub unsafe fn read_mac(mmio: *mut u8) -> [u8; 6] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::read_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:304:15
+    |
+304 |     let rah = read_reg(mmio, REG_RAH);
+    |               ^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:328:5
+    |
+328 |     write_reg(mmio, REG_RDBAL, ring_addr as u32);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/network/e1000.rs:315:1
+    |
+315 | unsafe fn setup_rx_ring(mmio: *mut u8) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:329:5
+    |
+329 |     write_reg(mmio, REG_RDBAH, (ring_addr >> 32) as u32);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:330:5
+    |
+330 | /     write_reg(
+331 | |         mmio,
+332 | |         REG_RDLEN,
+333 | |         (RING_SIZE * core::mem::size_of::<RxDesc>()) as u32,
+334 | |     );
+    | |_____^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:335:5
+    |
+335 |     write_reg(mmio, REG_RDH, 0);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:336:5
+    |
+336 |     write_reg(mmio, REG_RDT, (RING_SIZE - 1) as u32);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:338:5
+    |
+338 | /     write_reg(
+339 | |         mmio,
+340 | |         REG_RCTL,
+341 | |         RCTL_EN | RCTL_SBP | RCTL_UPE | RCTL_MPE | RCTL_BAM | RCTL_BSIZE_2048 | RCTL_SECRC,
+342 | |     );
+    | |_____^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:349:5
+    |
+349 |     write_reg(mmio, REG_TDBAL, ring_addr as u32);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/network/e1000.rs:345:1
+    |
+345 | unsafe fn setup_tx_ring(mmio: *mut u8) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:350:5
+    |
+350 |     write_reg(mmio, REG_TDBAH, (ring_addr >> 32) as u32);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:351:5
+    |
+351 | /     write_reg(
+352 | |         mmio,
+353 | |         REG_TDLEN,
+354 | |         (RING_SIZE * core::mem::size_of::<TxDesc>()) as u32,
+355 | |     );
+    | |_____^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:356:5
+    |
+356 |     write_reg(mmio, REG_TDH, 0);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:357:5
+    |
+357 |     write_reg(mmio, REG_TDT, 0);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:359:5
+    |
+359 |     write_reg(mmio, REG_TIPG, 0x0060_080C);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::e1000::write_reg` is unsafe and requires unsafe block
+   --> src/network/e1000.rs:360:5
+    |
+360 |     write_reg(mmio, REG_TCTL, TCTL_EN | TCTL_PSP | TCTL_CT | TCTL_COLD);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::slice::from_raw_parts` is unsafe and requires unsafe block
+  --> src/network/arp.rs:58:16
+   |
+58 |       let data = core::slice::from_raw_parts(
+   |  ________________^
+59 | |         &frame as *const ArpFrame as *const u8,
+60 | |         core::mem::size_of::<ArpFrame>(),
+61 | |     );
+   | |_____^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> src/network/arp.rs:38:1
+   |
+38 | pub unsafe fn send_arp_request(target_ip: [u8; 4], my_ip: [u8; 4], my_mac: [u8; 6]) {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::transmit` is unsafe and requires unsafe block
+  --> src/network/arp.rs:62:5
+   |
+62 |     transmit(data);
+   |     ^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::poll_rx` is unsafe and requires unsafe block
+  --> src/network/arp.rs:69:26
+   |
+69 |     let bytes_received = crate::network::poll_rx(&mut rx_buffer);
+   |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> src/network/arp.rs:67:1
+   |
+67 | pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+  --> src/network/arp.rs:75:23
+   |
+75 |     let eth_header = &*(rx_buffer.as_ptr() as *const EthernetHeader);
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+   |
+   = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+  --> src/network/arp.rs:79:27
+   |
+79 |           let arp_packet = &*(rx_buffer
+   |  ___________________________^
+80 | |             .as_ptr()
+81 | |             .add(core::mem::size_of::<EthernetHeader>())
+82 | |             as *const ArpPacket);
+   | |________________________________^ dereference of raw pointer
+   |
+   = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::ptr::const_ptr::<impl *const T>::add` is unsafe and requires unsafe block
+  --> src/network/arp.rs:79:29
+   |
+79 |           let arp_packet = &*(rx_buffer
+   |  _____________________________^
+80 | |             .as_ptr()
+81 | |             .add(core::mem::size_of::<EthernetHeader>())
+   | |________________________________________________________^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::slice::from_raw_parts` is unsafe and requires unsafe block
+   --> src/network/arp.rs:109:30
+    |
+109 |               let reply_data = core::slice::from_raw_parts(
+    |  ______________________________^
+110 | |                 &reply_frame as *const ArpFrame as *const u8,
+111 | |                 core::mem::size_of::<ArpFrame>(),
+112 | |             );
+    | |_____________^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::transmit` is unsafe and requires unsafe block
+   --> src/network/arp.rs:114:13
+    |
+114 |             crate::network::transmit(reply_data);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> src/network/arp.rs:123:29
+    |
+123 |         let ip_header_ptr = rx_buffer.as_mut_ptr().add(ip_offset) as *mut Ipv4Header;
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/network/arp.rs:124:30
+    |
+124 |         let ip_header = &mut *ip_header_ptr;
+    |                              ^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> src/network/arp.rs:137:35
+    |
+137 |             let icmp_packet_ptr = rx_buffer.as_mut_ptr().add(icmp_offset) as *mut IcmpPacket;
+    |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/network/arp.rs:138:36
+    |
+138 |             let icmp_packet = &mut *icmp_packet_ptr;
+    |                                    ^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::slice::from_raw_parts_mut` is unsafe and requires unsafe block
+   --> src/network/arp.rs:156:21
+    |
+156 |                     core::slice::from_raw_parts_mut(icmp_packet_ptr as *mut u8, icmp_len);
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::slice::from_raw_parts_mut` is unsafe and requires unsafe block
+   --> src/network/arp.rs:165:32
+    |
+165 |                 let ip_bytes = core::slice::from_raw_parts_mut(ip_header_ptr as *mut u8, ihl);
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/network/arp.rs:170:17
+    |
+170 |                 (*eth_header_mut).dest_mac = eth_header.src_mac;
+    |                 ^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/network/arp.rs:171:17
+    |
+171 |                 (*eth_header_mut).src_mac = my_mac;
+    |                 ^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::transmit` is unsafe and requires unsafe block
+   --> src/network/arp.rs:175:17
+    |
+175 |                 crate::network::transmit(send_data);
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning: variable does not need to be mutable
+  --> src/network/arp.rs:90:17
+   |
+90 |             let mut reply_frame = ArpFrame {
+   |                 ----^^^^^^^^^^^
+   |                 |
+   |                 help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+  --> src/network/mod.rs:26:5
+   |
+26 |     *addr_of_mut!(HOST_IP) = ip;
+   |     ^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+   |
+   = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> src/network/mod.rs:25:1
+   |
+25 | pub unsafe fn set_ip_address(ip: [u8; 4]) {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+  --> src/network/mod.rs:39:12
+   |
+39 |     match &*addr_of_mut!(ACTIVE_NIC) {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+   |
+   = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> src/network/mod.rs:38:1
+   |
+38 | pub unsafe fn get_mac_address() -> Option<[u8; 6]> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::driver::NetworkDriver::mac_address` is unsafe and requires unsafe block
+  --> src/network/mod.rs:40:27
+   |
+40 |         Some(nic) => Some(nic.mac_address()),
+   |                           ^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `memory::map_page` is unsafe and requires unsafe block
+  --> src/network/mod.rs:67:9
+   |
+67 |         crate::memory::map_page(pml4, phys, phys, mmio_flags, allocator);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> src/network/mod.rs:46:1
+   |
+46 | / pub unsafe fn init(
+47 | |     pml4: &mut PageTable,
+48 | |     allocator: &mut FrameAllocator,
+49 | |     device: PciDevice,
+50 | | ) {
+   | |_^
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::driver::NetworkDriver::map_dma_buffers` is unsafe and requires unsafe block
+  --> src/network/mod.rs:70:5
+   |
+70 |     nic.map_dma_buffers(pml4, allocator);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::driver::NetworkDriver::init` is unsafe and requires unsafe block
+  --> src/network/mod.rs:71:5
+   |
+71 |     nic.init(device);
+   |     ^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+  --> src/network/mod.rs:74:5
+   |
+74 |     *addr_of_mut!(ACTIVE_NIC) = Some(nic);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+   |
+   = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+  --> src/network/mod.rs:80:16
+   |
+80 |     match &mut *addr_of_mut!(ACTIVE_NIC) {
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+   |
+   = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> src/network/mod.rs:79:1
+   |
+79 | pub unsafe fn transmit(data: &[u8]) -> bool {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::driver::NetworkDriver::transmit` is unsafe and requires unsafe block
+  --> src/network/mod.rs:81:22
+   |
+81 |         Some(nic) => nic.transmit(data),
+   |                      ^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+  --> src/network/mod.rs:88:16
+   |
+88 |     match &mut *addr_of_mut!(ACTIVE_NIC) {
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+   |
+   = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> src/network/mod.rs:87:1
+   |
+87 | pub unsafe fn poll_rx(out: &mut [u8]) -> usize {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `network::driver::NetworkDriver::poll_rx` is unsafe and requires unsafe block
+  --> src/network/mod.rs:89:22
+   |
+89 |         Some(nic) => nic.poll_rx(out),
+   |                      ^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/nvme.rs:481:20
+    |
+481 |     let ctx = &mut *ctx_ptr;
+    |                    ^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/nvme.rs:479:1
+    |
+479 | pub unsafe fn shutdown() {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> src/nvme.rs:484:25
+    |
+484 |         let regs = &mut *ctx.regs;
+    |                         ^^^^^^^^^ dereference of raw pointer
+    |
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+   --> src/nvme.rs:486:22
+    |
+486 |         let mut cc = read_volatile(&regs.cc);
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::ptr::write_volatile` is unsafe and requires unsafe block
+   --> src/nvme.rs:489:9
+    |
+489 |         write_volatile(&mut regs.cc, cc);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+   --> src/nvme.rs:494:16
+    |
+494 |         while (read_volatile(&regs.csts) >> 2) & 0x3 != 0x2 {
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `syscall::try_syscall` is unsafe and requires unsafe block
+   --> src/syscall.rs:368:5
+    |
+368 |     try_syscall(id, arg1, arg2, arg3, arg4, arg5, arg6)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> src/syscall.rs:358:1
+    |
+358 | / unsafe fn syscall(
+359 | |     id: usize,
+360 | |     arg1: usize,
+361 | |     arg2: usize,
+...   |
+365 | |     arg6: usize,
+366 | | ) -> usize {
+    | |__________^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning: unused variable: `ret`
+   --> src/syscall.rs:367:9
+    |
+367 |     let ret: usize;
+    |         ^^^ help: if this is intentional, prefix it with an underscore: `_ret`
+
+warning: unnecessary `unsafe` block
+    --> src/xhci.rs:1061:18
+     |
+1061 |     let buffer = unsafe { core::ptr::addr_of_mut!(USB_DATA_BUFFER) as *mut u8 };
+     |                  ^^^^^^ unnecessary `unsafe` block
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+    --> src/xhci.rs:1285:23
+     |
+1285 |         let op = &mut *ctx.op;
+     |                       ^^^^^^^ dereference of raw pointer
+     |
+     = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+    --> src/xhci.rs:1282:1
+     |
+1282 | pub unsafe fn shutdown() {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+    --> src/xhci.rs:1287:23
+     |
+1287 |         let mut cmd = read_volatile(&op.usbcmd);
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::ptr::write_volatile` is unsafe and requires unsafe block
+    --> src/xhci.rs:1289:9
+     |
+1289 |         write_volatile(&mut op.usbcmd, cmd);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+    --> src/xhci.rs:1293:16
+     |
+1293 |         while (read_volatile(&op.usbsts) & 1) == 0 {
+     |                ^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+Some errors have detailed explanations: E0133, E0425.
+For more information about an error, try `rustc --explain E0133`.
+warning: `os` (bin "os") generated 105 warnings
+error: could not compile `os` (bin "os") due to 1 previous error; 105 warnings emitted

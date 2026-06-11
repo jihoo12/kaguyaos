@@ -223,7 +223,7 @@ pub struct EFI_SYSTEM_TABLE {
     pub RuntimeServices: *mut EFI_RUNTIME_SERVICES,
     pub BootServices: *mut EFI_BOOT_SERVICES,
     pub NumberOfTableEntries: usize,
-    pub ConfigurationTable: *mut c_void,
+    pub ConfigurationTable: *mut EFI_CONFIGURATION_TABLE,
 }
 
 static mut RUNTIME_SERVICES: *mut EFI_RUNTIME_SERVICES = core::ptr::null_mut();
@@ -239,4 +239,68 @@ pub unsafe fn system_reset(reset_type: EFI_RESET_TYPE, status: EFI_STATUS) -> ! 
     loop {
         core::arch::asm!("hlt");
     }
+}
+
+// ─── EFI Configuration Table ─────────────────────────────────────────────────
+
+/// One entry in the EFI System Table configuration table array.
+#[repr(C)]
+pub struct EFI_CONFIGURATION_TABLE {
+    pub VendorGuid: EFI_GUID,
+    pub VendorTable: *mut core::ffi::c_void,
+}
+
+/// ACPI 1.0 RSDP table GUID.
+/// {EB9D2D30-2D88-11D3-9A16-0090273FC14D}
+pub const EFI_ACPI_TABLE_GUID: EFI_GUID = EFI_GUID {
+    Data1: 0xEB9D2D30,
+    Data2: 0x2D88,
+    Data3: 0x11D3,
+    Data4: [0x9A, 0x16, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D],
+};
+
+/// ACPI 2.0+ RSDP table GUID.
+/// {8868E871-E4F1-11D3-BC22-0080C73C8881}
+pub const EFI_ACPI_20_TABLE_GUID: EFI_GUID = EFI_GUID {
+    Data1: 0x8868E871,
+    Data2: 0xE4F1,
+    Data3: 0x11D3,
+    Data4: [0xBC, 0x22, 0x00, 0x80, 0xC7, 0x3C, 0x88, 0x81],
+};
+
+/// Compare two EFI GUIDs for equality.
+pub fn guid_eq(a: &EFI_GUID, b: &EFI_GUID) -> bool {
+    a.Data1 == b.Data1
+        && a.Data2 == b.Data2
+        && a.Data3 == b.Data3
+        && a.Data4 == b.Data4
+}
+
+/// Search the EFI System Table configuration table for the ACPI RSDP.
+///
+/// Prefers the ACPI 2.0 GUID; falls back to ACPI 1.0.
+/// Returns the physical address of the RSDP, or `0` if not found.
+///
+/// # Safety
+/// Must be called while Boot Services are still active (before
+/// `ExitBootServices`).
+pub unsafe fn find_rsdp_in_system_table(system_table: *mut EFI_SYSTEM_TABLE) -> u64 {
+    let count = unsafe { (*system_table).NumberOfTableEntries };
+    let tables = unsafe { (*system_table).ConfigurationTable as *const EFI_CONFIGURATION_TABLE };
+
+    // First pass: look for ACPI 2.0 GUID (preferred).
+    for i in 0..count {
+        let entry = unsafe { &*tables.add(i) };
+        if guid_eq(&entry.VendorGuid, &EFI_ACPI_20_TABLE_GUID) {
+            return entry.VendorTable as u64;
+        }
+    }
+    // Second pass: fall back to ACPI 1.0 GUID.
+    for i in 0..count {
+        let entry = unsafe { &*tables.add(i) };
+        if guid_eq(&entry.VendorGuid, &EFI_ACPI_TABLE_GUID) {
+            return entry.VendorTable as u64;
+        }
+    }
+    0
 }

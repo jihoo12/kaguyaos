@@ -58,6 +58,9 @@ pub struct BootInfo {
     pub descriptor_size: usize,
     pub descriptor_version: u32,
     pub runtime_services: u64,
+    /// Physical address of the ACPI RSDP, obtained from the EFI
+    /// Configuration Table before ExitBootServices. Zero if not found.
+    pub acpi_rsdp_phys: u64,
 }
 
 mod acpi;
@@ -71,6 +74,7 @@ mod network;
 mod nvme;
 mod pci;
 mod pic;
+mod processor;
 mod scheduler;
 mod shell;
 mod syscall;
@@ -125,6 +129,36 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     unsafe {
         syscall::init();
         println!("Syscalls Initialized!");
+    }
+
+    // ── ACPI ──────────────────────────────────────────────────────────────
+    // The RSDP address was read from the EFI Configuration Table in efi_main
+    // (before ExitBootServices) and stored in boot_info.acpi_rsdp_phys.
+    // On UEFI systems the RSDP is never in the legacy BIOS ROM region, so we
+    // skip the old BIOS scan entirely.
+    let mut acpi_tables: Option<acpi::AcpiTables> = None;
+    if boot_info.acpi_rsdp_phys != 0 {
+        // Step 1: validate + wrap the RSDP pointer.
+        let rsdp = unsafe { acpi::rsdp_from_address(boot_info.acpi_rsdp_phys) }
+            .expect("ACPI RSDP checksum invalid");
+        // Step 2: build the table index (stores pointers, no deref yet).
+        let tables = unsafe { acpi::AcpiTables::from_rsdp(rsdp) };
+        // Step 3: map every table page so we can safely dereference them.
+        unsafe {
+            let pml4 = memory::get_table_mut(pml4_phys);
+            acpi::map_acpi_tables(pml4, &mut allocator, &tables);
+        }
+        // Step 4: use the tables.
+        unsafe { acpi::dump_tables(&tables) };
+        if let Some(info) = unsafe { tables.madt_info() } {
+            println!(
+                "Found {} CPUs, I/O APIC @ {:#x}",
+                info.cpu_count, info.io_apic_address
+            );
+        }
+        acpi_tables = Some(tables);
+    } else {
+        println!("ACPI: no RSDP found in EFI Configuration Table");
     }
 
     // Initialize PCI
@@ -239,7 +273,7 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             let pml4 = memory::get_table_mut(pml4_phys);
             network::init(pml4, &mut allocator, device);
         }
-        unsafe { network::set_ip_address([10,0,2,15]) };
+        unsafe { network::set_ip_address([10, 0, 2, 15]) };
         let ip = network::get_ip_address();
         let mac = unsafe { network::get_mac_address() };
         println!("ip:{:?}", ip);
@@ -276,6 +310,7 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     unsafe {
         allocator::init(heap_start as usize, (heap_pages * 4096) as usize);
     }
+
     unsafe {
         scheduler::init();
     }
@@ -294,9 +329,31 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             &mut allocator,
         );
     }
-
+    if let Some(tables) = acpi_tables {
+        if let Some(madt_ptr) = tables.madt {
+            let madt = unsafe { acpi::parse_madt(madt_ptr) };
+            unsafe {
+                let pml4 = memory::get_table_mut(pml4_phys);
+                let flags = memory::PAGE_WRITABLE | memory::PAGE_PRESENT | memory::PAGE_CACHE_DISABLE;
+                let lapic_phys = madt.local_apic_address;
+                println!("Mapping Local APIC MMIO at {:#x}", lapic_phys);
+                memory::map_page(pml4, lapic_phys, lapic_phys, flags, &mut allocator);
+                if madt.io_apic_address != 0 {
+                    let io_apic_phys = madt.io_apic_address as u64;
+                    println!("Mapping I/O APIC MMIO at {:#x}", io_apic_phys);
+                    memory::map_page(pml4, io_apic_phys, io_apic_phys, flags, &mut allocator);
+                }
+            }
+            let bsp_id = processor::current_apic_id();
+            unsafe { processor::start_all_aps(&madt, bsp_id) };
+            println!("Online APs: {}", processor::online_ap_count());
+        } else {
+            println!("ACPI: MADT table not found. Cannot start APs.");
+        }
+    } else {
+        println!("ACPI: tables not initialized. Cannot start APs.");
+    }
     let user_top_stack = user_stack_frame + 4096;
-
     unsafe {
         let stack_base = core::ptr::addr_of!(KERNEL_STACK) as u64;
         let stack_top = stack_base + 16384; // no & !0xF needed, already 16-byte aligned due to repr(align(16))
@@ -463,6 +520,10 @@ pub extern "efiapi" fn efi_main(
         }
     }
 
+    // 5b. Locate the ACPI RSDP from EFI Configuration Table
+    //     (must be done BEFORE ExitBootServices, while config table is valid).
+    let acpi_rsdp_phys = unsafe { uefi::find_rsdp_in_system_table(system_table) };
+
     // 6. Jump to Kernel
     let boot_info = BootInfo {
         framebuffer_base,
@@ -476,6 +537,7 @@ pub extern "efiapi" fn efi_main(
         descriptor_size,
         descriptor_version,
         runtime_services: runtime_services as u64,
+        acpi_rsdp_phys,
     };
 
     kernel_main(&boot_info);

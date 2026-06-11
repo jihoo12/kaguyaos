@@ -7,6 +7,7 @@ if [ ! -f nvme.img ]; then
 fi
 
 qemu-system-x86_64 \
+    -smp 2 \
     -bios "${OVMF_BIOS}" \
     -drive format=raw,file=fat:rw:esp \
     -drive file=nvme.img,if=none,id=nvm,format=raw \
