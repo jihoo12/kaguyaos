@@ -134,7 +134,7 @@ pub fn yield_process() {
     unsafe { syscall(5, 0, 0, 0, 0, 0, 0) };
 }
 
-pub fn exit_process(exit_code: usize) -> ! {
+pub extern "sysv64" fn exit_process(exit_code: usize) -> ! {
     unsafe { syscall(6, exit_code, 0, 0, 0, 0, 0) };
     loop {}
 }

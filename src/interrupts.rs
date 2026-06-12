@@ -443,6 +443,12 @@ pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {
             let _ = writeln!(writer, "Killing user process due to exception.");
         }
         core::mem::drop(writer_guard);
+
+        // Swap GS base to access kernel-space per-CPU data (since CPU doesn't do it automatically on exception)
+        unsafe {
+            core::arch::asm!("swapgs", options(nomem, nostack, preserves_flags));
+        }
+
         // terminate_task marks the current task Terminated, records an error
         // exit code, then calls switch_task which context-switches away.
         // We should never return here.

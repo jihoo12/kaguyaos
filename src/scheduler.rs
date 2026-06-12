@@ -21,6 +21,7 @@ pub struct Task {
     pub kernel_stack_bottom: u64,
     pub kernel_stack_top: u64,
     pub gs_base: u64, // User GS base value
+    pub user_rsp: u64, // User stack pointer value
     pub exit_code: usize,
 }
 
@@ -51,6 +52,7 @@ pub unsafe fn init() {
         kernel_stack_bottom: 0,
         kernel_stack_top: 0,
         gs_base: 0,
+        user_rsp: 0,
         exit_code: 0,
     };
 
@@ -117,6 +119,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize) -> 
                 kernel_stack_bottom,
                 kernel_stack_top,
                 gs_base: 0,
+                user_rsp,
                 exit_code: 0,
             };
 
@@ -185,6 +188,7 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
                 kernel_stack_bottom: stack_bottom,
                 kernel_stack_top: stack_top,
                 gs_base: 0,
+                user_rsp: 0,
                 exit_code: 0,
             };
 
@@ -265,6 +269,12 @@ pub fn switch_task() {
                 let cpu_index = (*percpu).cpu_index as usize;
                 crate::gdt::set_tss_stack_cpu(cpu_index, new_kernel_stack_top);
             }
+
+            // Save/Restore user stack pointer (so syscalls return to the correct stack)
+            if current_index != usize::MAX {
+                scheduler.tasks[current_index].user_rsp = (*percpu).user_stack;
+            }
+            (*percpu).user_stack = scheduler.tasks[next_index].user_rsp;
 
             // Save/Restore user GS base (inactive GS base when in kernel mode)
             if current_index != usize::MAX {
