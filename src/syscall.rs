@@ -170,14 +170,6 @@ extern "sysv64" fn syscall_dispatcher_impl(
             sys_terminate_task(arg1);
             0
         }
-        7 => {
-            // sys_nvme_read(lba, ptr, count)
-            sys_nvme_read(arg1, arg2, arg3) as usize
-        }
-        8 => {
-            // sys_nvme_write(lba, ptr, count)
-            sys_nvme_write(arg1, arg2, arg3) as usize
-        }
         9 => {
             // sys_xhci_poll()
             let _guard = XHCI_LOCK.lock();
@@ -304,28 +296,6 @@ fn sys_switch_task() {
 
 fn sys_terminate_task(exit_code: usize) {
     crate::scheduler::terminate_task(exit_code);
-}
-
-fn sys_nvme_read(lba: usize, ptr: usize, count: usize) -> i32 {
-    let buf = ptr as *mut u8;
-    let Ok(count) = u32::try_from(count) else {
-        return crate::fs::FsError::InvalidArgument.code();
-    };
-    match crate::fs::read_blocks(lba as u64, count, buf) {
-        Ok(()) => 0,
-        Err(e) => e.code(),
-    }
-}
-
-fn sys_nvme_write(lba: usize, ptr: usize, count: usize) -> i32 {
-    let buf = ptr as *const u8;
-    let Ok(count) = u32::try_from(count) else {
-        return crate::fs::FsError::InvalidArgument.code();
-    };
-    match crate::fs::write_blocks(lba as u64, count, buf) {
-        Ok(()) => 0,
-        Err(e) => e.code(),
-    }
 }
 
 fn sys_shutdown() {

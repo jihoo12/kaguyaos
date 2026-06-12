@@ -57,45 +57,13 @@ fn read_blocks_unlocked(lba: u64, count: u32, buffer: *mut u8) -> FsResult<()> {
         return Err(FsError::InvalidArgument);
     }
 
-    let cs: u16;
-    unsafe {
-        core::arch::asm!("mov {0:x}, cs", out(reg) cs, options(nomem, nostack, preserves_flags));
-    }
-    let is_user = (cs & 0x03) == 3;
-
-    if is_user {
-        let ret = unsafe {
-            crate::std::syscall(
-                7, // sys_nvme_read
-                lba as usize,
-                buffer as usize,
-                count as usize,
-                0,
-                0,
-                0,
-            )
-        } as i32;
-        if ret == 0 {
-            Ok(())
-        } else {
-            Err(match ret {
-                -1 => FsError::NotReady,
-                -2 => FsError::InvalidArgument,
-                -3 => FsError::DeviceError,
-                -4 => FsError::NotFormatted,
-                -5 => FsError::NoSpace,
-                -6 => FsError::FileNotFound,
-                _ => FsError::DeviceError,
-            })
-        }
+    // Direct calls in user mode are always blocked; callers must use syscalls.
+    let nsid = unsafe { nvme::default_nsid().ok_or(FsError::NotReady)? };
+    let status = unsafe { nvme::nvme_read(nsid, lba, buffer, count) };
+    if status == 0 {
+        Ok(())
     } else {
-        let nsid = unsafe { nvme::default_nsid().ok_or(FsError::NotReady)? };
-        let status = unsafe { nvme::nvme_read(nsid, lba, buffer, count) };
-        if status == 0 {
-            Ok(())
-        } else {
-            Err(FsError::DeviceError)
-        }
+        Err(FsError::DeviceError)
     }
 }
 
@@ -104,45 +72,13 @@ fn write_blocks_unlocked(lba: u64, count: u32, buffer: *const u8) -> FsResult<()
         return Err(FsError::InvalidArgument);
     }
 
-    let cs: u16;
-    unsafe {
-        core::arch::asm!("mov {0:x}, cs", out(reg) cs, options(nomem, nostack, preserves_flags));
-    }
-    let is_user = (cs & 0x03) == 3;
-
-    if is_user {
-        let ret = unsafe {
-            crate::std::syscall(
-                8, // sys_nvme_write
-                lba as usize,
-                buffer as usize,
-                count as usize,
-                0,
-                0,
-                0,
-            )
-        } as i32;
-        if ret == 0 {
-            Ok(())
-        } else {
-            Err(match ret {
-                -1 => FsError::NotReady,
-                -2 => FsError::InvalidArgument,
-                -3 => FsError::DeviceError,
-                -4 => FsError::NotFormatted,
-                -5 => FsError::NoSpace,
-                -6 => FsError::FileNotFound,
-                _ => FsError::DeviceError,
-            })
-        }
+    // Direct calls in user mode are always blocked; callers must use syscalls.
+    let nsid = unsafe { nvme::default_nsid().ok_or(FsError::NotReady)? };
+    let status = unsafe { nvme::nvme_write(nsid, lba, buffer as *mut u8, count) };
+    if status == 0 {
+        Ok(())
     } else {
-        let nsid = unsafe { nvme::default_nsid().ok_or(FsError::NotReady)? };
-        let status = unsafe { nvme::nvme_write(nsid, lba, buffer as *mut u8, count) };
-        if status == 0 {
-            Ok(())
-        } else {
-            Err(FsError::DeviceError)
-        }
+        Err(FsError::DeviceError)
     }
 }
 
