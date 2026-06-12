@@ -1,0 +1,1 @@
+cargo run --manifest-path tools/kef-tool/Cargo.toml -- insert nvme.img user/init.kef init.kef

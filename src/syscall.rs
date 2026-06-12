@@ -1,4 +1,5 @@
 use crate::gdt;
+use crate::print;
 use core::arch::asm;
 
 // MSR Constants

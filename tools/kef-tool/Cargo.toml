@@ -1,0 +1,7 @@
+[package]
+name = "kef-tool"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Pure std tool, no external dependencies required
