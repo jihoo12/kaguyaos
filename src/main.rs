@@ -190,16 +190,16 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             }
 
             nvme::init(device);
-            match fs::read_superblock() {
-                Ok(sb) => {
-                    let file_count = sb.file_count;
+            match fs::read_boot_sector() {
+                Ok(bs) => {
+                    let clusters = bs.total_clusters;
                     println!(
-                        "FS: SimpleFS mounted successfully. Active files: {}",
-                        file_count
+                        "FS: FAT volume mounted successfully. Total clusters: {}",
+                        clusters
                     );
                 }
                 Err(_) => {
-                    println!("FS: SimpleFS is not formatted.");
+                    println!("FS: FAT volume is not formatted.");
                 }
             }
         }

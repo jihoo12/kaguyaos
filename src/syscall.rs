@@ -368,7 +368,7 @@ pub struct SyscallFileEntry {
     pub name: [u8; 47],
     pub name_len: u8,
     pub size: u64,
-    pub start_block: u64,
+    pub first_cluster: u16,
 }
 
 fn sys_fsformat() -> i32 {
@@ -399,7 +399,7 @@ fn sys_fsls(buffer_ptr: usize, max_entries: usize) -> isize {
                         name: name_buf,
                         name_len: len as u8,
                         size: files[i].size,
-                        start_block: files[i].start_block,
+                        first_cluster: files[i].first_cluster,
                     };
                 }
             }

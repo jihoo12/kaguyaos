@@ -48,7 +48,7 @@ pub struct SyscallFileEntry {
     pub name: [u8; 47],
     pub name_len: u8,
     pub size: u64,
-    pub start_block: u64,
+    pub first_cluster: u16,
 }
 
 pub fn fs_format() -> Result<(), i32> {
