@@ -8,9 +8,7 @@ mod uefi;
 use core::ffi::c_void;
 use uefi::*;
 
-pub mod cc;
 pub mod kef;
-pub mod tinyasm;
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
