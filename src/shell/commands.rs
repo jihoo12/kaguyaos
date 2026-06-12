@@ -21,7 +21,7 @@ impl Shell {
         print("  shutdown             - shut down the machine\n");
         print("  compile <src> <dest> - compile/assemble a source file (.c/.asm/.s) to machine code\n");
         print("  load <file...>       - load one or more files and run them as processes (compiles .c/.asm/.s, runs others as raw machine code)\n");
-        print("  fsformat             - format the NVMe drive with SimpleFS\n");
+        print("  fsformat             - format the NVMe drive with the FAT filesystem\n");
         print("  fsls                 - list files in the filesystem\n");
         print("  fswrite <file> <msg> - write a file with text message (inline)\n");
         print("  fswrite <file>       - write a file in multi-line mode\n");
@@ -80,13 +80,13 @@ impl Shell {
             name: [0; 47],
             name_len: 0,
             size: 0,
-            start_block: 0,
+            first_cluster: 0,
         }; 128];
 
         match crate::std::fs_list_files(&mut buf) {
             Ok(0) => print("No files found.\n"),
             Ok(count) => {
-                print("Name                           Size (Bytes)   Start Block\n");
+                print("Name                           Size (Bytes)   First Cluster\n");
                 print("---------------------------------------------------------\n");
                 for entry in &buf[..count] {
                     let name = alloc::string::String::from_utf8_lossy(
@@ -94,7 +94,7 @@ impl Shell {
                     );
                     print(&alloc::format!(
                         "{:<30} {:<14} {}\n",
-                        name, entry.size, entry.start_block
+                        name, entry.size, entry.first_cluster
                     ));
                 }
             }
