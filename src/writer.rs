@@ -9,13 +9,30 @@ pub unsafe fn init_global_writer(info: BootInfo) {
     let mut writer = GLOBAL_WRITER.lock();
     *writer = Some(Writer::new(info));
 }
-
 pub struct Writer {
     framebuffer: *mut u8,
     info: BootInfo,
     x_pos: usize,
     y_pos: usize,
 }
+
+pub struct FramebufferInfo {
+    pub base: *mut u32,
+    pub stride: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
+pub fn get_framebuffer_info() -> Option<FramebufferInfo> {
+    let writer = GLOBAL_WRITER.lock();
+    writer.as_ref().map(|w| FramebufferInfo {
+        base:   w.framebuffer as *mut u32,
+        stride: w.info.pixels_per_scanline as usize,
+        width:  w.info.horizontal_resolution as usize,
+        height: w.info.vertical_resolution as usize,
+    })
+}
+
 unsafe impl Send for Writer {}
 
 impl Writer {

@@ -76,6 +76,7 @@ mod scheduler;
 mod syscall;
 mod writer;
 mod xhci;
+mod term;
 
 #[repr(align(16))]
 struct KernelStack([u8; 16384]);
@@ -334,6 +335,8 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     } else {
         println!("ACPI: tables not initialized. Cannot start APs.");
     }
+
+    term::init();
 
     // Initialize FAT filesystem & load init.kef
     let mut fs_ready = false;

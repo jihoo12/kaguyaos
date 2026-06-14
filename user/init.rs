@@ -20,10 +20,7 @@ pub extern "C" fn _start() -> ! {
     print("Press any key to trigger shutdown...\n");
 
     loop {
-        // Poll xhci first to ensure keys are processed
-        poll_xhci();
-
-        let key = read_key();
+        let key = read();
         if key != 0 {
             break;
         }
@@ -31,6 +28,11 @@ pub extern "C" fn _start() -> ! {
 
     print("\nShutting down the system. Goodbye!\n");
     shutdown();
+}
+
+fn read() -> usize {
+    poll_xhci();
+    read_key()
 }
 
 #[inline(always)]
@@ -75,31 +77,31 @@ unsafe fn syscall2(id: usize, arg1: usize, arg2: usize) -> usize {
 
 fn print(s: &str) {
     unsafe {
-        syscall2(1, s.as_ptr() as usize, s.len());
+        syscall2(0, s.as_ptr() as usize, s.len());
     }
 }
 
 fn read_key() -> usize {
     unsafe {
-        syscall0(11)
+        syscall0(8)
     }
 }
 
 fn poll_xhci() {
     unsafe {
-        syscall0(9);
+        syscall0(6);
     }
 }
 
 fn yield_task() {
     unsafe {
-        syscall0(5);
+        syscall0(4);
     }
 }
 
 fn shutdown() -> ! {
     unsafe {
-        syscall0(10);
+        syscall0(7);
     }
     loop {}
 }

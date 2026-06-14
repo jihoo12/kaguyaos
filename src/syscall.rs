@@ -139,39 +139,39 @@ extern "sysv64" fn syscall_dispatcher_impl(
     arg2: usize,
     arg3: usize,
     arg4: usize,
-    _arg5: usize,
+    arg5: usize,
     _arg6: usize,
 ) -> usize {
     match id {
-        1 => {
+        0 => {
             // sys_print(ptr, len)
             sys_print(arg1, arg2);
             0
         }
-        2 => {
+        1 => {
             // sys_alloc(size, align)
             sys_alloc(arg1, arg2)
         }
-        3 => {
+        2 => {
             // sys_free(ptr)
             sys_free(arg1);
             0
         }
-        4 => {
+        3 => {
             // sys_add_task(entry, user_rsp)
             sys_add_task(arg1, arg2)
         }
-        5 => {
+        4 => {
             // sys_switch_task()
             sys_switch_task();
             0
         }
-        6 => {
+        5 => {
             // sys_terminate_task(exit_code)
             sys_terminate_task(arg1);
             0
         }
-        9 => {
+        6 => {
             // sys_xhci_poll()
             let _guard = XHCI_LOCK.lock();
             unsafe {
@@ -179,55 +179,63 @@ extern "sysv64" fn syscall_dispatcher_impl(
             }
             0
         }
-        10 => {
+        7 => {
             // sys_shutdown()
             sys_shutdown();
             0
         }
-        11 => {
+        8 => {
             // sys_read_key() -> u8
             sys_read_key()
         }
-        12 => {
+        9 => {
             // sys_clear()
             sys_clear();
             0
         }
-        13 => {
+        10 => {
             // sys_realloc(ptr, size, align)
             sys_realloc(arg1, arg2, arg3)
         }
-        14 => {
+        11 => {
             // sys_fsformat() -> i32
             sys_fsformat() as usize
         }
-        15 => {
+        12 => {
             // sys_fsls(buf, max_entries) -> isize
             sys_fsls(arg1, arg2) as usize
         }
-        16 => {
+        13 => {
             // sys_fswrite(filename_ptr, filename_len, content_ptr, content_len) -> i32
             sys_fswrite(arg1, arg2, arg3, arg4) as usize
         }
-        17 => {
+        14 => {
             // sys_fsread(filename_ptr, filename_len, buffer_ptr, buffer_len) -> isize
             sys_fsread(arg1, arg2, arg3, arg4) as usize
         }
-        18 => {
+        15 => {
             // sys_fsrm(filename_ptr, filename_len) -> i32
             sys_fsrm(arg1, arg2) as usize
         }
-        19 => {
+        16 => {
             // sys_get_task_status(task_id) -> usize
             sys_get_task_status(arg1)
         }
-        20 => {
+        17 => {
             // sys_get_task_exit_code(task_id) -> usize
             sys_get_task_exit_code(arg1)
         }
-        21 => {
+        18 => {
             // sys_run_ap_scheduler()
             sys_run_ap_scheduler();
+        }
+        19 => {
+            sys_write_cell(arg1, arg2, arg3, arg4, arg5);
+            0
+        }
+        20 => {
+            sys_write_region(arg1, arg2, arg3, arg4, arg5);
+            0
         }
         _ => {
             // Unknown syscall
@@ -473,4 +481,73 @@ fn sys_get_task_exit_code(task_id: usize) -> usize {
 
 fn sys_run_ap_scheduler() -> ! {
     crate::scheduler::run_ap_scheduler();
+}
+
+fn sys_write_cell(row: usize, col: usize, char_code: usize, fg: usize, bg: usize) {
+    // char_code is transmitted as u32 (Unicode scalar) from userspace
+    let ch = match char::from_u32(char_code as u32) {
+        Some(c) => c,
+        None => return,
+    };
+
+    let mut renderer = crate::term::GLOBAL_CELL_RENDERER.lock();
+    if let Some(r) = renderer.as_mut() {
+        r.write_cell(row, col, ch, fg as u32, bg as u32);
+    }
+}
+
+fn sys_write_region(
+    row: usize,
+    col: usize,
+    ptr: usize,
+    len: usize,
+    width: usize,
+) {
+    // Validate pointer is non-null and in user address space
+    // x86-64 user space ends at 0x0000_7FFF_FFFF_FFFF
+    if ptr == 0 || ptr > 0x0000_7FFF_FFFF_FFFF {
+        return;
+    }
+
+    // Each cell is packed as: [char: u32, fg: u32, bg: u32] = 12 bytes
+    // Total byte length must not overflow
+    let byte_len = match len.checked_mul(12) {
+        Some(b) => b,
+        None => return,
+    };
+
+    // Validate the entire buffer lies within user space
+    let end = match ptr.checked_add(byte_len) {
+        Some(e) => e,
+        None => return, // overflow
+    };
+    if end > 0x0000_7FFF_FFFF_FFFF {
+        return;
+    }
+
+    // Safety: bounds checked above; userspace owns this memory
+    let raw = unsafe {
+        core::slice::from_raw_parts(ptr as *const u32, len * 3)
+    };
+
+    let mut renderer = crate::term::GLOBAL_CELL_RENDERER.lock();
+    let r = match renderer.as_mut() {
+        Some(r) => r,
+        None => return,
+    };
+
+    for i in 0..len {
+        let char_code = raw[i * 3];
+        let fg        = raw[i * 3 + 1];
+        let bg        = raw[i * 3 + 2];
+
+        let ch = match char::from_u32(char_code) {
+            Some(c) => c,
+            None => continue, // skip invalid codepoints, don't abort
+        };
+
+        let cell_row = row + i / width;
+        let cell_col = col + i % width;
+        r.write_cell(cell_row, cell_col, ch, fg, bg);
+    }
 }
