@@ -173,6 +173,7 @@ pub fn get_task_exit_code(task_id: usize) -> usize {
 // ── Filesystem ───────────────────────────────────────────────────────────────
 
 /// Matches the kernel's `SyscallFileEntry` repr.
+#[derive(Copy, Clone)]
 #[repr(C)]
 pub struct FileEntry {
     pub name: [u8; 47],

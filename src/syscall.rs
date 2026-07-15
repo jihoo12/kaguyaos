@@ -1,6 +1,26 @@
 use crate::gdt;
+use crate::memory;
 use crate::print;
 use core::arch::asm;
+
+/// Returns true if the virtual address range [ptr, ptr+len) is fully mapped
+/// in user-mode page tables.  Kernel-mode pointers are rejected.
+fn user_range_ok(ptr: usize, len: usize) -> bool {
+    // Reject null and kernel-space addresses (above 0x0000_7FFF_FFFF_FFFF)
+    if ptr == 0 || ptr > 0x0000_7FFF_FFFF_FFFF {
+        return false;
+    }
+    let end = match ptr.checked_add(len) {
+        Some(e) => e,
+        None => return false,
+    };
+    if end > 0x0000_7FFF_FFFF_FFFF {
+        return false;
+    }
+    let pml4_phys = memory::current_pml4_phys();
+    let pml4 = unsafe { memory::get_table_mut(pml4_phys) };
+    memory::is_range_mapped(pml4, ptr as u64, len as u64)
+}
 
 // MSR Constants
 const MSR_EFER: u32 = 0xC0000080;
@@ -250,6 +270,9 @@ use core::slice;
 use core::str;
 
 fn sys_print(ptr: usize, len: usize) {
+    if !user_range_ok(ptr, len) {
+        return;
+    }
     let slice = unsafe { slice::from_raw_parts(ptr as *const u8, len) };
     match str::from_utf8(slice) {
         Ok(s) => {
@@ -391,6 +414,10 @@ fn sys_fsls(buffer_ptr: usize, max_entries: usize) -> isize {
     match crate::fs::list_files() {
         Ok(files) => {
             if buffer_ptr != 0 && max_entries > 0 {
+                let buf_bytes = max_entries * core::mem::size_of::<SyscallFileEntry>();
+                if !user_range_ok(buffer_ptr, buf_bytes) {
+                    return -1;
+                }
                 let dest = unsafe {
                     core::slice::from_raw_parts_mut(
                         buffer_ptr as *mut SyscallFileEntry,
@@ -424,10 +451,16 @@ fn sys_fswrite(
     content_ptr: usize,
     content_len: usize,
 ) -> i32 {
+    if !user_range_ok(filename_ptr, filename_len) {
+        return crate::fs::FsError::InvalidArgument.code();
+    }
     let name_slice = unsafe { core::slice::from_raw_parts(filename_ptr as *const u8, filename_len) };
     let Ok(filename) = core::str::from_utf8(name_slice) else {
         return crate::fs::FsError::InvalidArgument.code();
     };
+    if content_len == 0 || !user_range_ok(content_ptr, content_len) {
+        return crate::fs::FsError::InvalidArgument.code();
+    }
     let content = unsafe { core::slice::from_raw_parts(content_ptr as *const u8, content_len) };
     match crate::fs::create_file(filename, content) {
         Ok(()) => 0,
@@ -441,6 +474,9 @@ fn sys_fsread(
     buffer_ptr: usize,
     buffer_len: usize,
 ) -> isize {
+    if !user_range_ok(filename_ptr, filename_len) {
+        return crate::fs::FsError::InvalidArgument.code() as isize;
+    }
     let name_slice = unsafe { core::slice::from_raw_parts(filename_ptr as *const u8, filename_len) };
     let Ok(filename) = core::str::from_utf8(name_slice) else {
         return crate::fs::FsError::InvalidArgument.code() as isize;
@@ -451,6 +487,9 @@ fn sys_fsread(
                 return data.len() as isize;
             }
             let copy_len = data.len().min(buffer_len);
+            if !user_range_ok(buffer_ptr, copy_len) {
+                return crate::fs::FsError::InvalidArgument.code() as isize;
+            }
             unsafe {
                 core::ptr::copy_nonoverlapping(data.as_ptr(), buffer_ptr as *mut u8, copy_len);
             }
@@ -461,6 +500,9 @@ fn sys_fsread(
 }
 
 fn sys_fsrm(filename_ptr: usize, filename_len: usize) -> i32 {
+    if !user_range_ok(filename_ptr, filename_len) {
+        return crate::fs::FsError::InvalidArgument.code();
+    }
     let name_slice = unsafe { core::slice::from_raw_parts(filename_ptr as *const u8, filename_len) };
     let Ok(filename) = core::str::from_utf8(name_slice) else {
         return crate::fs::FsError::InvalidArgument.code();
@@ -525,7 +567,12 @@ fn sys_write_region(
         return;
     }
 
-    // Safety: bounds checked above; userspace owns this memory
+    // Validate all pages in the buffer are actually mapped
+    if !user_range_ok(ptr, byte_len) {
+        return;
+    }
+
+    // Safety: bounds and page-table checked above; userspace owns this memory
     let raw = unsafe {
         core::slice::from_raw_parts(ptr as *const u32, len * 3)
     };

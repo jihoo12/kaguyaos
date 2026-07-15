@@ -1,4 +1,4 @@
-use crate::memory::{FrameAllocator, PageTable, map_page, PAGE_PRESENT, PAGE_WRITABLE, PAGE_USER};
+use crate::memory::{FrameAllocator, PageTable, map_page, PAGE_SIZE, PAGE_PRESENT, PAGE_WRITABLE, PAGE_USER};
 
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
@@ -67,25 +67,28 @@ pub fn load_kef(
         );
     }
 
-    // Allocate stack frames (16KB / 4 pages)
+    // Allocate stack frames (16KB / 4 pages) + 1 guard page
     let stack_pages = 4;
-    let stack_start_phys = allocator.allocate_frame().ok_or("OOM allocating stack frame")?;
-    for i in 1..stack_pages {
+    let total_stack_frames = stack_pages + 1; // extra guard page at the bottom
+    let guard_frame = allocator.allocate_frame().ok_or("OOM allocating stack guard")?;
+    let stack_start_phys = guard_frame + PAGE_SIZE; // actual stack starts one page above guard
+    for i in 1..total_stack_frames {
         let frame = allocator.allocate_frame().ok_or("OOM allocating stack frame")?;
         assert_eq!(
             frame,
-            stack_start_phys + i as u64 * 4096,
+            guard_frame + i as u64 * 4096,
             "Allocated stack frames are not contiguous"
         );
     }
 
-    // Map stack pages as user-accessible
+    // Map only the usable stack pages (skip the guard frame — it stays unmapped)
     for i in 0..stack_pages {
         let addr = stack_start_phys + i as u64 * 4096;
         unsafe {
             map_page(pml4, addr, addr, flags, allocator);
         }
     }
+    // guard_frame at (stack_start_phys - 4096) is intentionally NOT mapped.
 
     let entry_point = code_start_phys + header.entry_offset as u64;
     let user_rsp = stack_start_phys + (stack_pages as u64 * 4096);

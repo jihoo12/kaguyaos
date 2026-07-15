@@ -80,6 +80,13 @@ pub unsafe fn get_table_mut(phys_addr: u64) -> &'static mut PageTable {
     unsafe { &mut *(phys_addr as *mut PageTable) }
 }
 
+/// Read the physical address of the active PML4 from CR3.
+pub fn current_pml4_phys() -> u64 {
+    let cr3: u64;
+    unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)) };
+    cr3
+}
+
 /// Maps a virtual address to a physical address.
 pub unsafe fn map_page(
     pml4: &mut PageTable,
@@ -125,6 +132,57 @@ pub unsafe fn map_page(
 
     // 4. Map Page
     pt.entries[pt_idx] = phys_addr | flags | PAGE_PRESENT;
+
+    // 5. Flush TLB entry for this virtual address
+    unsafe {
+        core::arch::asm!("invlpg [{}]", in(reg) virt_addr, options(nostack, preserves_flags));
+    }
+}
+
+/// Check whether every page in the virtual address range [start, start + len)
+/// is present in the current page tables.  Returns true if all pages are mapped.
+pub fn is_range_mapped(pml4: &PageTable, start: u64, len: u64) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let end = start + len;
+    let mut addr = start & !0xFFF; // page-align down
+
+    while addr < end {
+        if !is_page_mapped(pml4, addr) {
+            return false;
+        }
+        addr += PAGE_SIZE;
+    }
+    true
+}
+
+fn is_page_mapped(pml4: &PageTable, virt_addr: u64) -> bool {
+    let pml4_idx = ((virt_addr >> 39) & 0x1FF) as usize;
+    let pdp_idx = ((virt_addr >> 30) & 0x1FF) as usize;
+    let pd_idx = ((virt_addr >> 21) & 0x1FF) as usize;
+    let pt_idx = ((virt_addr >> 12) & 0x1FF) as usize;
+
+    if (pml4.entries[pml4_idx] & PAGE_PRESENT) == 0 {
+        return false;
+    }
+    let pdpt = unsafe { get_table_mut(pml4.entries[pml4_idx] & !0xFFF) };
+
+    if (pdpt.entries[pdp_idx] & PAGE_PRESENT) == 0 {
+        return false;
+    }
+    let pd = unsafe { get_table_mut(pdpt.entries[pdp_idx] & !0xFFF) };
+
+    // Check for huge page (1GB or 2MB)
+    if (pd.entries[pd_idx] & PAGE_PRESENT) == 0 {
+        return false;
+    }
+    if (pd.entries[pd_idx] & (1 << 7)) != 0 {
+        return true; // 2MB page
+    }
+
+    let pt = unsafe { get_table_mut(pd.entries[pd_idx] & !0xFFF) };
+    (pt.entries[pt_idx] & PAGE_PRESENT) != 0
 }
 
 pub unsafe fn init_paging(boot_info: &BootInfo, allocator: &mut FrameAllocator) -> u64 {

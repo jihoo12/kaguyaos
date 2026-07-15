@@ -363,39 +363,40 @@ impl SegregatedAllocator {
             return;
         }
         let addr = ptr as usize;
-        let two_words = 2 * mem::size_of::<usize>();
+        let one_word = mem::size_of::<usize>();
 
-        // ↓ was (addr - SMALL_HEADER_SIZE), which read block_addr instead of sentinel
-        let header_val = unsafe { ptr::read((addr - two_words) as *const usize) };
+        // Check small-block header first (1 word back) — safe even for the
+        // first allocation in the heap because the header is within the heap.
+        let small_val = unsafe { ptr::read((addr - one_word) as *const usize) };
 
-        if header_val == LARGE_BLOCK_SENTINEL {
-            // Large path: the raw payload ptr is reconstructed from block_addr.
-            let block_addr = unsafe { ptr::read((addr - mem::size_of::<usize>()) as *const usize) };
+        if small_val < NUM_BUCKETS {
+            // Small block: the word before the payload holds the bucket index.
+            unsafe { self.free_small(ptr) };
+        } else {
+            // Must be a large block: sentinel + block_addr live 2 words back.
+            let block_addr = unsafe { ptr::read((addr - one_word) as *const usize) };
             let raw_ptr = (block_addr + LARGE_BLOCK_SIZE) as *mut u8;
             unsafe { self.free_large_raw(raw_ptr) };
-        } else {
-            // Small path: header_val is the bucket index.
-            unsafe { self.free_small(ptr) };
         }
     }
 
     /// Return the usable capacity of a live allocation (for realloc).
     pub unsafe fn capacity_of(&self, ptr: *mut u8) -> usize {
         let addr = ptr as usize;
-        let two_words = 2 * mem::size_of::<usize>();
+        let one_word = mem::size_of::<usize>();
 
-        // ↓ was (addr - SMALL_HEADER_SIZE), which read block_addr instead of sentinel
-        let header_val = unsafe { ptr::read((addr - two_words) as *const usize) };
+        // Check small-block header first (1 word back).
+        let small_val = unsafe { ptr::read((addr - one_word) as *const usize) };
 
-        if header_val == LARGE_BLOCK_SENTINEL {
-            let block_addr = unsafe { ptr::read((addr - mem::size_of::<usize>()) as *const usize) };
+        if small_val < NUM_BUCKETS {
+            // Small block: capacity is the full class size.
+            BUCKET_SIZES[small_val]
+        } else {
+            // Large block: block_addr at addr - 1 word.
+            let block_addr = small_val;
             let block = block_addr as *mut LargeBlock;
-            // Remaining bytes from ptr to end of block payload.
             let block_end = block_addr + LARGE_BLOCK_SIZE + unsafe { (*block).size };
             block_end - addr
-        } else {
-            // Small block: capacity is the full class size.
-            BUCKET_SIZES[header_val]
         }
     }
 }
