@@ -394,6 +394,14 @@ pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {
     let rsi = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rsi)) };
     let rdi = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rdi)) };
     let rbp = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rbp)) };
+    let r8 = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).r8)) };
+    let r9 = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).r9)) };
+    let r10 = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).r10)) };
+    let r11 = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).r11)) };
+    let r12 = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).r12)) };
+    let r13 = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).r13)) };
+    let r14 = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).r14)) };
+    let r15 = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).r15)) };
 
     let mut writer_guard = if let Some(guard) = GLOBAL_WRITER.try_lock() {
         guard
@@ -423,6 +431,16 @@ pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {
             writer,
             "RSI: {:#x}  RDI: {:#x}  RBP: {:#x}  RSP: {:#x}",
             rsi, rdi, rbp, rsp
+        );
+        let _ = writeln!(
+            writer,
+            "R8:  {:#x}  R9:  {:#x}  R10: {:#x}  R11: {:#x}",
+            r8, r9, r10, r11
+        );
+        let _ = writeln!(
+            writer,
+            "R12: {:#x}  R13: {:#x}  R14: {:#x}  R15: {:#x}",
+            r12, r13, r14, r15
         );
 
         if int_no == 14 {

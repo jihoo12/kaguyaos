@@ -13,91 +13,11 @@ mod std;
 const KEY_ENTER: u8 = 0x0A;
 const KEY_BACKSPACE: u8 = 0x08;
 const MAX_CMD_LEN: usize = 128;
-const MAX_PATH_LEN: usize = 47;
 
-unsafe fn slice_from_raw<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
-    core::slice::from_raw_parts(ptr, len)
-}
-
-unsafe fn str_from_raw<'a>(ptr: *const u8, len: usize) -> &'a str {
-    let bytes = slice_from_raw(ptr, len);
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] >= 0x80 {
-            return "";
-        }
-        i += 1;
-    }
-    core::str::from_utf8_unchecked(bytes)
-}
-
-fn str_len(s: &str) -> usize {
-    s.as_bytes().len()
-}
-
-fn str_eq(a: &str, b: &str) -> bool {
-    let ab = a.as_bytes();
-    let bb = b.as_bytes();
-    if ab.len() != bb.len() {
-        return false;
-    }
-    let mut i = 0;
-    while i < ab.len() {
-        if ab[i] != bb[i] {
-            return false;
-        }
-        i += 1;
-    }
-    true
-}
-
-unsafe fn trim_start(s: &str) -> &str {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
-        i += 1;
-    }
-    str_from_raw(bytes.as_ptr().add(i), bytes.len() - i)
-}
-
-unsafe fn substr(s: &str, start: usize, end: usize) -> &str {
-    let bytes = s.as_bytes();
-    let s = if start <= bytes.len() { start } else { bytes.len() };
-    let e = if end <= bytes.len() { end } else { bytes.len() };
-    str_from_raw(bytes.as_ptr().add(s), e - s)
-}
-
-fn str_empty(s: &str) -> bool {
-    s.as_bytes().len() == 0
-}
-
-fn find_space(s: &str) -> Option<usize> {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b' ' || bytes[i] == b'\t' {
-            return Some(i);
-        }
-        i += 1;
-    }
-    None
-}
-
-fn print_u64(mut val: u64) {
-    if val == 0 {
-        put_char(b'0');
-        return;
-    }
-    let mut buf = [0u8; 20];
-    let mut i = 20;
-    while val > 0 {
-        i -= 1;
-        buf[i] = b'0' + (val % 10) as u8;
-        val /= 10;
-    }
-    unsafe {
-        std::print(str_from_raw(buf.as_ptr().add(i), 20 - i));
-    }
+unsafe fn print_raw(ptr: *const u8, len: usize) {
+    std::print(core::str::from_utf8_unchecked(
+        core::slice::from_raw_parts(ptr, len),
+    ));
 }
 
 fn put_char(ch: u8) {
@@ -116,8 +36,43 @@ fn println(s: &str) {
     std::print("\n");
 }
 
-// ── Built-in commands ──────────────────────────────────────────────────────
+fn print_u64(mut val: u64) {
+    if val == 0 {
+        put_char(b'0');
+        return;
+    }
+    let mut buf = [0u8; 20];
+    let mut i = 20;
+    while val > 0 {
+        i -= 1;
+        buf[i] = b'0' + (val % 10) as u8;
+        val /= 10;
+    }
+    unsafe {
+        std::print(core::str::from_utf8_unchecked(
+            core::slice::from_raw_parts(buf.as_ptr().add(i), 20 - i),
+        ));
+    }
+}
 
+#[inline(never)]
+fn bytes_eq(a: *const u8, a_len: usize, b: &[u8]) -> bool {
+    if a_len != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a_len {
+        unsafe {
+            if *a.add(i) != b[i] {
+                return false;
+            }
+        }
+        i += 1;
+    }
+    true
+}
+
+#[inline(never)]
 fn cmd_help() {
     println("Commands:");
     println("  help              Show this help");
@@ -129,59 +84,86 @@ fn cmd_help() {
     println("  shutdown          Shut down");
 }
 
+#[inline(never)]
 fn cmd_ls() {
-    let mut entries = [std::FileEntry {
-        name: [0u8; 47],
-        name_len: 0,
-        size: 0,
-        first_cluster: 0,
-    }; 16];
-
-    let count = std::fs_ls(&mut entries);
-    if count < 0 {
-        println("Error: failed to list files");
-        return;
-    }
-    if count == 0 {
-        println("No files.");
-        return;
-    }
-
-    println("Name                      Size");
-    println("--------------------------------");
-    let n = if count as usize > 16 { 16 } else { count as usize };
-    let mut i = 0;
-    while i < n {
-        let name_len = entries[i].name_len as usize;
-        let name = if name_len <= entries[i].name.len() {
-            unsafe { str_from_raw(entries[i].name.as_ptr(), name_len) }
-        } else {
-            "???"
-        };
-        std::print(name);
-        let name_l = str_len(name);
-        let pad = if 25 > name_l { 25 - name_l } else { 0 };
-        let mut p = 0;
-        while p < pad {
-            put_char(b' ');
-            p += 1;
+    unsafe {
+        let buf_ptr = std::alloc(16 * core::mem::size_of::<std::FileEntry>(), 8);
+        if buf_ptr.is_null() {
+            println("Error: out of memory");
+            return;
         }
-        print_u64(entries[i].size);
-        std::print("\n");
-        i += 1;
+        let entries = core::slice::from_raw_parts_mut(
+            buf_ptr as *mut std::FileEntry,
+            16,
+        );
+
+        let count = std::fs_ls(entries);
+        if count < 0 {
+            println("Error: failed to list files");
+            std::free(buf_ptr);
+            return;
+        }
+        if count == 0 {
+            println("No files.");
+            std::free(buf_ptr);
+            return;
+        }
+
+        println("Name                      Size");
+        println("--------------------------------");
+        let n = if count as usize > 16 { 16 } else { count as usize };
+        let mut i = 0;
+        while i < n {
+            let name_len = entries[i].name_len as usize;
+            if name_len <= entries[i].name.len() {
+                print_raw(entries[i].name.as_ptr(), name_len);
+            } else {
+                print("???");
+            }
+            let name_l = name_len;
+            let pad = if 25 > name_l { 25 - name_l } else { 0 };
+            let mut p = 0;
+            while p < pad {
+                put_char(b' ');
+                p += 1;
+            }
+            print_u64(entries[i].size);
+            std::print("\n");
+            i += 1;
+        }
+        std::free(buf_ptr);
     }
 }
 
-fn cmd_cat(filename: &str) {
-    if str_empty(filename) {
+#[inline(never)]
+fn cmd_cat(args_ptr: *const u8, args_len: usize) {
+    if args_len == 0 {
         println("Usage: cat <filename>");
         return;
     }
 
-    let size = std::fs_read(filename, &mut []);
+    let filename;
+    let fname_len;
+    unsafe {
+        let mut start = 0;
+        while start < args_len && (*args_ptr.add(start) == b' ' || *args_ptr.add(start) == b'\t') {
+            start += 1;
+        }
+        filename = args_ptr.add(start);
+        fname_len = args_len - start;
+    }
+
+    if fname_len == 0 {
+        println("Usage: cat <filename>");
+        return;
+    }
+
+    let fname_str = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(filename, fname_len)) };
+
+    let size = std::fs_read(fname_str, &mut []);
     if size < 0 {
-        std::print("Error: ");
-        std::print(filename);
+        print("Error: ");
+        print(fname_str);
         println(" not found");
         return;
     }
@@ -197,7 +179,7 @@ fn cmd_cat(filename: &str) {
     }
 
     let slice = unsafe { core::slice::from_raw_parts_mut(buf, size as usize) };
-    let read = std::fs_read(filename, slice);
+    let read = std::fs_read(fname_str, slice);
     if read > 0 {
         unsafe {
             let data = core::slice::from_raw_parts(buf, read as usize);
@@ -222,95 +204,183 @@ fn cmd_cat(filename: &str) {
     std::free(buf);
 }
 
-fn cmd_write(args: &str) {
+#[inline(never)]
+fn cmd_write(args_ptr: *const u8, args_len: usize) {
     unsafe {
-        let trimmed = trim_start(args);
-        if str_empty(trimmed) {
+        let mut start = 0;
+        while start < args_len && (*args_ptr.add(start) == b' ' || *args_ptr.add(start) == b'\t') {
+            start += 1;
+        }
+        let trimmed_ptr = args_ptr.add(start);
+        let trimmed_len = args_len - start;
+
+        if trimmed_len == 0 {
             println("Usage: write <filename> <content>");
             return;
         }
 
-        let (filename, content_len, content_ptr) = match find_space(trimmed) {
-            Some(pos) => {
-                let fname = substr(trimmed, 0, pos);
-                let rest = trim_start(substr(trimmed, pos, str_len(trimmed)));
-                (fname, str_len(rest), rest.as_ptr())
+        let mut space_pos = None;
+        let mut i = 0;
+        while i < trimmed_len {
+            if *trimmed_ptr.add(i) == b' ' || *trimmed_ptr.add(i) == b'\t' {
+                space_pos = Some(i);
+                break;
             }
-            None => (trimmed, 0, trimmed.as_ptr()),
-        };
-
-        if str_len(filename) > MAX_PATH_LEN {
-            println("Error: filename too long");
-            return;
+            i += 1;
         }
 
-        let content = if content_len > 0 {
-            slice_from_raw(content_ptr, content_len)
-        } else {
-            &[]
-        };
-        let ret = std::fs_write(filename, content);
-        if ret != 0 {
-            println("Error: write failed");
-        } else {
-            std::print("Wrote ");
-            print_u64(content_len as u64);
-            println(" bytes");
+        match space_pos {
+            Some(pos) => {
+                let fname_ptr = trimmed_ptr;
+                let fname_len = pos;
+                let mut content_start = pos;
+                while content_start < trimmed_len
+                    && (*trimmed_ptr.add(content_start) == b' '
+                        || *trimmed_ptr.add(content_start) == b'\t')
+                {
+                    content_start += 1;
+                }
+                let content_ptr = trimmed_ptr.add(content_start);
+                let content_len = trimmed_len - content_start;
+
+                if fname_len > 47 {
+                    println("Error: filename too long");
+                    return;
+                }
+
+                let fname = core::str::from_utf8_unchecked(
+                    core::slice::from_raw_parts(fname_ptr, fname_len),
+                );
+
+                if content_len > 0 {
+                    let content = core::slice::from_raw_parts(content_ptr, content_len);
+                    let ret = std::fs_write(fname, content);
+                    if ret != 0 {
+                        println("Error: write failed");
+                    } else {
+                        std::print("Wrote ");
+                        print_u64(content_len as u64);
+                        println(" bytes");
+                    }
+                } else {
+                    let ret = std::fs_write(fname, &[]);
+                    if ret != 0 {
+                        println("Error: write failed");
+                    } else {
+                        std::print("Wrote 0 bytes");
+                        println("");
+                    }
+                }
+            }
+            None => {
+                if trimmed_len > 47 {
+                    println("Error: filename too long");
+                    return;
+                }
+                let fname = core::str::from_utf8_unchecked(
+                    core::slice::from_raw_parts(trimmed_ptr, trimmed_len),
+                );
+                let ret = std::fs_write(fname, &[]);
+                if ret != 0 {
+                    println("Error: write failed");
+                } else {
+                    println("Wrote 0 bytes");
+                }
+            }
         }
     }
 }
 
-fn cmd_rm(filename: &str) {
-    if str_empty(filename) {
+#[inline(never)]
+fn cmd_rm(args_ptr: *const u8, args_len: usize) {
+    if args_len == 0 {
         println("Usage: rm <filename>");
         return;
     }
-    let ret = std::fs_rm(filename);
+
+    let filename;
+    let fname_len;
+    unsafe {
+        let mut start = 0;
+        while start < args_len && (*args_ptr.add(start) == b' ' || *args_ptr.add(start) == b'\t') {
+            start += 1;
+        }
+        filename = args_ptr.add(start);
+        fname_len = args_len - start;
+    }
+
+    if fname_len == 0 {
+        println("Usage: rm <filename>");
+        return;
+    }
+
+    let fname_str = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(filename, fname_len)) };
+    let ret = std::fs_rm(fname_str);
     if ret != 0 {
-        std::print("Error: cannot delete ");
-        println(filename);
+        print("Error: cannot delete ");
+        println(fname_str);
     } else {
-        std::print("Deleted ");
-        println(filename);
+        print("Deleted ");
+        println(fname_str);
     }
 }
 
 // ── Command dispatch ───────────────────────────────────────────────────────
 
-fn process_command(cmd: &str) {
+#[inline(never)]
+fn process_command(cmd_ptr: *const u8, cmd_len: usize) {
     unsafe {
-        let trimmed = trim_start(cmd);
-        if str_empty(trimmed) {
+        let mut start = 0;
+        while start < cmd_len && (*cmd_ptr.add(start) == b' ' || *cmd_ptr.add(start) == b'\t') {
+            start += 1;
+        }
+        let trimmed_ptr = cmd_ptr.add(start);
+        let trimmed_len = cmd_len - start;
+
+        if trimmed_len == 0 {
             return;
         }
 
-        let (cmd_name, args_start) = match find_space(trimmed) {
-            Some(pos) => (substr(trimmed, 0, pos), pos),
-            None => (trimmed, str_len(trimmed)),
-        };
+        let mut space_pos = trimmed_len;
+        let mut i = 0;
+        while i < trimmed_len {
+            if *trimmed_ptr.add(i) == b' ' || *trimmed_ptr.add(i) == b'\t' {
+                space_pos = i;
+                break;
+            }
+            i += 1;
+        }
 
-        let args = substr(trimmed, args_start, str_len(trimmed));
+        let cmd_ptr = trimmed_ptr;
+        let cmd_len = space_pos;
+        let mut args_ptr = trimmed_ptr.add(space_pos);
+        let mut args_len = trimmed_len - space_pos;
+        while args_len > 0 && (*args_ptr == b' ' || *args_ptr == b'\t') {
+            args_ptr = args_ptr.add(1);
+            args_len -= 1;
+        }
 
-        if str_eq(cmd_name, "help") {
+        if bytes_eq(cmd_ptr, cmd_len, b"help") {
             cmd_help();
-        } else if str_eq(cmd_name, "ls") {
+        } else if bytes_eq(cmd_ptr, cmd_len, b"ls") {
             cmd_ls();
-        } else if str_eq(cmd_name, "cat") {
-            let a = trim_start(args);
-            cmd_cat(a);
-        } else if str_eq(cmd_name, "write") {
-            cmd_write(args);
-        } else if str_eq(cmd_name, "rm") {
-            let a = trim_start(args);
-            cmd_rm(a);
-        } else if str_eq(cmd_name, "clear") {
+        } else if bytes_eq(cmd_ptr, cmd_len, b"cat") {
+            cmd_cat(args_ptr, args_len);
+        } else if bytes_eq(cmd_ptr, cmd_len, b"write") {
+            cmd_write(args_ptr, args_len);
+        } else if bytes_eq(cmd_ptr, cmd_len, b"rm") {
+            cmd_rm(args_ptr, args_len);
+        } else if bytes_eq(cmd_ptr, cmd_len, b"clear") {
             std::clear();
-        } else if str_eq(cmd_name, "shutdown") {
+        } else if bytes_eq(cmd_ptr, cmd_len, b"shutdown") {
             println("Goodbye!");
             std::shutdown();
         } else {
-            std::print("Unknown: ");
-            println(cmd_name);
+            print("Unknown: ");
+            unsafe {
+                print_raw(cmd_ptr, cmd_len);
+            }
+            println("");
             println("Type 'help' for commands.");
         }
     }
@@ -366,10 +436,7 @@ pub extern "C" fn _start() -> ! {
         }
 
         if cmd_len > 0 {
-            unsafe {
-                let cmd_str = str_from_raw(cmd_buf.as_ptr(), cmd_len);
-                process_command(cmd_str);
-            }
+            process_command(cmd_buf.as_ptr(), cmd_len);
         }
     }
 }
