@@ -1,6 +1,6 @@
 # kaguyaos
 
-A custom operating system written in Rust, targeting x86_64 UEFI. Demonstrates UEFI booting, graphical framebuffer, user-mode execution, system calls, cooperative multi-tasking, SMP multi-CPU support, NVMe & xHCI drivers, a custom FAT16 filesystem, and a built-in JIT C compiler.
+A custom operating system written in Rust, targeting x86_64 UEFI. Demonstrates UEFI booting, graphical framebuffer, user-mode execution, system calls, cooperative multi-tasking, SMP multi-CPU support, NVMe & xHCI drivers, a custom FAT16 filesystem.
 
 ![Rust](https://img.shields.io/badge/language-Rust-orange)
 ![Platform](https://img.shields.io/badge/platform-x86__64--UEFI-blue)
