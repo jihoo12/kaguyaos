@@ -433,7 +433,7 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
                 match kef::load_kef(&file_data, &mut allocator, pml4) {
                     Ok((entry_point, user_rsp)) => {
                         println!("Loader: Successfully loaded init.kef. Entry={:#x}, RSP={:#x}", entry_point, user_rsp);
-                        scheduler::add_new_user_task(entry_point, user_rsp, 16384);
+                        scheduler::add_new_user_task(entry_point, user_rsp, 16384, 0, 0);
                         loaded = true;
                     }
                     Err(e) => {
@@ -471,10 +471,20 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
         println!("Kernel stack base={:#x} top={:#x}", stack_base, stack_top);
         println!("TSS rsp0={:#x}", gdt::get_tss_stack());
 
+        // Commit the boot allocator's state so that exec syscalls start
+        // allocating from where the boot allocator left off, avoiding
+        // re-allocating already-used physical frames.
+        memory::commit_frame_allocator(&allocator);
+
         println!("Starting scheduler loop on BSP...");
         core::arch::asm!("sti");
         loop {
             scheduler::switch_task();
+            // Re-enable interrupts before halting.  switch_task() may return
+            // with IF=0 when the previous context originated from a syscall
+            // handler (where SFMASK clears IF).  Without sti, the hlt would
+            // sleep forever because no interrupt can wake the CPU.
+            core::arch::asm!("sti", options(nostack, preserves_flags));
             core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
         }
     }
