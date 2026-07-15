@@ -14,7 +14,7 @@ A custom operating system written in Rust, targeting x86_64 UEFI. Demonstrates U
 - **Ring 0/3 Isolation** — Full privilege separation: user-mode processes run in Ring 3 via `IRETQ`, with dedicated kernel/user stacks.
 - **Cooperative Scheduler** — Round-robin task scheduling with per-CPU kernel stacks, task yield, termination, and exit status queries.
 - **SMP Multi-CPU** — APIC-based startup via INIT-SIPI-SIPI, per-CPU data via GS-base MSR.
-- **21 System Calls** — Fast `syscall`/`sysret` interface covering I/O, memory, tasks, filesystem, and terminal operations.
+- **22 System Calls** — Fast `syscall`/`sysret` interface covering I/O, memory, tasks, filesystem, and terminal operations.
 - **Custom KEF Executable Format** — 16-byte header (`KEF\0`), user code pages, 16KB user stack with guard page.
 - **xHCI USB 3.0** — Full xHCI host controller driver with keyboard input (interrupt IN endpoint).
 - **NVMe SSD** — PCI-based NVMe driver with MMIO BAR mapping and IO queue setup.
@@ -82,6 +82,7 @@ The init process provides an interactive shell (`kaguya>`):
 | `cat <file>` | Display file contents (text files only) |
 | `write <file> <msg>` | Write content to a file (creates or overwrites) |
 | `rm <file>` | Delete a file |
+| `exec <file>` | Execute a KEF binary as a new task |
 | `clear` | Clear the screen |
 | `shutdown` | Power off the machine |
 
@@ -105,7 +106,7 @@ A custom FAT16 implementation running on an NVMe-backed 1 GB disk image.
 
 ## System Calls
 
-21 syscalls via AMD64 fast `syscall`/`sysret`:
+22 syscalls via AMD64 fast `syscall`/`sysret`:
 
 | # | Name | Args | Description |
 |---|---|---|---|
@@ -130,6 +131,7 @@ A custom FAT16 implementation running on an NVMe-backed 1 GB disk image.
 | 18 | `run_ap_scheduler` | — | Enter AP scheduler loop (no return) |
 | 19 | `write_cell` | `row, col, char, fg, bg` | Write a single terminal cell |
 | 20 | `write_region` | `row, col, ptr, len, width` | Write a batch of terminal cells |
+| 21 | `exec` | `name, name_len` | Execute a KEF binary, returns task ID |
 
 All pointer arguments are validated against user address space limits and page table mappings before kernel access.
 

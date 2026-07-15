@@ -99,6 +99,16 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     // Initialize Frame Allocator
     let mut allocator = unsafe { memory::FrameAllocator::new(boot_info) };
 
+    // Store boot info for creating FrameAllocators on demand (used by exec syscall)
+    unsafe {
+        memory::store_boot_info(
+            boot_info.memory_map,
+            boot_info.memory_map_size,
+            boot_info.descriptor_size,
+            boot_info.descriptor_version,
+        );
+    }
+
     // Initialize UEFI Runtime Services
     unsafe {
         uefi::init_runtime_services(boot_info.runtime_services as *mut uefi::EFI_RUNTIME_SERVICES);

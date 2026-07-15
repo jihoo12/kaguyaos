@@ -230,3 +230,9 @@ pub fn fs_rm(filename: &str) -> i32 {
         ) as i32
     }
 }
+
+/// Execute a KEF binary from the filesystem. Returns the new task ID,
+/// or usize::MAX on error.
+pub fn exec(filename: &str) -> usize {
+    unsafe { syscall2(21, filename.as_ptr() as usize, filename.len()) }
+}

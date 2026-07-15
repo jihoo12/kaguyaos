@@ -80,6 +80,7 @@ fn cmd_help() {
     println("  cat <file>        Show file contents");
     println("  write <file> <msg> Write msg to a file");
     println("  rm <file>         Delete a file");
+    println("  exec <file>       Execute a KEF binary");
     println("  clear             Clear screen");
     println("  shutdown          Shut down");
 }
@@ -325,6 +326,41 @@ fn cmd_rm(args_ptr: *const u8, args_len: usize) {
     }
 }
 
+#[inline(never)]
+fn cmd_exec(args_ptr: *const u8, args_len: usize) {
+    if args_len == 0 {
+        println("Usage: exec <filename.kef>");
+        return;
+    }
+
+    let filename;
+    let fname_len;
+    unsafe {
+        let mut start = 0;
+        while start < args_len && (*args_ptr.add(start) == b' ' || *args_ptr.add(start) == b'\t') {
+            start += 1;
+        }
+        filename = args_ptr.add(start);
+        fname_len = args_len - start;
+    }
+
+    if fname_len == 0 {
+        println("Usage: exec <filename.kef>");
+        return;
+    }
+
+    let fname_str = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(filename, fname_len)) };
+    let task_id = std::exec(fname_str);
+    if task_id == usize::MAX {
+        print("Error: failed to execute ");
+        println(fname_str);
+    } else {
+        print("Started task ");
+        print_u64(task_id as u64);
+        println("");
+    }
+}
+
 // ── Command dispatch ───────────────────────────────────────────────────────
 
 #[inline(never)]
@@ -372,6 +408,8 @@ fn process_command(cmd_ptr: *const u8, cmd_len: usize) {
             cmd_rm(args_ptr, args_len);
         } else if bytes_eq(cmd_ptr, cmd_len, b"clear") {
             std::clear();
+        } else if bytes_eq(cmd_ptr, cmd_len, b"exec") {
+            cmd_exec(args_ptr, args_len);
         } else if bytes_eq(cmd_ptr, cmd_len, b"shutdown") {
             println("Goodbye!");
             std::shutdown();

@@ -257,6 +257,10 @@ extern "sysv64" fn syscall_dispatcher_impl(
             sys_write_region(arg1, arg2, arg3, arg4, arg5);
             0
         }
+        21 => {
+            // sys_exec(filename_ptr, filename_len) -> task_id
+            sys_exec(arg1, arg2)
+        }
         _ => {
             // Unknown syscall
             let _ = crate::println!("Unknown syscall: {}", id);
@@ -523,6 +527,38 @@ fn sys_get_task_exit_code(task_id: usize) -> usize {
 
 fn sys_run_ap_scheduler() -> ! {
     crate::scheduler::run_ap_scheduler();
+}
+
+fn sys_exec(filename_ptr: usize, filename_len: usize) -> usize {
+    if filename_ptr == 0 || filename_len == 0 || filename_len > 255 {
+        return usize::MAX; // Invalid argument
+    }
+    if !user_range_ok(filename_ptr, filename_len) {
+        return usize::MAX;
+    }
+    let name_slice = unsafe { core::slice::from_raw_parts(filename_ptr as *const u8, filename_len) };
+    let Ok(filename) = core::str::from_utf8(name_slice) else {
+        return usize::MAX;
+    };
+
+    // 1. Read KEF file from FAT16
+    let file_data = match crate::fs::read_file(filename) {
+        Ok(data) => data,
+        Err(_) => return usize::MAX,
+    };
+
+    // 2. Create a fresh frame allocator and load the KEF
+    let mut allocator = crate::memory::new_frame_allocator();
+    let pml4_phys = crate::memory::current_pml4_phys();
+    let pml4 = unsafe { crate::memory::get_table_mut(pml4_phys) };
+
+    let (entry_point, user_rsp) = match crate::kef::load_kef(&file_data, &mut allocator, pml4) {
+        Ok(ep) => ep,
+        Err(_) => return usize::MAX,
+    };
+
+    // 3. Create the new user task
+    crate::scheduler::add_new_user_task(entry_point, user_rsp, 16384)
 }
 
 fn sys_write_cell(row: usize, col: usize, char_code: usize, fg: usize, bg: usize) {
