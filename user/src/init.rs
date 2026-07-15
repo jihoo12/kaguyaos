@@ -80,248 +80,29 @@ fn cmd_help() {
     println("  cat <file>        Show file contents");
     println("  write <file> <msg> Write msg to a file");
     println("  rm <file>         Delete a file");
+    println("  exec <file>       Execute a KEF binary");
     println("  clear             Clear screen");
     println("  shutdown          Shut down");
 }
 
 #[inline(never)]
-fn cmd_ls() {
-    unsafe {
-        let buf_ptr = std::alloc(16 * core::mem::size_of::<std::FileEntry>(), 8);
-        if buf_ptr.is_null() {
-            println("Error: out of memory");
-            return;
+fn exec_program(name: &str, args: &str) {
+    if args.len() > 0 {
+        let task_id = std::exec2(name, args);
+        if task_id == usize::MAX {
+            print("Error: failed to execute ");
+            println(name);
+        } else {
+            std::yield_task();
         }
-        let entries = core::slice::from_raw_parts_mut(
-            buf_ptr as *mut std::FileEntry,
-            16,
-        );
-
-        let count = std::fs_ls(entries);
-        if count < 0 {
-            println("Error: failed to list files");
-            std::free(buf_ptr);
-            return;
-        }
-        if count == 0 {
-            println("No files.");
-            std::free(buf_ptr);
-            return;
-        }
-
-        println("Name                      Size");
-        println("--------------------------------");
-        let n = if count as usize > 16 { 16 } else { count as usize };
-        let mut i = 0;
-        while i < n {
-            let name_len = entries[i].name_len as usize;
-            if name_len <= entries[i].name.len() {
-                print_raw(entries[i].name.as_ptr(), name_len);
-            } else {
-                print("???");
-            }
-            let name_l = name_len;
-            let pad = if 25 > name_l { 25 - name_l } else { 0 };
-            let mut p = 0;
-            while p < pad {
-                put_char(b' ');
-                p += 1;
-            }
-            print_u64(entries[i].size);
-            std::print("\n");
-            i += 1;
-        }
-        std::free(buf_ptr);
-    }
-}
-
-#[inline(never)]
-fn cmd_cat(args_ptr: *const u8, args_len: usize) {
-    if args_len == 0 {
-        println("Usage: cat <filename>");
-        return;
-    }
-
-    let filename;
-    let fname_len;
-    unsafe {
-        let mut start = 0;
-        while start < args_len && (*args_ptr.add(start) == b' ' || *args_ptr.add(start) == b'\t') {
-            start += 1;
-        }
-        filename = args_ptr.add(start);
-        fname_len = args_len - start;
-    }
-
-    if fname_len == 0 {
-        println("Usage: cat <filename>");
-        return;
-    }
-
-    let fname_str = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(filename, fname_len)) };
-
-    let size = std::fs_read(fname_str, &mut []);
-    if size < 0 {
-        print("Error: ");
-        print(fname_str);
-        println(" not found");
-        return;
-    }
-    if size == 0 {
-        println("(empty)");
-        return;
-    }
-
-    let buf = std::alloc(size as usize, 1);
-    if buf.is_null() {
-        println("Error: out of memory");
-        return;
-    }
-
-    let slice = unsafe { core::slice::from_raw_parts_mut(buf, size as usize) };
-    let read = std::fs_read(fname_str, slice);
-    if read > 0 {
-        unsafe {
-            let data = core::slice::from_raw_parts(buf, read as usize);
-            let mut is_text = true;
-            let mut j = 0;
-            while j < data.len() {
-                if data[j] >= 0x80 {
-                    is_text = false;
-                    break;
-                }
-                j += 1;
-            }
-            if is_text {
-                let s = core::str::from_utf8_unchecked(data);
-                std::print(s);
-            } else {
-                println("(binary, cannot display)");
-            }
-        }
-    }
-
-    std::free(buf);
-}
-
-#[inline(never)]
-fn cmd_write(args_ptr: *const u8, args_len: usize) {
-    unsafe {
-        let mut start = 0;
-        while start < args_len && (*args_ptr.add(start) == b' ' || *args_ptr.add(start) == b'\t') {
-            start += 1;
-        }
-        let trimmed_ptr = args_ptr.add(start);
-        let trimmed_len = args_len - start;
-
-        if trimmed_len == 0 {
-            println("Usage: write <filename> <content>");
-            return;
-        }
-
-        let mut space_pos = None;
-        let mut i = 0;
-        while i < trimmed_len {
-            if *trimmed_ptr.add(i) == b' ' || *trimmed_ptr.add(i) == b'\t' {
-                space_pos = Some(i);
-                break;
-            }
-            i += 1;
-        }
-
-        match space_pos {
-            Some(pos) => {
-                let fname_ptr = trimmed_ptr;
-                let fname_len = pos;
-                let mut content_start = pos;
-                while content_start < trimmed_len
-                    && (*trimmed_ptr.add(content_start) == b' '
-                        || *trimmed_ptr.add(content_start) == b'\t')
-                {
-                    content_start += 1;
-                }
-                let content_ptr = trimmed_ptr.add(content_start);
-                let content_len = trimmed_len - content_start;
-
-                if fname_len > 47 {
-                    println("Error: filename too long");
-                    return;
-                }
-
-                let fname = core::str::from_utf8_unchecked(
-                    core::slice::from_raw_parts(fname_ptr, fname_len),
-                );
-
-                if content_len > 0 {
-                    let content = core::slice::from_raw_parts(content_ptr, content_len);
-                    let ret = std::fs_write(fname, content);
-                    if ret != 0 {
-                        println("Error: write failed");
-                    } else {
-                        std::print("Wrote ");
-                        print_u64(content_len as u64);
-                        println(" bytes");
-                    }
-                } else {
-                    let ret = std::fs_write(fname, &[]);
-                    if ret != 0 {
-                        println("Error: write failed");
-                    } else {
-                        std::print("Wrote 0 bytes");
-                        println("");
-                    }
-                }
-            }
-            None => {
-                if trimmed_len > 47 {
-                    println("Error: filename too long");
-                    return;
-                }
-                let fname = core::str::from_utf8_unchecked(
-                    core::slice::from_raw_parts(trimmed_ptr, trimmed_len),
-                );
-                let ret = std::fs_write(fname, &[]);
-                if ret != 0 {
-                    println("Error: write failed");
-                } else {
-                    println("Wrote 0 bytes");
-                }
-            }
-        }
-    }
-}
-
-#[inline(never)]
-fn cmd_rm(args_ptr: *const u8, args_len: usize) {
-    if args_len == 0 {
-        println("Usage: rm <filename>");
-        return;
-    }
-
-    let filename;
-    let fname_len;
-    unsafe {
-        let mut start = 0;
-        while start < args_len && (*args_ptr.add(start) == b' ' || *args_ptr.add(start) == b'\t') {
-            start += 1;
-        }
-        filename = args_ptr.add(start);
-        fname_len = args_len - start;
-    }
-
-    if fname_len == 0 {
-        println("Usage: rm <filename>");
-        return;
-    }
-
-    let fname_str = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(filename, fname_len)) };
-    let ret = std::fs_rm(fname_str);
-    if ret != 0 {
-        print("Error: cannot delete ");
-        println(fname_str);
     } else {
-        print("Deleted ");
-        println(fname_str);
+        let task_id = std::exec(name);
+        if task_id == usize::MAX {
+            print("Error: failed to execute ");
+            println(name);
+        } else {
+            std::yield_task();
+        }
     }
 }
 
@@ -363,15 +144,17 @@ fn process_command(cmd_ptr: *const u8, cmd_len: usize) {
         if bytes_eq(cmd_ptr, cmd_len, b"help") {
             cmd_help();
         } else if bytes_eq(cmd_ptr, cmd_len, b"ls") {
-            cmd_ls();
+            exec_program("ls.kef", "");
         } else if bytes_eq(cmd_ptr, cmd_len, b"cat") {
-            cmd_cat(args_ptr, args_len);
+            exec_program("cat.kef", core::str::from_utf8_unchecked(core::slice::from_raw_parts(args_ptr, args_len)));
         } else if bytes_eq(cmd_ptr, cmd_len, b"write") {
-            cmd_write(args_ptr, args_len);
+            exec_program("write.kef", core::str::from_utf8_unchecked(core::slice::from_raw_parts(args_ptr, args_len)));
         } else if bytes_eq(cmd_ptr, cmd_len, b"rm") {
-            cmd_rm(args_ptr, args_len);
+            exec_program("rm.kef", core::str::from_utf8_unchecked(core::slice::from_raw_parts(args_ptr, args_len)));
         } else if bytes_eq(cmd_ptr, cmd_len, b"clear") {
             std::clear();
+        } else if bytes_eq(cmd_ptr, cmd_len, b"exec") {
+            exec_program(core::str::from_utf8_unchecked(core::slice::from_raw_parts(args_ptr, args_len)), "");
         } else if bytes_eq(cmd_ptr, cmd_len, b"shutdown") {
             println("Goodbye!");
             std::shutdown();
@@ -389,7 +172,7 @@ fn process_command(cmd_ptr: *const u8, cmd_len: usize) {
 // ── Entry point ────────────────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start(_args_ptr: *const u8, _args_len: usize) -> ! {
     println("");
     println("  ============================");
     println("    kaguyaOS v0.1.0");
@@ -399,6 +182,12 @@ pub extern "C" fn _start() -> ! {
 
     let mut cmd_buf = [0u8; MAX_CMD_LEN];
     let mut cmd_len: usize;
+
+    // ── Auto-exec diagnostic: run ls once at startup to test exec/yield/terminate flow ──
+    println("");
+    println("[auto-exec] Running ls.kef to test scheduler...");
+    exec_program("ls.kef", "");
+    println("[auto-exec] Returned to shell OK!");
 
     loop {
         std::print("kaguya> ");

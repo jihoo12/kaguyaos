@@ -63,6 +63,88 @@ impl FrameAllocator {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Global frame allocator support (used by exec syscall)
+// ---------------------------------------------------------------------------
+
+/// Boot info parameters needed to create a FrameAllocator on demand.
+static mut BOOT_INFO_MEM_MAP: *const u8 = core::ptr::null();
+static mut BOOT_INFO_MEM_MAP_SIZE: usize = 0;
+static mut BOOT_INFO_DESC_SIZE: usize = 0;
+static mut BOOT_INFO_DESC_VER: u32 = 0;
+
+pub unsafe fn store_boot_info(
+    memory_map: *const u8,
+    memory_map_size: usize,
+    descriptor_size: usize,
+    descriptor_version: u32,
+) {
+    unsafe {
+        BOOT_INFO_MEM_MAP = memory_map;
+        BOOT_INFO_MEM_MAP_SIZE = memory_map_size;
+        BOOT_INFO_DESC_SIZE = descriptor_size;
+        BOOT_INFO_DESC_VER = descriptor_version;
+    }
+}
+
+/// Persistent frame allocator: the global tracks the high-water mark of all
+/// frames ever given out.  `new_frame_allocator()` clones the current global
+/// position.  After `load_kef` (or any heavy allocation), call
+/// `commit_frame_allocator()` to push the new position back into the global.
+static mut GLOBAL_ALLOCATOR: Option<FrameAllocator> = None;
+
+pub fn new_frame_allocator() -> FrameAllocator {
+    unsafe {
+        if let Some(ref alloc) = GLOBAL_ALLOCATOR {
+            FrameAllocator {
+                memory_map: alloc.memory_map,
+                memory_map_size: alloc.memory_map_size,
+                descriptor_size: alloc.descriptor_size,
+                descriptor_version: alloc.descriptor_version,
+                current_descriptor_index: alloc.current_descriptor_index,
+                current_page_offset: alloc.current_page_offset,
+            }
+        } else {
+            FrameAllocator {
+                memory_map: BOOT_INFO_MEM_MAP,
+                memory_map_size: BOOT_INFO_MEM_MAP_SIZE,
+                descriptor_size: BOOT_INFO_DESC_SIZE,
+                descriptor_version: BOOT_INFO_DESC_VER,
+                current_descriptor_index: 0,
+                current_page_offset: 0,
+            }
+        }
+    }
+}
+
+/// Save the allocator's current position back into the global so the next
+/// `new_frame_allocator()` call resumes from here instead of from the start.
+pub fn commit_frame_allocator(alloc: &FrameAllocator) {
+    unsafe {
+        GLOBAL_ALLOCATOR = Some(FrameAllocator {
+            memory_map: alloc.memory_map,
+            memory_map_size: alloc.memory_map_size,
+            descriptor_size: alloc.descriptor_size,
+            descriptor_version: alloc.descriptor_version,
+            current_descriptor_index: alloc.current_descriptor_index,
+            current_page_offset: alloc.current_page_offset,
+        });
+    }
+}
+
+pub fn init_global_frame_allocator() {
+    unsafe {
+        GLOBAL_ALLOCATOR = Some(FrameAllocator {
+            memory_map: BOOT_INFO_MEM_MAP,
+            memory_map_size: BOOT_INFO_MEM_MAP_SIZE,
+            descriptor_size: BOOT_INFO_DESC_SIZE,
+            descriptor_version: BOOT_INFO_DESC_VER,
+            current_descriptor_index: 0,
+            current_page_offset: 0,
+        });
+    }
+}
+
 pub struct PageTable {
     pub entries: [u64; 512],
 }

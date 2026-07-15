@@ -49,11 +49,30 @@ pub unsafe fn init() {
         io_wait();
         
         // Restore masks (or set new ones)
-        // For now, let's unmask only Keyboard (IRQ 1) and Timer (IRQ 0)
         // 0 = Unmasked (Enabled), 1 = Masked (Disabled)
-        // Mask all initially, then we enable specifically
-        outb(PIC1_DATA, 0xFD); // 1111 1101 -> Unmask IRQ 1 (Keyboard) only. Timer masked for now.
+        outb(PIC1_DATA, 0xFC); // 1111 1100 -> Unmask IRQ 0 (Timer) and IRQ 1 (Keyboard)
         outb(PIC2_DATA, 0xFF);
+
+        // ── Configure 8254 PIT Channel 0 for ~100 Hz periodic interrupts ──
+        // UEFI disables the PIT during ExitBootServices, so we must
+        // reconfigure it to generate the periodic IRQ 0 ticks that the
+        // scheduler's `hlt` loop depends on.
+        //
+        // Base clock: 1_193_182 Hz
+        // Divisor:    1_193_182 / 100 = 11_932
+        const PIT_FREQ: u32 = 1_193_182;
+        const TARGET_HZ: u32 = 100;
+        const DIVISOR: u16 = (PIT_FREQ / TARGET_HZ) as u16; // 11932 = 0x2E9C
+
+        const PIT_CMD: u16 = 0x43;
+        const PIT_CH0: u16 = 0x40;
+
+        // Command: Channel 0, lobyte/hibyte, mode 3 (square wave)
+        outb(PIT_CMD, 0x36);
+        io_wait();
+        outb(PIT_CH0, (DIVISOR & 0xFF) as u8);       // low byte
+        io_wait();
+        outb(PIT_CH0, ((DIVISOR >> 8) & 0xFF) as u8); // high byte
     }
 }
 

@@ -61,7 +61,7 @@ pub unsafe fn init() {
     }
 }
 
-pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize) -> usize {
+pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi: u64, rsi: u64) -> usize {
     let _guard = SCHEDULER_LOCK.lock();
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_mut() {
@@ -72,18 +72,9 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize) -> 
             let kernel_stack_top = kernel_stack_bottom + stack_size as u64;
 
             // 2. Setup Stack Frame for IRETQ (to enter usermode)
-            // We'll simulate a stack that context_switch can jump into.
-            // When we switch TO this task, context_switch will 'ret' to our entry logic.
-
-            // Let's use a simpler approach:
-            // The task will start at a kernel helper 'user_task_entry'
-
             let mut sp = kernel_stack_top as *mut u64;
 
-            // Since it's a new task, we need to push the usermode registers
-            // that our syscall/interrupt handler would expect, OR we just
-            // set it up so context_switch 'ret's into a helper that does iretq.
-
+            // IRETQ frame
             sp = sp.sub(1);
             *sp = crate::gdt::USER_DATA_SEL as u64; // SS
             sp = sp.sub(1);
@@ -95,21 +86,25 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize) -> 
             sp = sp.sub(1);
             *sp = entry_point; // RIP
 
-            // Now push caller-saved registers that context_switch expects
+            // Context switch frame (push order: R15,R14,R13,R12,RBX,RBP,RDI,RSI)
             sp = sp.sub(1);
-            *sp = user_task_trampoline as *const () as u64; // RIP for context_switch 'ret'
+            *sp = user_task_trampoline as *const () as u64; // return address
             sp = sp.sub(1);
-            *sp = 0; // RBP
-            sp = sp.sub(1);
-            *sp = 0; // RBX
-            sp = sp.sub(1);
-            *sp = 0; // R12
-            sp = sp.sub(1);
-            *sp = 0; // R13
+            *sp = 0; // R15
             sp = sp.sub(1);
             *sp = 0; // R14
             sp = sp.sub(1);
-            *sp = 0; // R15
+            *sp = 0; // R13
+            sp = sp.sub(1);
+            *sp = 0; // R12
+            sp = sp.sub(1);
+            *sp = 0; // RBX
+            sp = sp.sub(1);
+            *sp = 0; // RBP
+            sp = sp.sub(1);
+            *sp = rdi; // RDI = args pointer
+            sp = sp.sub(1);
+            *sp = rsi; // RSI = args length
 
             let task = Task {
                 id,
@@ -335,10 +330,14 @@ unsafe extern "sysv64" fn context_switch(old_stack_ptr: *mut u64, new_stack_ptr:
         "push r12",
         "push rbx",
         "push rbp",
+        "push rdi",
+        "push rsi",
         // Save current RSP to the old_stack_ptr location
         "mov [rdi], rsp",
         // Load new RSP
         "mov rsp, rsi",
+        "pop rsi",
+        "pop rdi",
         "pop rbp",
         "pop rbx",
         "pop r12",
@@ -399,10 +398,12 @@ pub fn get_task_exit_code(task_id: usize) -> usize {
 }
 
 pub fn run_ap_scheduler() -> ! {
+    // APs do NOT run user tasks — only the BSP schedules tasks.
+    // APs idle with interrupts enabled so they can handle IPIs or
+    // future per-CPU work, but they never call switch_task().
     unsafe {
         core::arch::asm!("sti");
         loop {
-            switch_task();
             core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
         }
     }

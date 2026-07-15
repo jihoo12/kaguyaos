@@ -155,8 +155,9 @@ pub fn add_task(entry: usize, user_rsp: usize) -> usize {
 }
 
 /// Terminate the current task with `exit_code`.
-pub fn terminate_task(exit_code: usize) {
+pub fn terminate_task(exit_code: usize) -> ! {
     unsafe { syscall1(5, exit_code); }
+    loop {}
 }
 
 /// Returns status of task with given ID.
@@ -229,4 +230,16 @@ pub fn fs_rm(filename: &str) -> i32 {
             filename.len(),
         ) as i32
     }
+}
+
+/// Execute a KEF binary from the filesystem. Returns the new task ID,
+/// or usize::MAX on error.
+pub fn exec(filename: &str) -> usize {
+    unsafe { syscall2(21, filename.as_ptr() as usize, filename.len()) }
+}
+
+/// Execute a KEF binary with arguments. Returns the new task ID,
+/// or usize::MAX on error.
+pub fn exec2(filename: &str, args: &str) -> usize {
+    unsafe { syscall4(22, filename.as_ptr() as usize, filename.len(), args.as_ptr() as usize, args.len()) }
 }

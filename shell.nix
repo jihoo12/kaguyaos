@@ -5,6 +5,8 @@ pkgs.mkShell {
     rustup          # nixpkgs 내장 rustup (외부 설치 아님)
     qemu
     OVMF
+    python3
+    binutils
   ];
 
   shellHook = ''
