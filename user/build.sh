@@ -9,7 +9,6 @@ rustup target add x86_64-unknown-none || true
 
 echo "🔨 Compiling user/init.rs to user/init.kef..."
 rustc --target x86_64-unknown-none \
-      -C relocation-model=pic \
       -C linker-flavor=ld.lld \
       -C linker=rust-lld \
       -C link-arg=-Tuser/linker.ld \

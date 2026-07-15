@@ -276,7 +276,16 @@ pub fn switch_task() {
             }
             (*percpu).user_stack = scheduler.tasks[next_index].user_rsp;
 
-            // Save/Restore user GS base (inactive GS base when in kernel mode)
+            // Save/Restore the user-mode GS base.
+            //
+            // MSR convention (swapgs swaps IA32_GS_BASE ↔ IA32_KERNEL_GS_BASE):
+            //   In user mode:  GS_BASE = user's GS (0),  KERNEL_GS_BASE = percpu
+            //   After swapgs:  GS_BASE = percpu,          KERNEL_GS_BASE = user's GS
+            //
+            // So KERNEL_GS_BASE always holds the *user* GS when in kernel mode
+            // (after swapgs). We save/load it here.  GS_BASE (percpu) is left
+            // untouched so the syscall/exception handlers always have percpu
+            // data accessible via gs:[0].
             if current_index != usize::MAX {
                 let old_user_gs = crate::processor::rdmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE);
                 scheduler.tasks[current_index].gs_base = old_user_gs;
