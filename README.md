@@ -204,4 +204,4 @@ kaguyaos/
 
 ## License
 
-This project is for educational and demonstration purposes.
+[LICENSE](LICENSE)
