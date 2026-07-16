@@ -80,7 +80,7 @@ fn cmd_help() {
     println("  cat <file>        Show file contents");
     println("  write <file> <msg> Write msg to a file");
     println("  rm <file>         Delete a file");
-    println("  exec <file>       Execute a KEF binary");
+    println("  exec <file> [args] Execute a KEF binary");
     println("  clear             Clear screen");
     println("  shutdown          Shut down");
 }
@@ -154,7 +154,29 @@ fn process_command(cmd_ptr: *const u8, cmd_len: usize) {
         } else if bytes_eq(cmd_ptr, cmd_len, b"clear") {
             std::clear();
         } else if bytes_eq(cmd_ptr, cmd_len, b"exec") {
-            exec_program(core::str::from_utf8_unchecked(core::slice::from_raw_parts(args_ptr, args_len)), "");
+            // Split args: "exec filename args..."
+            let mut fname_len = args_len;
+            let mut rest_ptr = args_ptr;
+            let mut rest_len = 0usize;
+            let mut i = 0;
+            while i < args_len {
+                if unsafe { *args_ptr.add(i) } == b' ' || unsafe { *args_ptr.add(i) } == b'\t' {
+                    fname_len = i;
+                    let mut r = i + 1;
+                    while r < args_len && (unsafe { *args_ptr.add(r) } == b' ' || unsafe { *args_ptr.add(r) } == b'\t') {
+                        r += 1;
+                    }
+                    rest_ptr = unsafe { args_ptr.add(r) };
+                    rest_len = args_len - r;
+                    break;
+                }
+                i += 1;
+            }
+            let fname = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(args_ptr, fname_len)) };
+            let rest = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(rest_ptr, rest_len)) };
+            exec_program(fname, rest);
+        } else if bytes_eq(cmd_ptr, cmd_len, b"ping") {
+            exec_program("ping.kef", "");
         } else if bytes_eq(cmd_ptr, cmd_len, b"shutdown") {
             println("Goodbye!");
             std::shutdown();
@@ -183,12 +205,6 @@ pub extern "C" fn _start(_args_ptr: *const u8, _args_len: usize) -> ! {
     let mut cmd_buf = [0u8; MAX_CMD_LEN];
     let mut cmd_len: usize;
 
-    // ── Auto-exec diagnostic: run ls once at startup to test exec/yield/terminate flow ──
-    println("");
-    println("[auto-exec] Running ls.kef to test scheduler...");
-    exec_program("ls.kef", "");
-    println("[auto-exec] Returned to shell OK!");
-
     loop {
         std::print("kaguya> ");
         cmd_len = 0;
@@ -198,6 +214,7 @@ pub extern "C" fn _start(_args_ptr: *const u8, _args_len: usize) -> ! {
             let key = std::read_key() as u8;
 
             if key == 0 {
+                std::yield_task();
                 continue;
             }
 

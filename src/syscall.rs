@@ -265,6 +265,14 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_exec2(filename_ptr, filename_len, args_ptr, args_len) -> task_id
             sys_exec2(arg1, arg2, arg3, arg4)
         }
+        23 => {
+            // sys_net_send_ping(dst_ip_packed) -> seq_number
+            sys_net_send_ping(arg1)
+        }
+        24 => {
+            // sys_net_recv_ping(buf_ptr, buf_len) -> bytes_read
+            sys_net_recv_ping(arg1, arg2)
+        }
         _ => {
             // Unknown syscall
             let _ = crate::println!("Unknown syscall: {}", id);
@@ -279,6 +287,7 @@ use core::str;
 
 fn sys_print(ptr: usize, len: usize) {
     if !user_range_ok(ptr, len) {
+        crate::println!("[sys_print: FAIL ptr={:#x} len={}]", ptr, len);
         return;
     }
     let slice = unsafe { slice::from_raw_parts(ptr as *const u8, len) };
@@ -681,5 +690,34 @@ fn sys_write_region(
         let cell_row = row + i / width;
         let cell_col = col + i % width;
         r.write_cell(cell_row, cell_col, ch, fg, bg);
+    }
+}
+
+// ── Network syscalls ────────────────────────────────────────────────────────
+
+/// sys_net_send_ping(dst_ip_packed: u32) -> seq_number: u32
+/// dst_ip_packed packs [a,b,c,d] as a u32 in host byte order.
+fn sys_net_send_ping(dst_ip_packed: usize) -> usize {
+    let ip = [
+        (dst_ip_packed & 0xFF) as u8,
+        ((dst_ip_packed >> 8) & 0xFF) as u8,
+        ((dst_ip_packed >> 16) & 0xFF) as u8,
+        ((dst_ip_packed >> 24) & 0xFF) as u8,
+    ];
+    unsafe { crate::network::send_icmp_echo_request(ip) as usize }
+}
+
+/// sys_net_recv_ping(buf_ptr: *mut u8, buf_len: usize) -> bytes_read: usize
+/// Copies one IcmpEchoReply from the ring buffer into `buf`.
+fn sys_net_recv_ping(buf_ptr: usize, buf_len: usize) -> usize {
+    if buf_ptr == 0 || buf_len == 0 {
+        return 0;
+    }
+    if !user_range_ok(buf_ptr, buf_len) {
+        return 0;
+    }
+    unsafe {
+        let buf = core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len);
+        crate::network::pop_icmp_reply_raw(buf)
     }
 }

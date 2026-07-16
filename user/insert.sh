@@ -3,7 +3,7 @@ set -e
 
 cd "$(dirname "$0")/.."
 
-PROGRAMS="init ls cat rm write"
+PROGRAMS="init ls cat rm write ping"
 
 for prog in $PROGRAMS; do
     if [ -f "user/${prog}.kef" ]; then

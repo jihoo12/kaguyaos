@@ -14,7 +14,7 @@ RUSTC_FLAGS="--target x86_64-unknown-none \
       -C link-arg=--oformat=binary \
       -O"
 
-PROGRAMS="init ls cat rm write"
+PROGRAMS="init ls cat rm write ping"
 
 for prog in $PROGRAMS; do
     echo "Compiling user/src/${prog}.rs -> user/${prog}.kef..."

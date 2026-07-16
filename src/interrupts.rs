@@ -364,7 +364,13 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) {
     let irq = int_no - 32;
 
     match irq {
-        0 => { /* Timer */ }
+        0 => {
+            // Timer: preempt user-mode tasks so the shell can't starve children.
+            let cs = core::ptr::read_unaligned(core::ptr::addr_of!((*frame).cs));
+            if cs & 3 == 3 {
+                crate::scheduler::switch_task();
+            }
+        }
         1 => {
             //
         }
