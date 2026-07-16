@@ -54,13 +54,11 @@ pub unsafe fn send_arp_request(target_ip: [u8; 4], my_ip: [u8; 4], my_mac: [u8; 
             target_ip: target_ip,
         },
     };
-    // SAFETY: `frame` lives until end of this function; the slice does not outlive it.
     let data = core::slice::from_raw_parts(
         &frame as *const ArpFrame as *const u8,
         core::mem::size_of::<ArpFrame>(),
     );
     transmit(data);
-    // Prevent the compiler from dropping (and zeroing) `frame` before transmit returns.
     core::mem::forget(frame);
 }
 
@@ -82,14 +80,13 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) {
             as *const ArpPacket);
         let opcode = u16::from_be(arp_packet.opcode);
 
-        // If someone asks me for my IP address (Opcode 1 = Request)
         if opcode == 1 && arp_packet.target_ip == my_ip {
-            println!("network: ARP Request received! Responding");
+            // Cache the sender's mapping from any incoming ARP request
+            crate::network::arp_cache_insert(arp_packet.sender_ip, arp_packet.sender_mac);
 
-            // 3. Generate ARP Reply packet (send via 1:1 unicast to the person who visited me)
             let mut reply_frame = ArpFrame {
                 eth: EthernetHeader {
-                    dest_mac: arp_packet.sender_mac, // The MAC address of the person who asked me
+                    dest_mac: arp_packet.sender_mac,
                     src_mac: my_mac,
                     ethertype: 0x0806_u16.to_be(),
                 },
@@ -98,7 +95,7 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) {
                     protocol_type: 0x0800u16.to_be(),
                     hw_addr_len: 6,
                     proto_addr_len: 4,
-                    opcode: 2u16.to_be(), // 2 = Reply
+                    opcode: 2u16.to_be(), // Reply
                     sender_mac: my_mac,
                     sender_ip: my_ip,
                     target_mac: arp_packet.sender_mac,
@@ -112,6 +109,9 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) {
             );
 
             crate::network::transmit(reply_data);
+        } else if opcode == 2 {
+            // ARP Reply → cache the sender's mapping
+            crate::network::arp_cache_insert(arp_packet.sender_ip, arp_packet.sender_mac);
         }
     } else if ethertype == 0x0800_u16 {
         let ip_offset = core::mem::size_of::<EthernetHeader>();
@@ -119,13 +119,10 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) {
             return;
         }
 
-        // 1. IP Header Deserialization (Parsing)
         let ip_header_ptr = rx_buffer.as_mut_ptr().add(ip_offset) as *mut Ipv4Header;
         let ip_header = &mut *ip_header_ptr;
 
-        // Check if the destination IP is mine and if the upper protocol is ICMP(1)
         if ip_header.dst_ip == my_ip && ip_header.protocol == 1 {
-            // Calculate actual size based on IP header version (lower 4 bits of IHL field * 4)
             let ihl = (ip_header.ver_ihl & 0x0F) as usize * 4;
             let icmp_offset = ip_offset + ihl;
 
@@ -133,30 +130,21 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) {
                 return;
             }
 
-            // 2. ICMP header parsing
             let icmp_packet_ptr = rx_buffer.as_mut_ptr().add(icmp_offset) as *mut IcmpPacket;
             let icmp_packet = &mut *icmp_packet_ptr;
 
-            // If Type 8, it is a ping request (Echo Request).
             if icmp_packet.icmp_type == 8 {
-                println!(
-                    "network: Received a Ping request (Echo Request)! Preparing the response."
-                );
+                // Echo Request → auto-reply
+                icmp_packet.icmp_type = 0;
+                icmp_packet.checksum = 0;
 
-                // --- 3. Convert to ICMP Echo Reply Packet ---
-                icmp_packet.icmp_type = 0; // Type 0 = Echo Reply
-                icmp_packet.checksum = 0; // Clear to 0 first for checksum recalculation
-
-                // Calculate total ICMP length (total IP length - IP header length)
                 let total_length = u16::from_be(ip_header.total_length) as usize;
                 let icmp_len = total_length - ihl;
 
-                // Recalculate the checksum of the ICMP area and substitute
                 let icmp_bytes =
                     core::slice::from_raw_parts_mut(icmp_packet_ptr as *mut u8, icmp_len);
                 icmp_packet.checksum = calculate_checksum(icmp_bytes).to_be();
 
-                // --- 4. Modify IPv4 Header (Change Source/Destination) ---
                 let temp_ip = ip_header.src_ip;
                 ip_header.src_ip = my_ip;
                 ip_header.dst_ip = temp_ip;
@@ -165,15 +153,35 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) {
                 let ip_bytes = core::slice::from_raw_parts_mut(ip_header_ptr as *mut u8, ihl);
                 ip_header.header_checksum = calculate_checksum(ip_bytes).to_be();
 
-                // --- 5. Modify Ethernet Header (Change Source/Destination) ---
                 let eth_header_mut = rx_buffer.as_mut_ptr() as *mut EthernetHeader;
                 (*eth_header_mut).dest_mac = eth_header.src_mac;
                 (*eth_header_mut).src_mac = my_mac;
 
-                // --- 6. Send the converted buffer as is ---
                 let send_data = &rx_buffer[0..ip_offset + total_length];
                 crate::network::transmit(send_data);
-                println!("network: Ping response (Echo Reply) sent!");
+            } else if icmp_packet.icmp_type == 0 {
+                // Echo Reply → buffer for userland
+                let total_length = u16::from_be(ip_header.total_length) as usize;
+                let icmp_len = total_length - ihl;
+                let payload_len = if icmp_len > 8 { (icmp_len - 8).min(64) } else { 0 };
+
+                let mut payload = [0u8; 64];
+                if payload_len > 0 {
+                    core::ptr::copy_nonoverlapping(
+                        (icmp_packet_ptr as *const u8).add(8),
+                        payload.as_mut_ptr(),
+                        payload_len,
+                    );
+                }
+
+                let reply = crate::network::IcmpEchoReply {
+                    src_ip: ip_header.src_ip,
+                    identifier: u16::from_be(icmp_packet.identifier),
+                    sequence: u16::from_be(icmp_packet.sequence_number),
+                    payload_len: payload_len as u16,
+                    payload,
+                };
+                crate::network::push_icmp_reply(reply);
             }
         }
     }

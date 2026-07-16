@@ -398,13 +398,18 @@ pub fn get_task_exit_code(task_id: usize) -> usize {
 }
 
 pub fn run_ap_scheduler() -> ! {
-    // APs do NOT run user tasks — only the BSP schedules tasks.
-    // APs idle with interrupts enabled so they can handle IPIs or
-    // future per-CPU work, but they never call switch_task().
+    // APs poll the network NIC continuously.
+    // They never run user tasks — only the BSP schedules tasks.
+    // NOTE: We cannot use `hlt` here because no IRQs are routed to the AP
+    // (PIC only delivers to BSP). Instead we busy-poll with a small delay.
     unsafe {
         core::arch::asm!("sti");
         loop {
-            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+            crate::network::poll();
+            // Yield some CPU time; ~10k spin-loops ≈ a few hundred µs.
+            for _ in 0..10_000 {
+                core::hint::spin_loop();
+            }
         }
     }
 }

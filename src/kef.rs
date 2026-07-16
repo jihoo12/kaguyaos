@@ -93,5 +93,10 @@ pub fn load_kef(
     let entry_point = code_start_phys + header.entry_offset as u64;
     let user_rsp = stack_start_phys + (stack_pages as u64 * 4096);
 
+    crate::println!(
+        "[kef] loaded at phys={:#x}, entry={:#x}, rsp={:#x}, code={} bytes, {} pages",
+        code_start_phys, entry_point, user_rsp, code_size, code_pages
+    );
+
     Ok((entry_point, user_rsp))
 }

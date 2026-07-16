@@ -243,3 +243,22 @@ pub fn exec(filename: &str) -> usize {
 pub fn exec2(filename: &str, args: &str) -> usize {
     unsafe { syscall4(22, filename.as_ptr() as usize, filename.len(), args.as_ptr() as usize, args.len()) }
 }
+
+// ── Network ─────────────────────────────────────────────────────────────────
+
+/// Send an ICMP Echo Request to the given IP address.
+/// `dst_ip` is `[a,b,c,d]` in host byte order.
+/// Returns the ICMP sequence number, or 0 on failure.
+pub fn net_send_ping(dst_ip: [u8; 4]) -> u32 {
+    let packed = (dst_ip[0] as u32)
+        | ((dst_ip[1] as u32) << 8)
+        | ((dst_ip[2] as u32) << 16)
+        | ((dst_ip[3] as u32) << 24);
+    unsafe { syscall1(23, packed as usize) as u32 }
+}
+
+/// Receive one ICMP Echo Reply from the kernel ring buffer.
+/// Copies into `buf` and returns bytes read, or 0 if empty.
+pub fn net_recv_ping(buf: &mut [u8]) -> usize {
+    unsafe { syscall2(24, buf.as_mut_ptr() as usize, buf.len()) }
+}
