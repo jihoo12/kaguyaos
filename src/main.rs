@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
+#![allow(dead_code, unused_unsafe)]
 
-#[macro_use]
 extern crate alloc;
 
 mod uefi;

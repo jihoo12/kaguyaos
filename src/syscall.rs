@@ -1,6 +1,5 @@
 use crate::gdt;
 use crate::memory;
-use crate::print;
 use core::arch::asm;
 
 /// Returns true if the virtual address range [ptr, ptr+len) is fully mapped
@@ -377,10 +376,10 @@ unsafe fn syscall(
     arg4: usize,
     arg5: usize,
     arg6: usize,
-) -> usize {
-    let ret: usize;
+) -> usize { unsafe {
+    let _ret: usize;
     try_syscall(id, arg1, arg2, arg3, arg4, arg5, arg6)
-}
+}}
 
 #[inline(always)]
 unsafe fn try_syscall(

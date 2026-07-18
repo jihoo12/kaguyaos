@@ -94,7 +94,7 @@ struct LargeBlock {
 // Segregated free list allocator state
 // ---------------------------------------------------------------------------
 
-struct SegregatedAllocator {
+pub(crate) struct SegregatedAllocator {
     /// Heads of the per-size-class free lists.  Each entry is either null or
     /// points to the first free block in that class.
     free_lists: [*mut u8; NUM_BUCKETS],
@@ -173,7 +173,7 @@ impl SegregatedAllocator {
 
     /// Allocate a small block from `bucket`.  Returns a pointer to the
     /// *payload* (i.e. the word after the bucket-index header).
-    unsafe fn alloc_small(&mut self, bucket: usize) -> *mut u8 {
+    unsafe fn alloc_small(&mut self, bucket: usize) -> *mut u8 { unsafe {
         let class_size = BUCKET_SIZES[bucket];
         let total = SMALL_HEADER_SIZE + class_size;
 
@@ -219,7 +219,7 @@ impl SegregatedAllocator {
         // Return the zeroth block.
         unsafe { ptr::write(slab as *mut usize, bucket) };
         unsafe { slab.add(SMALL_HEADER_SIZE) }
-    }
+    }}
 
     /// Return a small block to its bucket's free list.
     unsafe fn free_small(&mut self, payload: *mut u8) {
@@ -430,7 +430,7 @@ static ALLOCATOR: KernelAllocator = KernelAllocator;
 // allocator, NOT through alloc_aligned/dealloc_aligned (those operate on
 // INNER_ALLOCATOR, whose pages are kernel-only).
 
-pub static USER_ALLOCATOR: Spinlock<SegregatedAllocator> = Spinlock::new(SegregatedAllocator::new());
+pub(crate) static USER_ALLOCATOR: Spinlock<SegregatedAllocator> = Spinlock::new(SegregatedAllocator::new());
 
 /// Initialise the user heap. `start`/`size` must describe a region that has
 /// already been mapped into the page tables with PAGE_USER | PAGE_WRITABLE.

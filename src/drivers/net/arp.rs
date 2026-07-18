@@ -1,11 +1,8 @@
-use crate::{
-    drivers::net::{
+use crate::drivers::net::{
         helper::calculate_checksum,
         ipv4::{IcmpPacket, Ipv4Header},
         transmit,
-    },
-    println,
-};
+    };
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -35,7 +32,7 @@ pub struct ArpFrame {
     pub arp: ArpPacket,
 }
 
-pub unsafe fn send_arp_request(target_ip: [u8; 4], my_ip: [u8; 4], my_mac: [u8; 6]) {
+pub unsafe fn send_arp_request(target_ip: [u8; 4], my_ip: [u8; 4], my_mac: [u8; 6]) { unsafe {
     let frame = ArpFrame {
         eth: EthernetHeader {
             dest_mac: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF], // broadcast
@@ -60,9 +57,9 @@ pub unsafe fn send_arp_request(target_ip: [u8; 4], my_ip: [u8; 4], my_mac: [u8; 
     );
     transmit(data);
     core::mem::forget(frame);
-}
+}}
 
-pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) {
+pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) { unsafe {
     let mut rx_buffer = [0u8; 1514];
     let bytes_received = crate::drivers::net::poll_rx(&mut rx_buffer);
 
@@ -84,7 +81,7 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) {
             // Cache the sender's mapping from any incoming ARP request
             crate::drivers::net::arp_cache_insert(arp_packet.sender_ip, arp_packet.sender_mac);
 
-            let mut reply_frame = ArpFrame {
+            let reply_frame = ArpFrame {
                 eth: EthernetHeader {
                     dest_mac: arp_packet.sender_mac,
                     src_mac: my_mac,
@@ -185,4 +182,4 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) {
             }
         }
     }
-}
+}}

@@ -148,7 +148,7 @@ impl NetworkDriver for E1000 {
         &self,
         pml4: &mut crate::memory::PageTable,
         allocator: &mut FrameAllocator,
-    ) {
+    ) { unsafe {
         let flags = PAGE_WRITABLE | PAGE_PRESENT;
         let regions: &[(u64, usize)] = &[
             (
@@ -176,9 +176,9 @@ impl NetworkDriver for E1000 {
                 crate::memory::map_page(pml4, addr, addr, flags, allocator);
             }
         }
-    }
+    }}
 
-    unsafe fn init(&mut self, device: PciDevice) {
+    unsafe fn init(&mut self, device: PciDevice) { unsafe {
         let ctx = &mut *addr_of_mut!(E1000_CTX);
 
         let bar = crate::drivers::pci::mmio_bar0(&device);
@@ -206,9 +206,9 @@ impl NetworkDriver for E1000 {
             "e1000: link up, rx/tx rings ready (status={:#x})",
             status
         );
-    }
+    }}
 
-    unsafe fn transmit(&mut self, data: &[u8]) -> bool {
+    unsafe fn transmit(&mut self, data: &[u8]) -> bool { unsafe {
         let ctx = &mut *addr_of_mut!(E1000_CTX);
         if ctx.mmio.is_null() {
             return false;
@@ -238,9 +238,9 @@ impl NetworkDriver for E1000 {
         write_reg(ctx.mmio, REG_TDT, ctx.tx_next as u32);
 
         true
-    }
+    }}
 
-    unsafe fn poll_rx(&mut self, out: &mut [u8]) -> usize {
+    unsafe fn poll_rx(&mut self, out: &mut [u8]) -> usize { unsafe {
         let ctx = &mut *addr_of_mut!(E1000_CTX);
         if ctx.mmio.is_null() {
             return 0;
@@ -265,41 +265,41 @@ impl NetworkDriver for E1000 {
 
         ctx.rx_next = (idx + 1) % RING_SIZE;
         copy_len
-    }
+    }}
 
-    unsafe fn mac_address(&self) -> [u8; 6] {
+    unsafe fn mac_address(&self) -> [u8; 6] { unsafe {
         let ctx = &*addr_of_mut!(E1000_CTX);
         if ctx.mmio.is_null() {
             return [0u8; 6];
         }
         read_mac(ctx.mmio)
-    }
+    }}
 }
 
-unsafe fn read_reg(mmio: *mut u8, offset: u32) -> u32 {
+unsafe fn read_reg(mmio: *mut u8, offset: u32) -> u32 { unsafe {
     read_volatile(mmio.add(offset as usize) as *const u32)
-}
+}}
 
-unsafe fn write_reg(mmio: *mut u8, offset: u32, val: u32) {
+unsafe fn write_reg(mmio: *mut u8, offset: u32, val: u32) { unsafe {
     write_volatile(mmio.add(offset as usize) as *mut u32, val);
-}
+}}
 
-unsafe fn reset(mmio: *mut u8) {
+unsafe fn reset(mmio: *mut u8) { unsafe {
     write_reg(mmio, REG_CTRL, read_reg(mmio, REG_CTRL) | CTRL_RST);
     while (read_reg(mmio, REG_CTRL) & CTRL_RST) != 0 {}
-}
+}}
 
-unsafe fn setup_mac(mmio: *mut u8) {
+unsafe fn setup_mac(mmio: *mut u8) { unsafe {
     // QEMU e1000 default MAC 52:54:00:12:34:56, packed as the hardware expects:
     //   RAL[31:0]  = bytes 0-3 of MAC => 52:54:00:12 => 0x1200_5452 (little-endian)
     //   RAH[15:0]  = bytes 4-5 of MAC => 34:56       => 0x5634      (little-endian)
     //   RAH[31]    = Address Valid bit
     write_reg(mmio, REG_RAL, 0x1200_5452_u32);
     write_reg(mmio, REG_RAH, 0x8000_5634_u32);
-}
+}}
 
 /// Read the MAC address that was programmed into the Receive Address registers.
-pub unsafe fn read_mac(mmio: *mut u8) -> [u8; 6] {
+pub unsafe fn read_mac(mmio: *mut u8) -> [u8; 6] { unsafe {
     let ral = read_reg(mmio, REG_RAL);
     let rah = read_reg(mmio, REG_RAH);
     [
@@ -310,9 +310,9 @@ pub unsafe fn read_mac(mmio: *mut u8) -> [u8; 6] {
         (rah & 0xFF) as u8,
         ((rah >> 8) & 0xFF) as u8,
     ]
-}
+}}
 
-unsafe fn setup_rx_ring(mmio: *mut u8) {
+unsafe fn setup_rx_ring(mmio: *mut u8) { unsafe {
     let rx_ring = addr_of_mut!(RX_DESC_RING);
     let rx_bufs = addr_of_mut!(RX_PACKET_BUFFERS);
 
@@ -340,9 +340,9 @@ unsafe fn setup_rx_ring(mmio: *mut u8) {
         REG_RCTL,
         RCTL_EN | RCTL_SBP | RCTL_UPE | RCTL_MPE | RCTL_BAM | RCTL_BSIZE_2048 | RCTL_SECRC,
     );
-}
+}}
 
-unsafe fn setup_tx_ring(mmio: *mut u8) {
+unsafe fn setup_tx_ring(mmio: *mut u8) { unsafe {
     let tx_ring = addr_of_mut!(TX_DESC_RING);
     let ring_addr = tx_ring as u64;
 
@@ -358,4 +358,4 @@ unsafe fn setup_tx_ring(mmio: *mut u8) {
 
     write_reg(mmio, REG_TIPG, 0x0060_080C);
     write_reg(mmio, REG_TCTL, TCTL_EN | TCTL_PSP | TCTL_CT | TCTL_COLD);
-}
+}}

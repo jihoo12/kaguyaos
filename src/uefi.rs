@@ -228,18 +228,18 @@ pub struct EFI_SYSTEM_TABLE {
 
 static mut RUNTIME_SERVICES: *mut EFI_RUNTIME_SERVICES = core::ptr::null_mut();
 
-pub unsafe fn init_runtime_services(rt: *mut EFI_RUNTIME_SERVICES) {
+pub unsafe fn init_runtime_services(rt: *mut EFI_RUNTIME_SERVICES) { unsafe {
     RUNTIME_SERVICES = rt;
-}
+}}
 
-pub unsafe fn system_reset(reset_type: EFI_RESET_TYPE, status: EFI_STATUS) -> ! {
+pub unsafe fn system_reset(reset_type: EFI_RESET_TYPE, status: EFI_STATUS) -> ! { unsafe {
     if !RUNTIME_SERVICES.is_null() {
         ((*RUNTIME_SERVICES).ResetSystem)(reset_type, status, 0, core::ptr::null());
     }
     loop {
         core::arch::asm!("hlt");
     }
-}
+}}
 
 // ─── EFI Configuration Table ─────────────────────────────────────────────────
 

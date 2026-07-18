@@ -7,7 +7,7 @@ use crate::memory::{FrameAllocator, PageTable, PAGE_CACHE_DISABLE, PAGE_PRESENT,
 use crate::drivers::pci::{self, PciDevice};
 use crate::println;
 use core::ptr::addr_of_mut;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 pub use driver::NetworkDriver;
 
 pub mod arp;
@@ -30,7 +30,7 @@ static mut ARP_CACHE: [ArpEntry; ARP_CACHE_SIZE] = [ArpEntry {
 }; ARP_CACHE_SIZE];
 
 /// Record an ARP mapping from an incoming ARP reply or request.
-pub unsafe fn arp_cache_insert(ip: [u8; 4], mac: [u8; 6]) {
+pub unsafe fn arp_cache_insert(ip: [u8; 4], mac: [u8; 6]) { unsafe {
     // Update existing entry or fill an empty slot
     for i in 0..ARP_CACHE_SIZE {
         if ARP_CACHE[i].valid && ARP_CACHE[i].ip == ip {
@@ -46,21 +46,21 @@ pub unsafe fn arp_cache_insert(ip: [u8; 4], mac: [u8; 6]) {
             return;
         }
     }
-}
+}}
 
 /// Look up a MAC in the ARP cache. Returns None if not found.
-pub unsafe fn arp_cache_lookup(ip: [u8; 4]) -> Option<[u8; 6]> {
+pub unsafe fn arp_cache_lookup(ip: [u8; 4]) -> Option<[u8; 6]> { unsafe {
     for i in 0..ARP_CACHE_SIZE {
         if ARP_CACHE[i].valid && ARP_CACHE[i].ip == ip {
             return Some(ARP_CACHE[i].mac);
         }
     }
     None
-}
+}}
 
 /// Send an ARP request and spin-wait for the reply.
 /// Returns the resolved MAC, or None on timeout.
-pub unsafe fn arp_resolve(target_ip: [u8; 4]) -> Option<[u8; 6]> {
+pub unsafe fn arp_resolve(target_ip: [u8; 4]) -> Option<[u8; 6]> { unsafe {
     // Check cache first
     if let Some(mac) = arp_cache_lookup(target_ip) {
         return Some(mac);
@@ -79,7 +79,7 @@ pub unsafe fn arp_resolve(target_ip: [u8; 4]) -> Option<[u8; 6]> {
         }
     }
     None
-}
+}}
 
 static mut ACTIVE_NIC: Option<driver::Nic> = None;
 
@@ -113,7 +113,7 @@ static ICMP_RX_LOCK: crate::sync::Spinlock<()> =
     crate::sync::Spinlock::new(());
 
 /// Push an ICMP Echo Reply into the ring buffer (called from AP poll).
-unsafe fn push_icmp_reply(reply: IcmpEchoReply) {
+unsafe fn push_icmp_reply(reply: IcmpEchoReply) { unsafe {
     let _guard = ICMP_RX_LOCK.lock();
     let next = (ICMP_RX_HEAD + 1) % ICMP_RX_CAPACITY;
     if next == ICMP_RX_TAIL {
@@ -121,10 +121,10 @@ unsafe fn push_icmp_reply(reply: IcmpEchoReply) {
     }
     *addr_of_mut!(ICMP_RX_RING[ICMP_RX_HEAD]) = reply;
     ICMP_RX_HEAD = next;
-}
+}}
 
 /// Pop an ICMP Echo Reply from the ring buffer (called from userland syscall).
-pub unsafe fn pop_icmp_reply(out: &mut IcmpEchoReply) -> bool {
+pub unsafe fn pop_icmp_reply(out: &mut IcmpEchoReply) -> bool { unsafe {
     let _guard = ICMP_RX_LOCK.lock();
     if ICMP_RX_TAIL == ICMP_RX_HEAD {
         return false;
@@ -132,11 +132,11 @@ pub unsafe fn pop_icmp_reply(out: &mut IcmpEchoReply) -> bool {
     *out = ICMP_RX_RING[ICMP_RX_TAIL];
     ICMP_RX_TAIL = (ICMP_RX_TAIL + 1) % ICMP_RX_CAPACITY;
     true
-}
+}}
 
 /// Pop an ICMP Echo Reply from the ring buffer, copying raw bytes into `buf`.
 /// Returns bytes copied, or 0 if buffer is empty.
-pub unsafe fn pop_icmp_reply_raw(buf: &mut [u8]) -> usize {
+pub unsafe fn pop_icmp_reply_raw(buf: &mut [u8]) -> usize { unsafe {
     let _guard = ICMP_RX_LOCK.lock();
     if ICMP_RX_TAIL == ICMP_RX_HEAD {
         return 0;
@@ -150,7 +150,7 @@ pub unsafe fn pop_icmp_reply_raw(buf: &mut [u8]) -> usize {
         copy_len,
     );
     copy_len
-}
+}}
 
 // ── ICMP Echo Request sender ────────────────────────────────────────────────
 
@@ -158,7 +158,7 @@ static PING_SEQ: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::
 
 /// Build and send an ICMP Echo Request to `target_ip`.
 /// Returns the sequence number used, or 0 on failure.
-pub unsafe fn send_icmp_echo_request(target_ip: [u8; 4]) -> u16 {
+pub unsafe fn send_icmp_echo_request(target_ip: [u8; 4]) -> u16 { unsafe {
     let my_ip = match get_ip_address() {
         Some(ip) => ip,
         None => return 0,
@@ -181,7 +181,7 @@ pub unsafe fn send_icmp_echo_request(target_ip: [u8; 4]) -> u16 {
 
     // ICMP Echo Request payload: 48 bytes of timestamp-like data
     let mut payload = [0u8; 48];
-    let mut ts: u32;
+    let ts: u32;
     unsafe {
         let lo: u32;
         core::arch::asm!("rdtsc", out("eax") lo, out("edx") _);
@@ -246,7 +246,7 @@ pub unsafe fn send_icmp_echo_request(target_ip: [u8; 4]) -> u16 {
 
     transmit(&eth_buf);
     seq
-}
+}}
 
 // ── Network poll (called by AP) ─────────────────────────────────────────────
 
@@ -254,7 +254,7 @@ pub unsafe fn send_icmp_echo_request(target_ip: [u8; 4]) -> u16 {
 /// - ARP Request -> auto-reply
 /// - ICMP Echo Request (type 8) -> auto-reply
 /// - ICMP Echo Reply (type 0) -> buffer for userland
-pub unsafe fn poll() {
+pub unsafe fn poll() { unsafe {
     if !is_ready() {
         return;
     }
@@ -267,7 +267,7 @@ pub unsafe fn poll() {
         None => return,
     };
     arp::handle_incoming_packets(my_ip, my_mac);
-}
+}}
 
 // ── Existing accessors ──────────────────────────────────────────────────────
 
@@ -275,27 +275,27 @@ pub fn is_ready() -> bool {
     unsafe { (*addr_of_mut!(ACTIVE_NIC)).is_some() }
 }
 
-pub unsafe fn set_ip_address(ip: [u8; 4]) {
+pub unsafe fn set_ip_address(ip: [u8; 4]) { unsafe {
     *addr_of_mut!(HOST_IP) = ip;
-}
+}}
 
 pub fn get_ip_address() -> Option<[u8; 4]> {
     let ip = unsafe { *addr_of_mut!(HOST_IP) };
     if ip == [0u8; 4] { None } else { Some(ip) }
 }
 
-pub unsafe fn get_mac_address() -> Option<[u8; 6]> {
+pub unsafe fn get_mac_address() -> Option<[u8; 6]> { unsafe {
     match &*addr_of_mut!(ACTIVE_NIC) {
         Some(nic) => Some(nic.mac_address()),
         None => None,
     }
-}
+}}
 
 pub unsafe fn init(
     pml4: &mut PageTable,
     allocator: &mut FrameAllocator,
     device: PciDevice,
-) {
+) { unsafe {
     let Some(mut nic) = driver::Nic::probe(&device) else {
         println!(
             "network: unsupported NIC {:#04x}:{:#04x}",
@@ -321,18 +321,18 @@ pub unsafe fn init(
     let name = nic.name();
     *addr_of_mut!(ACTIVE_NIC) = Some(nic);
     println!("network: {} ready", name);
-}
+}}
 
-pub unsafe fn transmit(data: &[u8]) -> bool {
+pub unsafe fn transmit(data: &[u8]) -> bool { unsafe {
     match &mut *addr_of_mut!(ACTIVE_NIC) {
         Some(nic) => nic.transmit(data),
         None => false,
     }
-}
+}}
 
-pub unsafe fn poll_rx(out: &mut [u8]) -> usize {
+pub unsafe fn poll_rx(out: &mut [u8]) -> usize { unsafe {
     match &mut *addr_of_mut!(ACTIVE_NIC) {
         Some(nic) => nic.poll_rx(out),
         None => 0,
     }
-}
+}}

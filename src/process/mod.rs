@@ -1,7 +1,5 @@
 #![allow(static_mut_refs)]
-use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 // Re-using the allocator from the crate
