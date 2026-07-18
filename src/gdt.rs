@@ -110,7 +110,7 @@ unsafe fn set_gdt_entry_cpu(cpu_index: usize, index: usize, base: u32, limit: u3
     }
 }
 
-unsafe fn set_gdt_system_entry_cpu(cpu_index: usize, index: usize, base: u64, limit: u32, access: u8, gran: u8) {
+unsafe fn set_gdt_system_entry_cpu(cpu_index: usize, index: usize, base: u64, limit: u32, access: u8, gran: u8) { unsafe {
     unsafe {
         set_gdt_entry_cpu(cpu_index, index, base as u32, limit, access, gran);
     }
@@ -122,7 +122,7 @@ unsafe fn set_gdt_system_entry_cpu(cpu_index: usize, index: usize, base: u64, li
         *high_base_ptr = (base >> 32) as u32;
         *high_base_ptr.add(1) = 0;
     }
-}
+}}
 
 pub unsafe fn init_cpu(cpu_index: usize) {
     unsafe {

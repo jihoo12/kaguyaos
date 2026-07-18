@@ -2,7 +2,6 @@
 #![allow(unused_variables)]
 
 use crate::drivers::pci::PciDevice;
-use crate::print;
 use crate::println;
 use core::ptr::{read_volatile, write_volatile};
 
@@ -1279,7 +1278,7 @@ pub unsafe fn queue_keyboard_report_request(slot_id: u8, ep_index: u8) {
     unsafe { tr.enqueue(trb, db, ep_index) };
 }
 
-pub unsafe fn shutdown() {
+pub unsafe fn shutdown() { unsafe {
     if let Some(ctx) = unsafe { &mut *core::ptr::addr_of_mut!(XHCI_CTX) } {
         println!("xHCI: Shutting down...");
         let op = &mut *ctx.op;
@@ -1300,4 +1299,4 @@ pub unsafe fn shutdown() {
         }
         println!("xHCI: Shutdown complete");
     }
-}
+}}

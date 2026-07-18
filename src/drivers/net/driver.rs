@@ -58,33 +58,33 @@ impl NetworkDriver for Nic {
         &self,
         pml4: &mut PageTable,
         allocator: &mut FrameAllocator,
-    ) {
+    ) { unsafe {
         match self {
             Nic::E1000(d) => d.map_dma_buffers(pml4, allocator),
         }
-    }
+    }}
 
-    unsafe fn init(&mut self, device: PciDevice) {
+    unsafe fn init(&mut self, device: PciDevice) { unsafe {
         match self {
             Nic::E1000(d) => d.init(device),
         }
-    }
+    }}
 
-    unsafe fn transmit(&mut self, data: &[u8]) -> bool {
+    unsafe fn transmit(&mut self, data: &[u8]) -> bool { unsafe {
         match self {
             Nic::E1000(d) => d.transmit(data),
         }
-    }
+    }}
 
-    unsafe fn poll_rx(&mut self, out: &mut [u8]) -> usize {
+    unsafe fn poll_rx(&mut self, out: &mut [u8]) -> usize { unsafe {
         match self {
             Nic::E1000(d) => d.poll_rx(out),
         }
-    }
+    }}
 
-    unsafe fn mac_address(&self) -> [u8; 6] {
+    unsafe fn mac_address(&self) -> [u8; 6] { unsafe {
         match self {
             Nic::E1000(d) => d.mac_address(),
         }
-    }
+    }}
 }

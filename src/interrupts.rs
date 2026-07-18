@@ -242,7 +242,7 @@ const EXCEPTION_MESSAGES: [&str; 32] = [
 ];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) {
+pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) { unsafe {
     let int_no = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).int_no)) };
     if !(32..48).contains(&int_no) {
         let mut writer_guard = GLOBAL_WRITER.lock();
@@ -275,7 +275,7 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) {
     }
 
     unsafe { crate::pic::notify_eoi(irq as u8) };
-}
+}}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {

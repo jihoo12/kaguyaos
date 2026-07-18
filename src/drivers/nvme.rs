@@ -476,7 +476,7 @@ pub unsafe fn default_nsid() -> Option<u32> {
     }
 }
 
-pub unsafe fn shutdown() {
+pub unsafe fn shutdown() { unsafe {
     let ctx_ptr = addr_of_mut!(NVME_CTX);
     let ctx = &mut *ctx_ptr;
     if !ctx.regs.is_null() {
@@ -501,4 +501,4 @@ pub unsafe fn shutdown() {
         }
         println!("NVMe: Shutdown complete");
     }
-}
+}}

@@ -25,7 +25,7 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::acpi::MadtInfo;
-use crate::io::{io_wait, outb};
+use crate::io::io_wait;
 
 // ─── Per-CPU stacks ──────────────────────────────────────────────────────────
 
