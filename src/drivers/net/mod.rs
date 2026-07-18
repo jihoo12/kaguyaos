@@ -4,7 +4,7 @@ mod helper;
 pub mod ipv4;
 
 use crate::memory::{FrameAllocator, PageTable, PAGE_CACHE_DISABLE, PAGE_PRESENT, PAGE_WRITABLE};
-use crate::pci::{self, PciDevice};
+use crate::drivers::pci::{self, PciDevice};
 use crate::println;
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -109,8 +109,8 @@ static mut ICMP_RX_RING: [IcmpEchoReply; ICMP_RX_CAPACITY] = [IcmpEchoReply {
 }; ICMP_RX_CAPACITY];
 static mut ICMP_RX_HEAD: usize = 0;
 static mut ICMP_RX_TAIL: usize = 0;
-static ICMP_RX_LOCK: crate::interrupts::InterruptSpinlock<()> =
-    crate::interrupts::InterruptSpinlock::new(());
+static ICMP_RX_LOCK: crate::sync::Spinlock<()> =
+    crate::sync::Spinlock::new(());
 
 /// Push an ICMP Echo Reply into the ring buffer (called from AP poll).
 unsafe fn push_icmp_reply(reply: IcmpEchoReply) {

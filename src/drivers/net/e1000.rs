@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use crate::memory::{FrameAllocator, PAGE_PRESENT, PAGE_WRITABLE};
-use crate::network::NetworkDriver;
-use crate::pci::PciDevice;
+use crate::drivers::net::NetworkDriver;
+use crate::drivers::pci::PciDevice;
 use crate::println;
 use core::ptr::{addr_of_mut, read_volatile, write_volatile};
 
@@ -181,7 +181,7 @@ impl NetworkDriver for E1000 {
     unsafe fn init(&mut self, device: PciDevice) {
         let ctx = &mut *addr_of_mut!(E1000_CTX);
 
-        let bar = crate::pci::mmio_bar0(&device);
+        let bar = crate::drivers::pci::mmio_bar0(&device);
 
         ctx.pci_dev = Some(device);
         ctx.mmio = bar as *mut u8;

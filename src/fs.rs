@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::nvme;
+use crate::drivers::nvme;
 
 // ============================================================================
 // Block-level constants
@@ -96,7 +96,7 @@ pub fn block_size() -> usize {
 // Global Filesystem Lock
 // ============================================================================
 
-static FS_LOCK: crate::allocator::Spinlock<()> = crate::allocator::Spinlock::new(());
+static FS_LOCK: crate::sync::Spinlock<()> = crate::sync::Spinlock::new(());
 
 // ============================================================================
 // On-disk structures

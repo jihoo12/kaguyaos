@@ -1,15 +1,15 @@
 use font8x8::{BASIC_FONTS, UnicodeFonts};
 
-use crate::interrupts::InterruptSpinlock;
+use crate::sync::Spinlock;
 
 const CELL_W: usize = 8;
 const CELL_H: usize = 16; // matches your new_line() stride
 
-pub static GLOBAL_CELL_RENDERER: InterruptSpinlock<Option<CellRenderer>> =
-    InterruptSpinlock::new(None);
+pub static GLOBAL_CELL_RENDERER: Spinlock<Option<CellRenderer>> =
+    Spinlock::new(None);
 
 pub fn init() {
-    let info = crate::writer::get_framebuffer_info()
+    let info = crate::console::get_framebuffer_info()
         .expect("writer must be initialized before term_kernel");
 
     let mut renderer = GLOBAL_CELL_RENDERER.lock();

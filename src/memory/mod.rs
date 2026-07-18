@@ -1,3 +1,5 @@
+pub mod heap;
+
 use crate::BootInfo;
 use crate::uefi::{EFI_CONVENTIONAL_MEMORY, EFI_MEMORY_DESCRIPTOR};
 use core::arch::asm;

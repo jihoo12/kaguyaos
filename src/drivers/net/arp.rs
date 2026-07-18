@@ -1,5 +1,5 @@
 use crate::{
-    network::{
+    drivers::net::{
         helper::calculate_checksum,
         ipv4::{IcmpPacket, Ipv4Header},
         transmit,
@@ -64,7 +64,7 @@ pub unsafe fn send_arp_request(target_ip: [u8; 4], my_ip: [u8; 4], my_mac: [u8; 
 
 pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) {
     let mut rx_buffer = [0u8; 1514];
-    let bytes_received = crate::network::poll_rx(&mut rx_buffer);
+    let bytes_received = crate::drivers::net::poll_rx(&mut rx_buffer);
 
     if bytes_received < core::mem::size_of::<EthernetHeader>() {
         return;
@@ -82,7 +82,7 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) {
 
         if opcode == 1 && arp_packet.target_ip == my_ip {
             // Cache the sender's mapping from any incoming ARP request
-            crate::network::arp_cache_insert(arp_packet.sender_ip, arp_packet.sender_mac);
+            crate::drivers::net::arp_cache_insert(arp_packet.sender_ip, arp_packet.sender_mac);
 
             let mut reply_frame = ArpFrame {
                 eth: EthernetHeader {
@@ -108,10 +108,10 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) {
                 core::mem::size_of::<ArpFrame>(),
             );
 
-            crate::network::transmit(reply_data);
+            crate::drivers::net::transmit(reply_data);
         } else if opcode == 2 {
             // ARP Reply → cache the sender's mapping
-            crate::network::arp_cache_insert(arp_packet.sender_ip, arp_packet.sender_mac);
+            crate::drivers::net::arp_cache_insert(arp_packet.sender_ip, arp_packet.sender_mac);
         }
     } else if ethertype == 0x0800_u16 {
         let ip_offset = core::mem::size_of::<EthernetHeader>();
@@ -158,7 +158,7 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) {
                 (*eth_header_mut).src_mac = my_mac;
 
                 let send_data = &rx_buffer[0..ip_offset + total_length];
-                crate::network::transmit(send_data);
+                crate::drivers::net::transmit(send_data);
             } else if icmp_packet.icmp_type == 0 {
                 // Echo Reply → buffer for userland
                 let total_length = u16::from_be(ip_header.total_length) as usize;
@@ -174,14 +174,14 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) {
                     );
                 }
 
-                let reply = crate::network::IcmpEchoReply {
+                let reply = crate::drivers::net::IcmpEchoReply {
                     src_ip: ip_header.src_ip,
                     identifier: u16::from_be(icmp_packet.identifier),
                     sequence: u16::from_be(icmp_packet.sequence_number),
                     payload_len: payload_len as u16,
                     payload,
                 };
-                crate::network::push_icmp_reply(reply);
+                crate::drivers::net::push_icmp_reply(reply);
             }
         }
     }

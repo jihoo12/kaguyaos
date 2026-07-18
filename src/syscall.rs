@@ -45,7 +45,7 @@ pub(crate) static mut KERNEL_GS_BASE: KernelGsBase = KernelGsBase {
     scratch: 0,
 };
 
-static XHCI_LOCK: crate::interrupts::InterruptSpinlock<()> = crate::interrupts::InterruptSpinlock::new(());
+static XHCI_LOCK: crate::sync::Spinlock<()> = crate::sync::Spinlock::new(());
 
 pub unsafe fn get_global_gs_base() -> u64 {
     core::ptr::addr_of_mut!(KERNEL_GS_BASE) as u64
@@ -195,7 +195,7 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_xhci_poll()
             let _guard = XHCI_LOCK.lock();
             unsafe {
-                crate::xhci::process_events();
+                crate::drivers::xhci::process_events();
             }
             0
         }
@@ -312,7 +312,7 @@ fn sys_alloc(size: usize, align: usize) -> usize {
     // If align is 0, default to 8.
     let align = if align == 0 { 8 } else { align };
     match Layout::from_size_align(size, align) {
-        Ok(layout) => unsafe { crate::allocator::user_heap_alloc(layout) as usize },
+        Ok(layout) => unsafe { crate::memory::heap::user_heap_alloc(layout) as usize },
         Err(_) => 0, // Allocation failed due to invalid layout
     }
 }
@@ -321,7 +321,7 @@ fn sys_realloc(ptr: usize, size: usize, align: usize) -> usize {
     let align = if align == 0 { 8 } else { align };
     match Layout::from_size_align(size, align) {
         Ok(layout) => unsafe {
-            crate::allocator::user_heap_realloc(ptr as *mut u8, layout, size) as usize
+            crate::memory::heap::user_heap_realloc(ptr as *mut u8, layout, size) as usize
         },
         Err(_) => 0,
     }
@@ -329,35 +329,35 @@ fn sys_realloc(ptr: usize, size: usize, align: usize) -> usize {
 
 fn sys_free(ptr: usize) {
     unsafe {
-        crate::allocator::user_heap_free(ptr as *mut u8);
+        crate::memory::heap::user_heap_free(ptr as *mut u8);
     }
 }
 
 fn sys_add_task(entry: usize, user_rsp: usize) -> usize {
     // We assume stack size 16KB for new user tasks
     let stack_size = 16384;
-    crate::scheduler::add_new_user_task(entry as u64, user_rsp as u64, stack_size, 0, 0)
+    crate::process::add_new_user_task(entry as u64, user_rsp as u64, stack_size, 0, 0)
 }
 
 fn sys_switch_task() {
-    crate::scheduler::switch_task();
+    crate::process::switch_task();
 }
 
 fn sys_terminate_task(exit_code: usize) {
-    crate::scheduler::terminate_task(exit_code);
+    crate::process::terminate_task(exit_code);
 }
 
 fn sys_shutdown() {
     unsafe {
-        crate::xhci::shutdown();
-        crate::nvme::shutdown();
+        crate::drivers::xhci::shutdown();
+        crate::drivers::nvme::shutdown();
         crate::uefi::system_reset(crate::uefi::EFI_RESET_TYPE::EfiResetShutdown, 0);
     }
 }
 
 fn sys_read_key() -> usize {
     let _guard = XHCI_LOCK.lock();
-    if let Some(key) = crate::xhci::get_key() {
+    if let Some(key) = crate::drivers::xhci::get_key() {
         key as usize
     } else {
         0
@@ -365,7 +365,7 @@ fn sys_read_key() -> usize {
 }
 
 fn sys_clear() {
-    crate::writer::clear();
+    crate::console::clear();
 }
 
 #[inline(always)]
@@ -531,15 +531,15 @@ fn sys_fsrm(filename_ptr: usize, filename_len: usize) -> i32 {
 }
 
 fn sys_get_task_status(task_id: usize) -> usize {
-    crate::scheduler::get_task_status(task_id)
+    crate::process::get_task_status(task_id)
 }
 
 fn sys_get_task_exit_code(task_id: usize) -> usize {
-    crate::scheduler::get_task_exit_code(task_id)
+    crate::process::get_task_exit_code(task_id)
 }
 
 fn sys_run_ap_scheduler() -> ! {
-    crate::scheduler::run_ap_scheduler();
+    crate::process::run_ap_scheduler();
 }
 
 fn sys_exec(filename_ptr: usize, filename_len: usize) -> usize {
@@ -565,7 +565,7 @@ fn sys_exec(filename_ptr: usize, filename_len: usize) -> usize {
     let pml4_phys = crate::memory::current_pml4_phys();
     let pml4 = unsafe { crate::memory::get_table_mut(pml4_phys) };
 
-    let (entry_point, user_rsp) = match crate::kef::load_kef(&file_data, &mut allocator, pml4) {
+    let (entry_point, user_rsp) = match crate::loader::load_kef(&file_data, &mut allocator, pml4) {
         Ok(ep) => ep,
         Err(_) => return usize::MAX,
     };
@@ -574,7 +574,7 @@ fn sys_exec(filename_ptr: usize, filename_len: usize) -> usize {
     crate::memory::commit_frame_allocator(&allocator);
 
     // 3. Create the new user task with no args (shell uses this for exec)
-    crate::scheduler::add_new_user_task(entry_point, user_rsp, 16384, 0, 0)
+    crate::process::add_new_user_task(entry_point, user_rsp, 16384, 0, 0)
 }
 
 fn sys_exec2(filename_ptr: usize, filename_len: usize, args_ptr: usize, args_len: usize) -> usize {
@@ -607,7 +607,7 @@ fn sys_exec2(filename_ptr: usize, filename_len: usize, args_ptr: usize, args_len
     let pml4_phys = crate::memory::current_pml4_phys();
     let pml4 = unsafe { crate::memory::get_table_mut(pml4_phys) };
 
-    let (entry_point, user_rsp) = match crate::kef::load_kef(&file_data, &mut allocator, pml4) {
+    let (entry_point, user_rsp) = match crate::loader::load_kef(&file_data, &mut allocator, pml4) {
         Ok(ep) => ep,
         Err(_) => return usize::MAX,
     };
@@ -616,7 +616,7 @@ fn sys_exec2(filename_ptr: usize, filename_len: usize, args_ptr: usize, args_len
     crate::memory::commit_frame_allocator(&allocator);
 
     // 3. Create the new user task with args in RDI/RSI
-    crate::scheduler::add_new_user_task(entry_point, user_rsp, 16384, args_ptr as u64, args_len as u64)
+    crate::process::add_new_user_task(entry_point, user_rsp, 16384, args_ptr as u64, args_len as u64)
 }
 
 fn sys_write_cell(row: usize, col: usize, char_code: usize, fg: usize, bg: usize) {
@@ -626,7 +626,7 @@ fn sys_write_cell(row: usize, col: usize, char_code: usize, fg: usize, bg: usize
         None => return,
     };
 
-    let mut renderer = crate::term::GLOBAL_CELL_RENDERER.lock();
+    let mut renderer = crate::console::term::GLOBAL_CELL_RENDERER.lock();
     if let Some(r) = renderer.as_mut() {
         r.write_cell(row, col, ch, fg as u32, bg as u32);
     }
@@ -671,7 +671,7 @@ fn sys_write_region(
         core::slice::from_raw_parts(ptr as *const u32, len * 3)
     };
 
-    let mut renderer = crate::term::GLOBAL_CELL_RENDERER.lock();
+    let mut renderer = crate::console::term::GLOBAL_CELL_RENDERER.lock();
     let r = match renderer.as_mut() {
         Some(r) => r,
         None => return,
@@ -704,7 +704,7 @@ fn sys_net_send_ping(dst_ip_packed: usize) -> usize {
         ((dst_ip_packed >> 16) & 0xFF) as u8,
         ((dst_ip_packed >> 24) & 0xFF) as u8,
     ];
-    unsafe { crate::network::send_icmp_echo_request(ip) as usize }
+    unsafe { crate::drivers::net::send_icmp_echo_request(ip) as usize }
 }
 
 /// sys_net_recv_ping(buf_ptr: *mut u8, buf_len: usize) -> bytes_read: usize
@@ -718,6 +718,6 @@ fn sys_net_recv_ping(buf_ptr: usize, buf_len: usize) -> usize {
     }
     unsafe {
         let buf = core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len);
-        crate::network::pop_icmp_reply_raw(buf)
+        crate::drivers::net::pop_icmp_reply_raw(buf)
     }
 }

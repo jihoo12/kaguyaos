@@ -1,9 +1,11 @@
+pub mod term;
+
 use super::BootInfo;
 use core::fmt;
 use core::fmt::Write;
 use font8x8::{BASIC_FONTS, UnicodeFonts};
 
-pub static GLOBAL_WRITER: crate::interrupts::InterruptSpinlock<Option<Writer>> = crate::interrupts::InterruptSpinlock::new(None);
+pub static GLOBAL_WRITER: crate::sync::Spinlock<Option<Writer>> = crate::sync::Spinlock::new(None);
 
 pub unsafe fn init_global_writer(info: BootInfo) {
     let mut writer = GLOBAL_WRITER.lock();
@@ -156,7 +158,7 @@ pub fn _print(args: fmt::Arguments) {
 
 #[macro_export]
 macro_rules! print {
-    ($($arg:tt)*) => ($crate::writer::_print(format_args!($($arg)*)));
+    ($($arg:tt)*) => ($crate::console::_print(format_args!($($arg)*)));
 }
 
 #[macro_export]

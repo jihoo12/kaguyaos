@@ -31,7 +31,7 @@ pub struct Scheduler {
 
 static mut SCHEDULER: Option<Scheduler> = None;
 static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1); // 0 is reserved for main kernel task
-static SCHEDULER_LOCK: crate::interrupts::InterruptSpinlock<()> = crate::interrupts::InterruptSpinlock::new(());
+static SCHEDULER_LOCK: crate::sync::Spinlock<()> = crate::sync::Spinlock::new(());
 
 /// Initialize the global scheduler.
 /// This must be called only once.
@@ -68,7 +68,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
             let id = NEXT_TASK_ID.fetch_add(1, Ordering::SeqCst);
 
             // 1. Allocate Kernel Stack
-            let kernel_stack_bottom = crate::allocator::alloc(stack_size) as u64;
+            let kernel_stack_bottom = crate::memory::heap::alloc(stack_size) as u64;
             let kernel_stack_top = kernel_stack_bottom + stack_size as u64;
 
             // 2. Setup Stack Frame for IRETQ (to enter usermode)
@@ -405,7 +405,7 @@ pub fn run_ap_scheduler() -> ! {
     unsafe {
         core::arch::asm!("sti");
         loop {
-            crate::network::poll();
+            crate::drivers::net::poll();
             // Yield some CPU time; ~10k spin-loops ≈ a few hundred µs.
             for _ in 0..10_000 {
                 core::hint::spin_loop();
