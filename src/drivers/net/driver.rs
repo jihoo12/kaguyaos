@@ -1,5 +1,5 @@
 use crate::memory::{FrameAllocator, PageTable};
-use crate::pci::PciDevice;
+use crate::drivers::pci::PciDevice;
 
 /// Hardware-specific Ethernet driver interface (L2 only — no TCP/IP).
 pub trait NetworkDriver {

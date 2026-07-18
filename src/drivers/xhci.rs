@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
-use crate::pci::PciDevice;
+use crate::drivers::pci::PciDevice;
 use crate::print;
 use crate::println;
 use core::ptr::{read_volatile, write_volatile};

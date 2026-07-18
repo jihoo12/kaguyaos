@@ -8,7 +8,6 @@ mod uefi;
 use core::ffi::c_void;
 use uefi::*;
 
-pub mod kef;
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -61,22 +60,19 @@ pub struct BootInfo {
 }
 
 mod acpi;
-mod allocator;
 mod fs;
 mod gdt;
 mod interrupts;
 mod io;
 mod memory;
-mod network;
-mod nvme;
-mod pci;
+mod drivers;
 mod pic;
 mod processor;
-mod scheduler;
+mod process;
 mod syscall;
-mod writer;
-mod xhci;
-mod term;
+mod console;
+pub mod loader;
+pub mod sync;
 
 #[repr(align(16))]
 struct KernelStack([u8; 16384]);
@@ -86,7 +82,7 @@ static mut KERNEL_STACK: KernelStack = KernelStack([0; 16384]);
 pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     // Initialize Global Writer (for interrupts and syscalls)
     unsafe {
-        writer::init_global_writer(*boot_info);
+        console::init_global_writer(*boot_info);
     }
 
     // We can now use println!
@@ -169,10 +165,10 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     }
 
     // Initialize PCI
-    pci::init();
+    drivers::pci::init();
 
     // Initialize NVMe
-    if let Some(device) = pci::get_nvme_device() {
+    if let Some(device) = drivers::pci::get_nvme_device() {
         unsafe {
             // Identity map the BAR0 MMIO region
             let pml4 = memory::get_table_mut(pml4_phys);
@@ -196,7 +192,7 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
                 memory::map_page(pml4, addr, addr, flags, &mut allocator);
             }
 
-            nvme::init(device);
+            drivers::nvme::init(device);
             match fs::read_boot_sector() {
                 Ok(bs) => {
                     let clusters = bs.total_clusters;
@@ -213,7 +209,7 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     } else {
         println!("No NVMe device found!");
     }
-    if let Some(device) = pci::get_xhci_device() {
+    if let Some(device) = drivers::pci::get_xhci_device() {
         println!("find xHCI device\n");
         unsafe {
             let pml4 = memory::get_table_mut(pml4_phys);
@@ -237,12 +233,12 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
 
             // Single-page statics
             let single_page_statics: &[u64] = &[
-                core::ptr::addr_of!(xhci::COMMAND_RING_BUFFER) as u64,
-                core::ptr::addr_of!(xhci::DCBAA_BUFFER) as u64,
-                core::ptr::addr_of!(xhci::EVENT_RING_SEGMENT_TABLE) as u64,
-                core::ptr::addr_of!(xhci::EVENT_RING_BUFFER) as u64,
-                core::ptr::addr_of!(xhci::INPUT_CONTEXT_BUFFER) as u64,
-                core::ptr::addr_of!(xhci::USB_DATA_BUFFER) as u64,
+                core::ptr::addr_of!(drivers::xhci::COMMAND_RING_BUFFER) as u64,
+                core::ptr::addr_of!(drivers::xhci::DCBAA_BUFFER) as u64,
+                core::ptr::addr_of!(drivers::xhci::EVENT_RING_SEGMENT_TABLE) as u64,
+                core::ptr::addr_of!(drivers::xhci::EVENT_RING_BUFFER) as u64,
+                core::ptr::addr_of!(drivers::xhci::INPUT_CONTEXT_BUFFER) as u64,
+                core::ptr::addr_of!(drivers::xhci::USB_DATA_BUFFER) as u64,
             ];
             for &addr in single_page_statics {
                 memory::map_page(pml4, addr, addr, dma_flags, &mut allocator);
@@ -251,16 +247,16 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             // Multi-page statics
             let multi_page_statics: &[(u64, usize)] = &[
                 (
-                    core::ptr::addr_of!(xhci::DEVICE_CONTEXT_BUFFERS) as u64,
-                    core::mem::size_of::<xhci::DeviceContextBuffer>(),
+                    core::ptr::addr_of!(drivers::xhci::DEVICE_CONTEXT_BUFFERS) as u64,
+                    core::mem::size_of::<drivers::xhci::DeviceContextBuffer>(),
                 ),
                 (
-                    core::ptr::addr_of!(xhci::EP0_TR_BUFFERS) as u64,
-                    core::mem::size_of::<[xhci::TransferRingBuffer; 64]>(),
+                    core::ptr::addr_of!(drivers::xhci::EP0_TR_BUFFERS) as u64,
+                    core::mem::size_of::<[drivers::xhci::TransferRingBuffer; 64]>(),
                 ),
                 (
-                    core::ptr::addr_of!(xhci::KEYBOARD_TR_BUFFERS) as u64,
-                    core::mem::size_of::<xhci::KeyboardTrBuffers>(),
+                    core::ptr::addr_of!(drivers::xhci::KEYBOARD_TR_BUFFERS) as u64,
+                    core::mem::size_of::<drivers::xhci::KeyboardTrBuffers>(),
                 ),
             ];
             for &(base, size) in multi_page_statics {
@@ -270,19 +266,19 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
                     memory::map_page(pml4, addr, addr, dma_flags, &mut allocator);
                 }
             }
-            xhci::init(device);
+            drivers::xhci::init(device);
         }
     } else {
         println!("failed to find xHCI device\n")
     }
-    if let Some(device) = pci::get_ethernet_device() {
+    if let Some(device) = drivers::pci::get_ethernet_device() {
         unsafe {
             let pml4 = memory::get_table_mut(pml4_phys);
-            network::init(pml4, &mut allocator, device);
+            drivers::net::init(pml4, &mut allocator, device);
         }
-        unsafe { network::set_ip_address([10, 0, 2, 15]) };
-        let ip = network::get_ip_address();
-        let mac = unsafe { network::get_mac_address() };
+        unsafe { drivers::net::set_ip_address([10, 0, 2, 15]) };
+        let ip = drivers::net::get_ip_address();
+        let mac = unsafe { drivers::net::get_mac_address() };
         println!("ip:{:?}", ip);
         println!("mac:{:?}", mac);
     } else {
@@ -315,11 +311,11 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     }
 
     unsafe {
-        allocator::init(heap_start as usize, (heap_pages * 4096) as usize);
+        memory::heap::init(heap_start as usize, (heap_pages * 4096) as usize);
     }
 
     unsafe {
-        scheduler::init();
+        process::init();
     }
     if let Some(tables) = acpi_tables {
         if let Some(madt_ptr) = tables.madt {
@@ -346,7 +342,7 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
         println!("ACPI: tables not initialized. Cannot start APs.");
     }
 
-    term::init();
+    console::term::init();
 
     // ── User heap ─────────────────────────────────────────────────────────
     // A heap separate from the kernel heap, with pages mapped PAGE_USER so
@@ -388,7 +384,7 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             let virt = USER_HEAP_VIRT_BASE + i * 4096;
             memory::map_page(pml4, virt, phys, flags, &mut allocator);
         }
-        allocator::init_user_heap(USER_HEAP_VIRT_BASE as usize, (user_heap_pages * 4096) as usize);
+        memory::heap::init_user_heap(USER_HEAP_VIRT_BASE as usize, (user_heap_pages * 4096) as usize);
         println!(
             "User heap mapped at {:#x}-{:#x} (phys {:#x})",
             USER_HEAP_VIRT_BASE,
@@ -430,10 +426,10 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
         match fs::read_file("init.kef") {
             Ok(file_data) => {
                 let pml4 = unsafe { memory::get_table_mut(pml4_phys) };
-                match kef::load_kef(&file_data, &mut allocator, pml4) {
+                match loader::load_kef(&file_data, &mut allocator, pml4) {
                     Ok((entry_point, user_rsp)) => {
                         println!("Loader: Successfully loaded init.kef. Entry={:#x}, RSP={:#x}", entry_point, user_rsp);
-                        scheduler::add_new_user_task(entry_point, user_rsp, 16384, 0, 0);
+                        process::add_new_user_task(entry_point, user_rsp, 16384, 0, 0);
                         loaded = true;
                     }
                     Err(e) => {
@@ -479,7 +475,7 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
         println!("Starting scheduler loop on BSP...");
         core::arch::asm!("sti");
         loop {
-            scheduler::switch_task();
+            process::switch_task();
             // Re-enable interrupts before halting.  switch_task() may return
             // with IF=0 when the previous context originated from a syscall
             // handler (where SFMASK clears IF).  Without sti, the hlt would

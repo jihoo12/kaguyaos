@@ -1,9 +1,7 @@
 use core::alloc::{GlobalAlloc, Layout};
-use core::cell::UnsafeCell;
 use core::mem;
-use core::ops::{Deref, DerefMut};
 use core::ptr;
-use core::sync::atomic::{AtomicBool, Ordering};
+use crate::sync::Spinlock;
 
 // ---------------------------------------------------------------------------
 // Segregated Free List Allocator
@@ -408,61 +406,6 @@ impl SegregatedAllocator {
 #[inline]
 fn align_up(addr: usize, align: usize) -> usize {
     (addr + align - 1) & !(align - 1)
-}
-
-// ---------------------------------------------------------------------------
-// Spinlock (unchanged from original)
-// ---------------------------------------------------------------------------
-
-pub struct Spinlock<T> {
-    lock: AtomicBool,
-    data: UnsafeCell<T>,
-}
-
-unsafe impl<T: Send> Sync for Spinlock<T> {}
-unsafe impl<T: Send> Send for Spinlock<T> {}
-
-impl<T> Spinlock<T> {
-    pub const fn new(data: T) -> Self {
-        Self {
-            lock: AtomicBool::new(false),
-            data: UnsafeCell::new(data),
-        }
-    }
-
-    pub fn lock(&self) -> SpinlockGuard<T> {
-        while self
-            .lock
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            core::hint::spin_loop();
-        }
-        SpinlockGuard { lock: self }
-    }
-}
-
-pub struct SpinlockGuard<'a, T> {
-    lock: &'a Spinlock<T>,
-}
-
-impl<'a, T> Deref for SpinlockGuard<'a, T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        unsafe { &*self.lock.data.get() }
-    }
-}
-
-impl<'a, T> DerefMut for SpinlockGuard<'a, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        unsafe { &mut *self.lock.data.get() }
-    }
-}
-
-impl<'a, T> Drop for SpinlockGuard<'a, T> {
-    fn drop(&mut self) {
-        self.lock.lock.store(false, Ordering::Release);
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,120 +1,11 @@
 #![allow(bad_asm_style)]
 
-use crate::writer::GLOBAL_WRITER;
+use crate::console::GLOBAL_WRITER;
 use core::arch::asm;
 use core::fmt::Write;
 use core::mem::size_of;
 
 pub const KERNEL_CODE_SEL: u16 = 0x08;
-
-use core::sync::atomic::{AtomicBool, Ordering};
-use core::cell::UnsafeCell;
-use core::ops::{Deref, DerefMut};
-
-pub struct InterruptSpinlock<T> {
-    lock: AtomicBool,
-    data: UnsafeCell<T>,
-}
-
-unsafe impl<T: Send> Sync for InterruptSpinlock<T> {}
-unsafe impl<T: Send> Send for InterruptSpinlock<T> {}
-
-impl<T> InterruptSpinlock<T> {
-    pub const fn new(data: T) -> Self {
-        Self {
-            lock: AtomicBool::new(false),
-            data: UnsafeCell::new(data),
-        }
-    }
-
-    pub fn lock(&self) -> InterruptSpinlockGuard<T> {
-        let rflags = unsafe {
-            let r: u64;
-            core::arch::asm!("pushfq; pop {}", out(reg) r, options(nomem, preserves_flags));
-            r
-        };
-        unsafe {
-            core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
-        }
-        let interrupts_enabled = (rflags & (1 << 9)) != 0;
-
-        while self
-            .lock
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            core::hint::spin_loop();
-        }
-
-        InterruptSpinlockGuard {
-            lock: self,
-            interrupts_enabled,
-        }
-    }
-
-    pub fn try_lock(&self) -> Option<InterruptSpinlockGuard<T>> {
-        let rflags = unsafe {
-            let r: u64;
-            core::arch::asm!("pushfq; pop {}", out(reg) r, options(nomem, preserves_flags));
-            r
-        };
-        unsafe {
-            core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
-        }
-        let interrupts_enabled = (rflags & (1 << 9)) != 0;
-
-        if self
-            .lock
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
-        {
-            Some(InterruptSpinlockGuard {
-                lock: self,
-                interrupts_enabled,
-            })
-        } else {
-            if interrupts_enabled {
-                unsafe {
-                    core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
-                }
-            }
-            None
-        }
-    }
-
-    pub unsafe fn force_unlock(&self) {
-        self.lock.store(false, Ordering::Release);
-    }
-}
-
-pub struct InterruptSpinlockGuard<'a, T> {
-    lock: &'a InterruptSpinlock<T>,
-    interrupts_enabled: bool,
-}
-
-impl<'a, T> Deref for InterruptSpinlockGuard<'a, T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        unsafe { &*self.lock.data.get() }
-    }
-}
-
-impl<'a, T> DerefMut for InterruptSpinlockGuard<'a, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        unsafe { &mut *self.lock.data.get() }
-    }
-}
-
-impl<'a, T> Drop for InterruptSpinlockGuard<'a, T> {
-    fn drop(&mut self) {
-        self.lock.lock.store(false, Ordering::Release);
-        if self.interrupts_enabled {
-            unsafe {
-                core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
-            }
-        }
-    }
-}
 
 
 #[allow(dead_code)]
@@ -368,7 +259,7 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) {
             // Timer: preempt user-mode tasks so the shell can't starve children.
             let cs = core::ptr::read_unaligned(core::ptr::addr_of!((*frame).cs));
             if cs & 3 == 3 {
-                crate::scheduler::switch_task();
+                crate::process::switch_task();
             }
         }
         1 => {
@@ -476,7 +367,7 @@ pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {
         // terminate_task marks the current task Terminated, records an error
         // exit code, then calls switch_task which context-switches away.
         // We should never return here.
-        crate::scheduler::terminate_task(0xDEAD);
+        crate::process::terminate_task(0xDEAD);
     }
 
     // Kernel-mode fault (or no other task to switch to) — halt.

@@ -503,7 +503,7 @@ pub unsafe extern "sysv64" fn ap_entry() {
             AP_ONLINE_COUNT.fetch_add(1, Ordering::Release);
 
             // 6. Enter scheduler loop for AP
-            crate::scheduler::run_ap_scheduler();
+            crate::process::run_ap_scheduler();
         } else {
             // Fallback
             crate::gdt::init();
