@@ -391,6 +391,12 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
 /// Temporary #47 stress worker. Each worker is a real scheduler-managed kernel
 /// task, so completion exercises claim -> run -> terminate -> switch-away.
 extern "C" fn sched_stress_worker() {
+    // Keep the tiny worker atomic with respect to timer preemption. The current
+    // scheduler publishes an outgoing Running task as Ready before assembly has
+    // saved its final RSP; allowing timer preemption here can let another CPU
+    // claim that not-yet-saved context and corrupt the queue/stack. This probe
+    // is intended to validate #47's claimed-task switch-plan path separately.
+    unsafe { core::arch::asm!("cli", options(nostack, preserves_flags)); }
     let cpu = unsafe {
         let percpu = crate::processor::get_percpu_data();
         if percpu.is_null() { usize::MAX } else { (*percpu).cpu_index as usize }
