@@ -783,11 +783,11 @@ fn reap_zombies(scheduler: &mut Scheduler) {
             continue;
         }
 
-        unsafe {
-            crate::memory::heap::free(task.kernel_stack_bottom as *mut u8);
-        }
-        task.kernel_stack_bottom = 0;
-        task.kernel_stack_top = 0;
+        // TEMP #47 stress isolation: do not reclaim zombie kernel stacks here.
+        // current-task publication can be cleared before context_switch has
+        // physically left the terminating stack, so another CPU may otherwise
+        // free a still-live stack. Keep it allocated for this validation run.
+        continue;
     }
 }
 
