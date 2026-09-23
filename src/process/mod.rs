@@ -83,6 +83,12 @@ const SCHED_STRESS_STACK_SIZE: usize = 4 * 1024;
 static CPU_CURRENT_TASK: [AtomicUsize; crate::processor::MAX_AP_COUNT + 1] =
     [const { AtomicUsize::new(usize::MAX) }; crate::processor::MAX_AP_COUNT + 1];
 
+/// One pending zombie stack retirement per CPU. A CPU cannot retire another
+/// zombie stack until it has left the previous context, so this slot cannot be
+/// overwritten before the assembly acknowledgement is complete.
+static CPU_RETIRED_STACK: [AtomicUsize; crate::processor::MAX_AP_COUNT + 1] =
+    [const { AtomicUsize::new(0) }; crate::processor::MAX_AP_COUNT + 1];
+
 /// Kernel stack base that this CPU has fully switched away from. Publishing it
 /// happens only after context_switch returns on the incoming/idle stack.
 #[inline]
@@ -511,6 +517,8 @@ pub fn scheduler_stress_done() -> usize {
 /// reaping has verified that no CPU publishes the task as current.
 struct SwitchPlan {
     old_stack_ref: *mut u64,
+    retired_stack_bottom: u64,
+    retired_stack_slot: *const AtomicUsize,
     new_stack: u64,
     new_kernel_stack_top: u64,
     new_user_rsp: u64,
@@ -568,7 +576,16 @@ pub fn switch_task() {
                             0,
                         );
                         core::mem::drop(guard);
-                        context_switch(old_stack_ref, idle_stack);
+                        let retired_stack_bottom =
+                            scheduler.metadata.tasks[current_index].kernel_stack_bottom;
+                        let retired_stack_slot =
+                            &CPU_RETIRED_STACK[cpu_index] as *const AtomicUsize;
+                        context_switch(
+                            old_stack_ref,
+                            idle_stack,
+                            retired_stack_slot,
+                            retired_stack_bottom,
+                        );
                         return;
                     }
                 }
@@ -631,8 +648,17 @@ pub fn switch_task() {
                     crate::processor::rdmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE);
             }
 
+            let retired_stack_bottom = if current_index != usize::MAX
+                && scheduler.metadata.tasks[current_index].status == TaskStatus::Zombie
+            {
+                scheduler.metadata.tasks[current_index].kernel_stack_bottom
+            } else {
+                0
+            };
             let plan = SwitchPlan {
                 old_stack_ref,
+                retired_stack_bottom,
+                retired_stack_slot: &CPU_RETIRED_STACK[cpu_index] as *const AtomicUsize,
                 new_stack: scheduler.metadata.tasks[next_index].stack_top,
                 new_kernel_stack_top: scheduler.metadata.tasks[next_index].kernel_stack_top,
                 new_user_rsp: scheduler.metadata.tasks[next_index].user_rsp,
@@ -654,7 +680,12 @@ pub fn switch_task() {
                 plan.new_user_gs,
             );
 
-            context_switch(plan.old_stack_ref, plan.new_stack);
+            context_switch(
+                plan.old_stack_ref,
+                plan.new_stack,
+                plan.retired_stack_slot,
+                plan.retired_stack_bottom,
+            );
         }
     }
 }
@@ -812,11 +843,33 @@ fn reap_zombies(scheduler: &mut Scheduler) {
             continue;
         }
 
-        // Reclaim only after the owning CPU has returned from context_switch
-        // on a different stack and explicitly published this stack as retired.
-        // TEMP #47: reclamation stays disabled until context_switch itself
-        // can acknowledge that the outgoing stack is no longer active.
-        continue;
+        // Assembly publishes the old kernel stack only after loading the
+        // incoming RSP. Consume only a matching acknowledgement; unrelated
+        // per-CPU retirement slots remain intact for their zombie.
+        let mut acknowledged = false;
+        for cpu in 0..=crate::processor::MAX_AP_COUNT {
+            if CPU_RETIRED_STACK[cpu]
+                .compare_exchange(
+                    task.kernel_stack_bottom as usize,
+                    0,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                acknowledged = true;
+                break;
+            }
+        }
+        if !acknowledged {
+            continue;
+        }
+
+        unsafe {
+            crate::memory::heap::free(task.kernel_stack_bottom as *mut u8);
+        }
+        task.kernel_stack_bottom = 0;
+        task.kernel_stack_top = 0;
     }
 }
 
@@ -861,7 +914,12 @@ pub fn terminate_task(exit_code: usize) {
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
-unsafe extern "sysv64" fn context_switch(old_stack_ptr: *mut u64, new_stack_ptr: u64) {
+unsafe extern "sysv64" fn context_switch(
+    old_stack_ptr: *mut u64,
+    new_stack_ptr: u64,
+    retired_stack_slot: *const AtomicUsize,
+    retired_stack_bottom: u64,
+) {
     core::arch::naked_asm!(
         "push r15",
         "push r14",
@@ -871,10 +929,16 @@ unsafe extern "sysv64" fn context_switch(old_stack_ptr: *mut u64, new_stack_ptr:
         "push rbp",
         "push rdi",
         "push rsi",
-        // Save current RSP to the old_stack_ptr location
+        // Save current RSP to the old_stack_ptr location.
         "mov [rdi], rsp",
-        // Load new RSP
+        // From this instruction onward the outgoing stack is no longer active.
         "mov rsp, rsi",
+        // Publish zombie-stack retirement from the new stack. xchg with memory
+        // is atomic and acts as the release point observed by CPU0's reaper.
+        "test rcx, rcx",
+        "jz 2f",
+        "xchg [rdx], rcx",
+        "2:",
         "pop rsi",
         "pop rdi",
         "pop rbp",
