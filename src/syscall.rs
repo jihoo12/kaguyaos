@@ -342,6 +342,14 @@ fn sys_add_task(entry: usize, user_rsp: usize) -> usize {
 }
 
 fn sys_switch_task() {
+    // The NIC is currently polled rather than interrupt-driven. A user task
+    // can repeatedly yield on an AP while remaining the only runnable task on
+    // that CPU; in that case switch_task() returns directly to the task and
+    // the AP's outer scheduler loop never gets a chance to poll RX. Make a
+    // cooperative yield a device-progress point as well.
+    unsafe {
+        crate::drivers::net::poll();
+    }
     crate::process::switch_task();
 }
 
