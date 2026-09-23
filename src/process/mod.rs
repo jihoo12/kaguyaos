@@ -584,6 +584,11 @@ pub fn switch_task() {
                         .is_ok()
                 {
                     SCHED_STRESS_PENDING_BATCH.store(batch + 1, Ordering::Release);
+                    // The request is serviced by the BSP scheduler loop outside
+                    // SCHEDULER_LOCK. If CPU0 is currently running init while an
+                    // AP completes the last worker, ensure CPU0 gets another
+                    // scheduler entry instead of leaving the pending batch idle.
+                    (*percpu).need_resched = true;
                 }
             }
 
