@@ -397,6 +397,11 @@ pub fn scheduler_clock_tick() {
     wake_sleeping_tasks(now);
 }
 
+#[inline]
+pub fn scheduler_clock_now() -> u64 {
+    SCHEDULER_TICKS.load(Ordering::Relaxed) as u64
+}
+
 /// Account one scheduling quantum tick for the current CPU.
 ///
 /// Both the BSP PIT and AP Local APIC timer may call this, but only when they
