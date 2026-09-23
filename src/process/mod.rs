@@ -487,7 +487,11 @@ pub fn run_ap_scheduler() -> ! {
 
     loop {
         switch_task();
-        crate::drivers::net::poll();
+        // The network driver exposes poll as unsafe because it touches device
+        // state/MMIO. AP scheduling does not change that contract.
+        unsafe {
+            crate::drivers::net::poll();
+        }
 
         // The legacy PIC timer is routed to the BSP, so an idle AP cannot hlt
         // here yet. Keep polling its queue with a small backoff.
