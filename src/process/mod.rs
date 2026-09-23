@@ -1,4 +1,5 @@
 #![allow(static_mut_refs)]
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -25,6 +26,9 @@ pub struct Task {
 
 pub struct Scheduler {
     tasks: Vec<Task>,
+    // Indices into `tasks`. Running tasks are never present in this queue.
+    // Task slots are stable because terminated tasks are retained for status/exit-code queries.
+    ready_queue: VecDeque<usize>,
 }
 
 static mut SCHEDULER: Option<Scheduler> = None;
@@ -38,6 +42,7 @@ pub unsafe fn init() {
     unsafe {
         SCHEDULER = Some(Scheduler {
             tasks: Vec::new(),
+            ready_queue: VecDeque::new(),
         });
     }
 
@@ -117,6 +122,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
             };
 
             scheduler.tasks.push(task);
+            scheduler.ready_queue.push_back(scheduler.tasks.len() - 1);
             id
         } else {
             0
@@ -186,6 +192,7 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
             };
 
             scheduler.tasks.push(task);
+            scheduler.ready_queue.push_back(scheduler.tasks.len() - 1);
         }
     }
 }
@@ -196,50 +203,38 @@ pub fn switch_task() {
         if let Some(scheduler) = SCHEDULER.as_mut() {
             let percpu = crate::processor::get_percpu_data();
             if percpu.is_null() {
-                // PercpuData not initialized yet, just return
                 return;
             }
             let current_index = (*percpu).current_task_index;
 
-            // Round-robin: find next Ready task
-            let start_index = if current_index == usize::MAX { 0 } else { current_index };
-            let mut next_index = (start_index + 1) % scheduler.tasks.len();
-            let mut found = false;
-
-            // Loop once to find a ready task
-            for _ in 0..scheduler.tasks.len() {
-                if scheduler.tasks[next_index].status == TaskStatus::Ready {
-                    found = true;
-                    break;
-                }
-                next_index = (next_index + 1) % scheduler.tasks.len();
-            }
-
-            if !found {
-                // If no other task is Ready, check if current is still runnable.
-                if current_index != usize::MAX && scheduler.tasks[current_index].status == TaskStatus::Terminated {
-                    // We are terminated and no one else to run? deadlock/halt
-                    core::mem::drop(guard);
-                    crate::println!("All tasks could be terminated, or deadlock. Halting.");
-                    loop {
-                        core::arch::asm!("hlt");
+            // The ready queue contains only runnable, non-running tasks, so
+            // selecting the next task is O(1) instead of scanning every PCB.
+            let next_index = loop {
+                match scheduler.ready_queue.pop_front() {
+                    Some(index) if scheduler.tasks[index].status == TaskStatus::Ready => break index,
+                    Some(_) => continue, // Defensive: discard a stale queue entry.
+                    None => {
+                        if current_index != usize::MAX
+                            && scheduler.tasks[current_index].status == TaskStatus::Terminated
+                        {
+                            core::mem::drop(guard);
+                            crate::println!("All tasks could be terminated, or deadlock. Halting.");
+                            loop {
+                                core::arch::asm!("hlt");
+                            }
+                        }
+                        return;
                     }
                 }
-                // Just continue current task
-                return;
-            }
+            };
 
-            if next_index == current_index {
-                // No switch needed
-                return;
-            }
-
-            // Update statuses
-            if current_index != usize::MAX {
-                let old_index = current_index;
-                if scheduler.tasks[old_index].status == TaskStatus::Running {
-                    scheduler.tasks[old_index].status = TaskStatus::Ready;
-                }
+            // A running task goes to the tail, giving round-robin fairness.
+            // Terminated tasks are deliberately not requeued.
+            if current_index != usize::MAX
+                && scheduler.tasks[current_index].status == TaskStatus::Running
+            {
+                scheduler.tasks[current_index].status = TaskStatus::Ready;
+                scheduler.ready_queue.push_back(current_index);
             }
 
             scheduler.tasks[next_index].status = TaskStatus::Running;
@@ -253,44 +248,28 @@ pub fn switch_task() {
             };
             let new_stack = scheduler.tasks[next_index].stack_top;
 
-            // Update CPU's active kernel stack in PercpuData (so syscalls on this CPU use it)
             let new_kernel_stack_top = scheduler.tasks[next_index].kernel_stack_top;
             if new_kernel_stack_top != 0 {
                 (*percpu).kernel_stack = new_kernel_stack_top;
-
-                // Update TSS stack for the current CPU
                 let cpu_index = (*percpu).cpu_index as usize;
                 crate::gdt::set_tss_stack_cpu(cpu_index, new_kernel_stack_top);
             }
 
-            // Save/Restore user stack pointer (so syscalls return to the correct stack)
             if current_index != usize::MAX {
                 scheduler.tasks[current_index].user_rsp = (*percpu).user_stack;
             }
             (*percpu).user_stack = scheduler.tasks[next_index].user_rsp;
 
-            // Save/Restore the user-mode GS base.
-            //
-            // MSR convention (swapgs swaps IA32_GS_BASE ↔ IA32_KERNEL_GS_BASE):
-            //   In user mode:  GS_BASE = user's GS (0),  KERNEL_GS_BASE = percpu
-            //   After swapgs:  GS_BASE = percpu,          KERNEL_GS_BASE = user's GS
-            //
-            // So KERNEL_GS_BASE always holds the *user* GS when in kernel mode
-            // (after swapgs). We save/load it here.  GS_BASE (percpu) is left
-            // untouched so the syscall/exception handlers always have percpu
-            // data accessible via gs:[0].
             if current_index != usize::MAX {
-                let old_user_gs = crate::processor::rdmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE);
+                let old_user_gs =
+                    crate::processor::rdmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE);
                 scheduler.tasks[current_index].gs_base = old_user_gs;
             }
 
             let new_user_gs = scheduler.tasks[next_index].gs_base;
             crate::processor::wrmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE, new_user_gs);
 
-            // Drop SCHEDULER_LOCK immediately before context switch to prevent deadlock
             core::mem::drop(guard);
-
-            // Perform the low-level switch
             context_switch(old_stack_ref, new_stack);
         }
     }
