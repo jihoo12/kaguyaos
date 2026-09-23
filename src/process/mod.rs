@@ -216,6 +216,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
                 stack_bottom: user_rsp - stack_size as u64,
                 status: TaskStatus::Ready,
                 cpu_affinity: 0,
+                pinned_cpu: usize::MAX,
                 kernel_stack_bottom,
                 kernel_stack_top,
                 gs_base: 0,
