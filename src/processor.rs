@@ -46,6 +46,13 @@ static mut AP_STACKS: [ApStack; MAX_AP_COUNT] = [const { ApStack([0; AP_STACK_SI
 /// Number of APs that have fully come online (not counting the BSP).
 static AP_ONLINE_COUNT: AtomicU32 = AtomicU32::new(0);
 
+/// Calibrated Local APIC timer count for one 10 ms scheduler tick.
+/// Written by the BSP before AP startup and read by each AP during bring-up.
+static LAPIC_TIMER_10MS_COUNT: AtomicU32 = AtomicU32::new(0);
+
+const LAPIC_TIMER_DIVIDE_BY_16: u32 = 0x3;
+const LAPIC_TIMER_CALIBRATION_PIT_TICKS: u64 = 10;
+
 /// Returns the number of APs that have finished their own `ap_entry`.
 pub fn online_ap_count() -> u32 {
     AP_ONLINE_COUNT.load(Ordering::Acquire)
@@ -498,22 +505,18 @@ pub unsafe extern "sysv64" fn ap_entry() {
             // 3. Setup syscalls on this AP
             crate::syscall::init_cpu();
 
-            // 4. Bring up a periodic Local APIC timer on the AP. This is a
-            // deliberately conservative validation rate: the handler currently
-            // only sends LAPIC EOI and does not touch scheduler state yet.
-            //
-            // QEMU's xAPIC timer input clock is implementation/platform
-            // dependent, so this raw count is not yet a time unit. Once the
-            // interrupt path is proven stable we will calibrate it against PIT.
-            const AP_TIMER_TEST_COUNT: u32 = 10_000_000;
-            const AP_TIMER_DIVIDE_BY_16: u32 = 0x3;
-            lapic_timer_start(
-                lapic_base,
-                crate::interrupts::LAPIC_TIMER_VECTOR,
-                AP_TIMER_TEST_COUNT,
-                AP_TIMER_DIVIDE_BY_16,
-                true,
-            );
+            // 4. Start a 100 Hz periodic Local APIC scheduler timer using
+            // the count calibrated by the BSP against the PIT.
+            let timer_count = LAPIC_TIMER_10MS_COUNT.load(Ordering::Acquire);
+            if timer_count != 0 {
+                lapic_timer_start(
+                    lapic_base,
+                    crate::interrupts::LAPIC_TIMER_VECTOR,
+                    timer_count,
+                    LAPIC_TIMER_DIVIDE_BY_16,
+                    true,
+                );
+            }
 
             // 5. Signal online.
             core::ptr::write_volatile(
@@ -545,6 +548,39 @@ pub unsafe extern "sysv64" fn ap_entry() {
     }
 }
 
+/// Calibrate the Local APIC countdown rate against ten 100 Hz PIT ticks.
+///
+/// The timer is masked during measurement, so calibration cannot inject an
+/// interrupt. The result is the initial count corresponding to one 10 ms
+/// scheduler tick at divide-by-16.
+unsafe fn calibrate_lapic_timer(lapic_base: u64) -> u32 {
+    const LVT_MASKED: u32 = 1 << 16;
+
+    unsafe {
+        lapic_write(lapic_base, LAPIC_TIMER_DIV, LAPIC_TIMER_DIVIDE_BY_16);
+        lapic_write(
+            lapic_base,
+            LAPIC_LVT_TIMER,
+            (crate::interrupts::LAPIC_TIMER_VECTOR as u32) | LVT_MASKED,
+        );
+        lapic_write(lapic_base, LAPIC_TIMER_INIT, u32::MAX);
+    }
+
+    let start_tick = crate::process::scheduler_clock_now();
+    while crate::process::scheduler_clock_now().wrapping_sub(start_tick)
+        < LAPIC_TIMER_CALIBRATION_PIT_TICKS
+    {
+        core::hint::spin_loop();
+    }
+
+    let remaining = unsafe { lapic_timer_current(lapic_base) };
+    unsafe { lapic_timer_stop(lapic_base) };
+
+    let elapsed = u32::MAX.saturating_sub(remaining) as u64;
+    let per_tick = (elapsed / LAPIC_TIMER_CALIBRATION_PIT_TICKS).max(1);
+    per_tick.min(u32::MAX as u64) as u32
+}
+
 // ─── BSP-side: bring up all APs ──────────────────────────────────────────────
 
 /// Bring up all Application Processors described by `madt`.
@@ -574,6 +610,16 @@ pub unsafe fn start_all_aps(madt: &MadtInfo, bsp_apic_id: u8) {
 
     // Enable the BSP's own LAPIC (may already be enabled by firmware).
     unsafe { lapic_enable(lapic_base) };
+
+    // Measure the LAPIC timer against the already-running 100 Hz PIT before
+    // starting APs. All local APICs share the same timer rate on the platforms
+    // we currently support, so APs can reuse this measured 10 ms count.
+    let timer_count = unsafe { calibrate_lapic_timer(lapic_base) };
+    LAPIC_TIMER_10MS_COUNT.store(timer_count, Ordering::Release);
+    crate::println!(
+        "[SMP] LAPIC timer calibrated: {} counts / 10 ms (divide by 16)",
+        timer_count
+    );
 
     // Install trampoline code into the low-memory page.
     unsafe { install_trampoline() };
