@@ -473,10 +473,12 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
         memory::commit_frame_allocator(&allocator);
 
         println!("Starting scheduler loop on BSP...");
+        process::start_preempt_stress_probe();
         process::enter_bsp_scheduler_idle();
         core::arch::asm!("sti");
         loop {
             process::switch_task();
+            process::service_preempt_stress_probe();
 
             // The NIC is still a polled device. Keep network RX progressing
             // on the BSP as well as while an AP is idle: a user task running
