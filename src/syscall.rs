@@ -284,11 +284,6 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_wait_task(task_id) -> exit_code
             crate::process::wait_task(arg1)
         }
-        27 => {
-            crate::process::start_steal_probe();
-            0
-        }
-        28 => crate::process::steal_probe_completed(),
         _ => {
             // Unknown syscall
             let _ = crate::println!("Unknown syscall: {}", id);
