@@ -305,6 +305,10 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
                 select_target_cpu(scheduler)
             };
             scheduler.metadata.tasks[task_index].cpu_affinity = target_cpu;
+            crate::println!(
+                "[schedstress] enqueue task {} index {} -> CPU{}",
+                id, task_index, target_cpu
+            );
             scheduler.run_queues[target_cpu].lock().push_back(task_index);
             if target_cpu != 0 {
                 crate::processor::send_ipi(target_cpu, crate::interrupts::SCHEDULER_WAKE_VECTOR);
@@ -402,8 +406,27 @@ extern "C" fn sched_stress_worker() {
         if percpu.is_null() { usize::MAX } else { (*percpu).cpu_index as usize }
     };
     let done = SCHED_STRESS_DONE.fetch_add(1, Ordering::SeqCst) + 1;
+    let task_id = current_task_id();
     crate::println!("[schedstress] task {} complete on CPU{} ({}/{})",
-        current_task_id(), cpu, done, SCHED_STRESS_TASKS);
+        task_id, cpu, done, SCHED_STRESS_TASKS);
+    // A fresh kernel task must never have an idle scheduler continuation saved
+    // inside its own stack. Capture the per-CPU scheduler stack before exit so
+    // we can distinguish queue corruption from a bad idle-context restore.
+    unsafe {
+        let percpu = crate::processor::get_percpu_data();
+        if !percpu.is_null() {
+            crate::println!(
+                "[schedstress] CPU{} task {} idle_stack={:#x} task_stack={:#x}",
+                cpu,
+                task_id,
+                (*percpu).idle_stack,
+                SCHEDULER.as_ref()
+                    .and_then(|scheduler| scheduler.metadata.tasks.iter().find(|task| task.id == task_id))
+                    .map(|task| task.stack_top)
+                    .unwrap_or(0)
+            );
+        }
+    }
     terminate_task(0);
     loop {
         core::hint::spin_loop();
