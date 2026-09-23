@@ -390,10 +390,18 @@ pub fn switch_task() {
 /// The IRQ path only calls this for a task interrupted in user mode. When the
 /// quantum expires we defer the actual context switch until after the PIC EOI,
 /// avoiding a switch while the timer interrupt is still in-service.
-pub fn scheduler_tick() {
+/// Advance the scheduler's global wall clock. The BSP PIT is the sole owner
+/// of this clock for now, so AP-local timer interrupts must not call this.
+pub fn scheduler_clock_tick() {
     let now = SCHEDULER_TICKS.fetch_add(1, Ordering::Relaxed) as u64 + 1;
     wake_sleeping_tasks(now);
+}
 
+/// Account one scheduling quantum tick for the current CPU.
+///
+/// Both the BSP PIT and AP Local APIC timer may call this, but only when they
+/// interrupted user mode. Kernel execution remains non-preemptive.
+pub fn scheduler_tick() {
     unsafe {
         let percpu = crate::processor::get_percpu_data();
         if percpu.is_null() || (*percpu).current_task_index == usize::MAX {
@@ -406,21 +414,6 @@ pub fn scheduler_tick() {
         if (*percpu).scheduler_ticks_left == 0 {
             (*percpu).need_resched = true;
         }
-    }
-}
-
-/// Undo quantum accounting when the PIT interrupted kernel mode. The global
-/// sleep clock still advances, but kernel execution remains non-preemptive.
-pub fn cancel_tick_reschedule() {
-    unsafe {
-        let percpu = crate::processor::get_percpu_data();
-        if percpu.is_null() || (*percpu).current_task_index == usize::MAX {
-            return;
-        }
-        if (*percpu).scheduler_ticks_left < DEFAULT_TIME_SLICE_TICKS {
-            (*percpu).scheduler_ticks_left += 1;
-        }
-        (*percpu).need_resched = false;
     }
 }
 
