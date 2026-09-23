@@ -81,7 +81,6 @@ fn cmd_help() {
     println("  write <file> <msg> Write msg to a file");
     println("  rm <file>         Delete a file");
     println("  exec <file> [args] Execute a KEF binary");
-    println("  stealtest         Temporary kernel scheduler steal probe");
     println("  clear             Clear screen");
     println("  shutdown          Shut down");
 }
@@ -178,12 +177,6 @@ fn process_command(cmd_ptr: *const u8, cmd_len: usize) {
             exec_program(fname, rest);
         } else if bytes_eq(cmd_ptr, cmd_len, b"ping") {
             exec_program("ping.kef", "");
-        } else if bytes_eq(cmd_ptr, cmd_len, b"stealtest") {
-            std::start_steal_probe();
-            while std::steal_probe_completed() < 4 {
-                std::yield_task();
-            }
-            println("stealtest: complete");
         } else if bytes_eq(cmd_ptr, cmd_len, b"shutdown") {
             println("Goodbye!");
             std::shutdown();
