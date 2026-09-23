@@ -73,7 +73,10 @@ static SCHEDULER_TICKS: AtomicUsize = AtomicUsize::new(0);
 // Temporary #47 kernel-side stress probe counters.
 static SCHED_STRESS_DONE: AtomicUsize = AtomicUsize::new(0);
 static SCHED_STRESS_FIRST_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
-const SCHED_STRESS_TASKS: usize = 8;
+static SCHED_STRESS_BATCH: AtomicUsize = AtomicUsize::new(0);
+const SCHED_STRESS_BATCH_TASKS: usize = 4;
+const SCHED_STRESS_BATCHES: usize = 4;
+const SCHED_STRESS_TASKS: usize = SCHED_STRESS_BATCH_TASKS * SCHED_STRESS_BATCHES;
 const SCHED_STRESS_STACK_SIZE: usize = 8 * 1024;
 
 /// Scheduler-owned publication of each CPU's current task slot.
@@ -489,15 +492,14 @@ pub fn enter_bsp_scheduler_idle() {
     }
 }
 
-pub fn start_scheduler_stress_probe() {
-    SCHED_STRESS_DONE.store(0, Ordering::SeqCst);
-    SCHED_STRESS_FIRST_ID.store(NEXT_TASK_ID.load(Ordering::SeqCst), Ordering::SeqCst);
+fn queue_scheduler_stress_batch(batch: usize) {
     crate::println!(
-        "[schedstress] queueing {} kernel tasks from id {}",
-        SCHED_STRESS_TASKS,
-        SCHED_STRESS_FIRST_ID.load(Ordering::SeqCst)
+        "[schedstress] queueing batch {}/{} ({} tasks)",
+        batch + 1,
+        SCHED_STRESS_BATCHES,
+        SCHED_STRESS_BATCH_TASKS
     );
-    for _ in 0..SCHED_STRESS_TASKS {
+    for _ in 0..SCHED_STRESS_BATCH_TASKS {
         let stack = unsafe { crate::memory::heap::alloc(SCHED_STRESS_STACK_SIZE) as u64 };
         if stack == 0 {
             crate::println!("[schedstress] stack allocation failed");
@@ -505,6 +507,19 @@ pub fn start_scheduler_stress_probe() {
         }
         add_new_task(sched_stress_worker, stack, SCHED_STRESS_STACK_SIZE);
     }
+}
+
+pub fn start_scheduler_stress_probe() {
+    SCHED_STRESS_DONE.store(0, Ordering::SeqCst);
+    SCHED_STRESS_BATCH.store(0, Ordering::SeqCst);
+    SCHED_STRESS_FIRST_ID.store(NEXT_TASK_ID.load(Ordering::SeqCst), Ordering::SeqCst);
+    crate::println!(
+        "[schedstress] running {} tasks in {} batches from id {}",
+        SCHED_STRESS_TASKS,
+        SCHED_STRESS_BATCHES,
+        SCHED_STRESS_FIRST_ID.load(Ordering::SeqCst)
+    );
+    queue_scheduler_stress_batch(0);
 }
 
 pub fn scheduler_stress_done() -> usize {
@@ -545,6 +560,20 @@ pub fn switch_task() {
                 let now = SCHEDULER_TICKS.load(Ordering::Relaxed) as u64;
                 wake_sleeping_tasks_locked(scheduler, now);
                 reap_zombies(scheduler);
+
+                // Temporary #47 probe: queue the next batch only after every
+                // worker in the previous batch has terminated. Reaping above
+                // runs first, so later batches exercise freed-stack reuse.
+                let batch = SCHED_STRESS_BATCH.load(Ordering::SeqCst);
+                if batch + 1 < SCHED_STRESS_BATCHES
+                    && SCHED_STRESS_DONE.load(Ordering::SeqCst)
+                        >= (batch + 1) * SCHED_STRESS_BATCH_TASKS
+                    && SCHED_STRESS_BATCH
+                        .compare_exchange(batch, batch + 1, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                {
+                    queue_scheduler_stress_batch(batch + 1);
+                }
             }
 
             // Prefer local work. Only an otherwise-idle CPU steals one Ready
