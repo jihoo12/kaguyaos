@@ -72,8 +72,8 @@ static SCHEDULER_TICKS: AtomicUsize = AtomicUsize::new(0);
 
 // Temporary #47 kernel-side stress probe counters.
 static SCHED_STRESS_DONE: AtomicUsize = AtomicUsize::new(0);
-const SCHED_STRESS_TASKS: usize = 32;
-const SCHED_STRESS_STACK_SIZE: usize = 16 * 1024;
+const SCHED_STRESS_TASKS: usize = 16;
+const SCHED_STRESS_STACK_SIZE: usize = 4 * 1024;
 
 /// Scheduler-owned publication of each CPU's current task slot.
 ///
