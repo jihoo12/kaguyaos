@@ -368,10 +368,11 @@ pub fn switch_task() {
 
             if cpu_index != 0 {
                 crate::println!(
-                    "[sched] cpu={} context_switch task={} new_rsp={:#x}",
+                    "[sched] cpu={} context_switch task={} new_rsp={:#x} cr3={:#x}",
                     cpu_index,
                     next_index,
-                    new_stack
+                    new_stack,
+                    crate::memory::current_pml4_phys()
                 );
             }
             core::mem::drop(guard);
@@ -533,10 +534,11 @@ pub fn run_ap_scheduler() -> ! {
     // lookup and is the path we actually need to validate.
     let percpu = unsafe { crate::processor::get_percpu_data() };
     crate::println!(
-        "[sched] AP scheduler ready gs={:#x} kgs={:#x} percpu={:#x}",
+        "[sched] AP scheduler ready gs={:#x} kgs={:#x} percpu={:#x} cr3={:#x}",
         unsafe { crate::processor::rdmsr(crate::processor::MSR_IA32_GS_BASE) },
         unsafe { crate::processor::rdmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE) },
-        percpu as u64
+        percpu as u64,
+        crate::memory::current_pml4_phys()
     );
 
     loop {
