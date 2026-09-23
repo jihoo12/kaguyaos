@@ -378,6 +378,19 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
     }
 }
 
+/// Context-switch metadata captured while SCHEDULER_LOCK owns task state.
+///
+/// `Claimed` guarantees the incoming task cannot be selected by another CPU.
+/// Raw stack pointers are used only after task slots have become stable and zombie
+/// reaping has verified that no CPU publishes the task as current.
+struct SwitchPlan {
+    old_stack_ref: *mut u64,
+    new_stack: u64,
+    new_kernel_stack_top: u64,
+    new_user_rsp: u64,
+    new_user_gs: u64,
+}
+
 pub fn switch_task() {
     unsafe {
         let guard = SCHEDULER_LOCK.lock();
@@ -475,30 +488,39 @@ pub fn switch_task() {
                 // and AP tasks can later return here after sleeping or exiting.
                 &mut (*percpu).idle_stack as *mut u64
             };
-            let new_stack = scheduler.metadata.tasks[next_index].stack_top;
 
-            let new_kernel_stack_top = scheduler.metadata.tasks[next_index].kernel_stack_top;
-            if new_kernel_stack_top != 0 {
-                (*percpu).kernel_stack = new_kernel_stack_top;
-                crate::gdt::set_tss_stack_cpu(cpu_index, new_kernel_stack_top);
-            }
-
+            // Save metadata that belongs to the outgoing task while the global
+            // metadata lock still protects it.
             if current_index != usize::MAX {
                 scheduler.metadata.tasks[current_index].user_rsp = (*percpu).user_stack;
-            }
-            (*percpu).user_stack = scheduler.metadata.tasks[next_index].user_rsp;
-
-            if current_index != usize::MAX {
-                let old_user_gs =
+                scheduler.metadata.tasks[current_index].gs_base =
                     crate::processor::rdmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE);
-                scheduler.metadata.tasks[current_index].gs_base = old_user_gs;
             }
 
-            let new_user_gs = scheduler.metadata.tasks[next_index].gs_base;
-            crate::processor::wrmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE, new_user_gs);
+            let plan = SwitchPlan {
+                old_stack_ref,
+                new_stack: scheduler.metadata.tasks[next_index].stack_top,
+                new_kernel_stack_top: scheduler.metadata.tasks[next_index].kernel_stack_top,
+                new_user_rsp: scheduler.metadata.tasks[next_index].user_rsp,
+                new_user_gs: scheduler.metadata.tasks[next_index].gs_base,
+            };
 
+            // From this point on, only CPU-local state and the already-claimed
+            // incoming context are touched. Release global metadata ownership
+            // before programming TSS/per-CPU/MSR state and switching stacks.
             core::mem::drop(guard);
-            context_switch(old_stack_ref, new_stack);
+
+            if plan.new_kernel_stack_top != 0 {
+                (*percpu).kernel_stack = plan.new_kernel_stack_top;
+                crate::gdt::set_tss_stack_cpu(cpu_index, plan.new_kernel_stack_top);
+            }
+            (*percpu).user_stack = plan.new_user_rsp;
+            crate::processor::wrmsr(
+                crate::processor::MSR_IA32_KERNEL_GS_BASE,
+                plan.new_user_gs,
+            );
+
+            context_switch(plan.old_stack_ref, plan.new_stack);
         }
     }
 }
