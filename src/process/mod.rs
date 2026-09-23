@@ -350,13 +350,15 @@ pub fn start_steal_probe() {
             let mut sp = (stack_top - 8) as *mut u64;
 
             sp = sp.sub(1);
-            *sp = steal_probe_task as u64;
-            sp = sp.sub(1); *sp = 0; // RBP
-            sp = sp.sub(1); *sp = 0; // RBX
-            sp = sp.sub(1); *sp = 0; // R12
-            sp = sp.sub(1); *sp = 0; // R13
-            sp = sp.sub(1); *sp = 0; // R14
+            *sp = steal_probe_task as u64; // return address
             sp = sp.sub(1); *sp = 0; // R15
+            sp = sp.sub(1); *sp = 0; // R14
+            sp = sp.sub(1); *sp = 0; // R13
+            sp = sp.sub(1); *sp = 0; // R12
+            sp = sp.sub(1); *sp = 0; // RBX
+            sp = sp.sub(1); *sp = 0; // RBP
+            sp = sp.sub(1); *sp = 0; // RDI
+            sp = sp.sub(1); *sp = 0; // RSI
 
             let id = NEXT_TASK_ID.fetch_add(1, Ordering::SeqCst);
             scheduler.tasks.push(Box::new(Task {
