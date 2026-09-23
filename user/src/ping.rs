@@ -217,12 +217,8 @@ pub extern "C" fn _start(args_ptr: *const u8, args_len: usize) -> ! {
             sbPrint(b" bytes from timeout\n");
         }
 
-        // Wait ~1 second between pings
-        let mut wait = 0u32;
-        while wait < 100 {
-            std::yield_task();
-            wait += 1;
-        }
+        // Keep the traditional one-second interval without busy-yielding.
+        std::sleep(1000);
     }
 
     newline();
