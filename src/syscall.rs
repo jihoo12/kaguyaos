@@ -275,6 +275,11 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_net_recv_ping(buf_ptr, buf_len) -> bytes_read
             sys_net_recv_ping(arg1, arg2)
         }
+        25 => {
+            // sys_sleep(milliseconds)
+            crate::process::sleep_current(arg1);
+            0
+        }
         _ => {
             // Unknown syscall
             let _ = crate::println!("Unknown syscall: {}", id);
