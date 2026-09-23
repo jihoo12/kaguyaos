@@ -453,6 +453,33 @@ extern "C" fn sched_stress_worker() {
 
 /// Queue a burst of independent kernel tasks for the #47 SMP/context-switch
 /// stress run. This is temporary validation code and must be removed before merge.
+/// Enter the BSP scheduler loop as an idle scheduler context. The boot dummy
+/// task must not remain published as Running once normal task dispatch begins.
+pub fn enter_bsp_scheduler_idle() {
+    let _guard = SCHEDULER_LOCK.lock();
+    unsafe {
+        let percpu = crate::processor::get_percpu_data();
+        if percpu.is_null() {
+            return;
+        }
+        let cpu = (*percpu).cpu_index as usize;
+        if cpu != 0 {
+            return;
+        }
+        if let Some(scheduler) = SCHEDULER.as_mut() {
+            let current = (*percpu).current_task_index;
+            if current != usize::MAX && current < scheduler.metadata.tasks.len() {
+                scheduler.metadata.tasks[current].status = TaskStatus::Zombie;
+            }
+        }
+        (*percpu).current_task_index = usize::MAX;
+        publish_current_task(0, usize::MAX);
+        (*percpu).idle_stack = 0;
+        (*percpu).scheduler_ticks_left = 0;
+        (*percpu).need_resched = false;
+    }
+}
+
 pub fn start_scheduler_stress_probe() {
     SCHED_STRESS_DONE.store(0, Ordering::SeqCst);
     SCHED_STRESS_FIRST_ID.store(NEXT_TASK_ID.load(Ordering::SeqCst), Ordering::SeqCst);
