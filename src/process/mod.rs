@@ -390,10 +390,23 @@ pub fn switch_task() {
 /// The IRQ path only calls this for a task interrupted in user mode. When the
 /// quantum expires we defer the actual context switch until after the PIC EOI,
 /// avoiding a switch while the timer interrupt is still in-service.
-pub fn scheduler_tick() {
+/// Advance the scheduler's global wall clock. The BSP PIT is the sole owner
+/// of this clock for now, so AP-local timer interrupts must not call this.
+pub fn scheduler_clock_tick() {
     let now = SCHEDULER_TICKS.fetch_add(1, Ordering::Relaxed) as u64 + 1;
     wake_sleeping_tasks(now);
+}
 
+#[inline]
+pub fn scheduler_clock_now() -> u64 {
+    SCHEDULER_TICKS.load(Ordering::Relaxed) as u64
+}
+
+/// Account one scheduling quantum tick for the current CPU.
+///
+/// Both the BSP PIT and AP Local APIC timer may call this, but only when they
+/// interrupted user mode. Kernel execution remains non-preemptive.
+pub fn scheduler_tick() {
     unsafe {
         let percpu = crate::processor::get_percpu_data();
         if percpu.is_null() || (*percpu).current_task_index == usize::MAX {
@@ -409,21 +422,6 @@ pub fn scheduler_tick() {
     }
 }
 
-/// Undo quantum accounting when the PIT interrupted kernel mode. The global
-/// sleep clock still advances, but kernel execution remains non-preemptive.
-pub fn cancel_tick_reschedule() {
-    unsafe {
-        let percpu = crate::processor::get_percpu_data();
-        if percpu.is_null() || (*percpu).current_task_index == usize::MAX {
-            return;
-        }
-        if (*percpu).scheduler_ticks_left < DEFAULT_TIME_SLICE_TICKS {
-            (*percpu).scheduler_ticks_left += 1;
-        }
-        (*percpu).need_resched = false;
-    }
-}
-
 
 fn wake_sleeping_tasks(now: u64) {
     let _guard = SCHEDULER_LOCK.lock();
@@ -432,13 +430,14 @@ fn wake_sleeping_tasks(now: u64) {
             for index in 0..scheduler.tasks.len() {
                 if scheduler.tasks[index].status == TaskStatus::Sleeping && scheduler.tasks[index].wake_tick <= now {
                     scheduler.tasks[index].status = TaskStatus::Ready;
-                    // APs currently have no local timer/preemption. A task that
-                    // sleeps there switches back to the AP idle scheduler context,
-                    // but the PIT wakeup originates on the BSP. Put the awakened
-                    // task on the BSP queue for now so the IRQ return path can
-                    // immediately dispatch it with real timer-backed spacing.
-                    scheduler.tasks[index].cpu_affinity = 0;
-                    scheduler.run_queues[0].push_back(index);
+                    // Preserve the task's CPU affinity. APs now have their own
+                    // scheduler timer and continuously poll their local queue from
+                    // the idle scheduler context, so a sleeping AP task can wake
+                    // back onto the CPU it was running on.
+                    let cpu = scheduler.tasks[index]
+                        .cpu_affinity
+                        .min(crate::processor::MAX_AP_COUNT);
+                    scheduler.run_queues[cpu].push_back(index);
                 }
             }
         }

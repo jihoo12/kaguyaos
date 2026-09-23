@@ -6,6 +6,8 @@ use core::fmt::Write;
 use core::mem::size_of;
 
 pub const KERNEL_CODE_SEL: u16 = 0x08;
+/// Dedicated Local APIC timer vector, outside the legacy PIC IRQ range.
+pub const LAPIC_TIMER_VECTOR: u8 = 0x30;
 
 
 #[allow(dead_code)]
@@ -60,6 +62,9 @@ unsafe extern "C" {
     fn irq13();
     fn irq14();
     fn irq15();
+
+    // Local APIC timer (per-CPU scheduler timer)
+    fn lapic_timer_irq();
 }
 
 #[derive(Copy, Clone, Default)]
@@ -195,6 +200,10 @@ pub unsafe fn init_idt() {
         set_gate(46, irq14, KERNEL_CODE_SEL, 0x8E);
         set_gate(47, irq15, KERNEL_CODE_SEL, 0x8E);
 
+        // Per-CPU Local APIC scheduler timer. Keep this separate from the
+        // legacy PIC range (0x20..=0x2f), so it uses LAPIC EOI rather than PIC EOI.
+        set_gate(LAPIC_TIMER_VECTOR as usize, lapic_timer_irq, KERNEL_CODE_SEL, 0x8E);
+
         IDT_PTR.limit = (size_of::<[IdtEntry; 256]>() - 1) as u16;
         IDT_PTR.base = &raw const IDT as *const _ as u64;
 
@@ -259,13 +268,13 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) { unsafe {
             // The PIT is the scheduler's global wall-clock source. Advance it
             // on every timer IRQ, even when the BSP was interrupted in kernel
             // mode; sleeping tasks may be running on another CPU.
-            crate::process::scheduler_tick();
+            crate::process::scheduler_clock_tick();
 
             // Only charge a scheduling quantum when a user task was actually
             // interrupted. Kernel-mode work remains non-preemptive for now.
             let cs = core::ptr::read_unaligned(core::ptr::addr_of!((*frame).cs));
-            if cs & 3 != 3 {
-                crate::process::cancel_tick_reschedule();
+            if cs & 3 == 3 {
+                crate::process::scheduler_tick();
             }
         }
         1 => {
@@ -286,6 +295,30 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) { unsafe {
         crate::process::reschedule_if_needed();
     }
 }}
+
+/// Local APIC timer interrupt entry.
+///
+/// This first step intentionally only acknowledges the interrupt. Scheduler
+/// quantum accounting is connected after the AP timer source is calibrated
+/// and validated independently.
+#[unsafe(no_mangle)]
+pub unsafe extern "sysv64" fn lapic_timer_handler(frame: *mut InterruptFrame) {
+    unsafe {
+        // The AP timer owns only this CPU's scheduling quantum. The BSP PIT
+        // remains the single global wall-clock source used by sleep deadlines.
+        let cs = core::ptr::read_unaligned(core::ptr::addr_of!((*frame).cs));
+        if cs & 3 == 3 {
+            crate::process::scheduler_tick();
+        }
+
+        // Acknowledge before switching away so the LAPIC does not leave this
+        // vector in-service across a context switch.
+        let lapic_base = crate::processor::lapic_base_from_msr();
+        crate::processor::lapic_eoi(lapic_base);
+
+        crate::process::reschedule_if_needed();
+    }
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {
@@ -476,6 +509,58 @@ IRQ 12, 44
 IRQ 13, 45
 IRQ 14, 46
 IRQ 15, 47
+
+.global lapic_timer_irq
+lapic_timer_irq:
+    pushq $0
+    pushq $48
+    jmp lapic_timer_common
+
+.global lapic_timer_common
+lapic_timer_common:
+    pushq %rax
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rbp
+    pushq %rdi
+    pushq %rsi
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+
+    cld
+    movq %rsp, %rdi
+    movq %rsp, %rax
+    andq $-16, %rsp
+    subq $16, %rsp
+    movq %rax, (%rsp)
+    call lapic_timer_handler
+    movq (%rsp), %rsp
+
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rsi
+    popq %rdi
+    popq %rbp
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+
+    addq $16, %rsp
+    iretq
 
 .global irq_common
 irq_common:
