@@ -508,11 +508,6 @@ pub unsafe extern "sysv64" fn ap_entry() {
             AP_ONLINE_COUNT.fetch_add(1, Ordering::Release);
 
             // 6. Enter scheduler loop for AP
-            crate::println!(
-                "[sched] AP cpu={} apic={} entering scheduler",
-                my_cpu_index,
-                my_apic_id
-            );
             crate::process::run_ap_scheduler();
         } else {
             // Fallback
