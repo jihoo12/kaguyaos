@@ -256,11 +256,16 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) { unsafe {
 
     match irq {
         0 => {
-            // Charge the interrupted user task for one timer tick. The actual
-            // switch is deferred until after the PIC EOI below.
+            // The PIT is the scheduler's global wall-clock source. Advance it
+            // on every timer IRQ, even when the BSP was interrupted in kernel
+            // mode; sleeping tasks may be running on another CPU.
+            crate::process::scheduler_tick();
+
+            // Only charge a scheduling quantum when a user task was actually
+            // interrupted. Kernel-mode work remains non-preemptive for now.
             let cs = core::ptr::read_unaligned(core::ptr::addr_of!((*frame).cs));
-            if cs & 3 == 3 {
-                crate::process::scheduler_tick();
+            if cs & 3 != 3 {
+                crate::process::cancel_tick_reschedule();
             }
         }
         1 => {
