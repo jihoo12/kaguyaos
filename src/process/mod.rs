@@ -400,7 +400,7 @@ pub fn start_scheduler_stress_probe() {
     SCHED_STRESS_DONE.store(0, Ordering::SeqCst);
     crate::println!("[schedstress] queueing {} kernel tasks", SCHED_STRESS_TASKS);
     for _ in 0..SCHED_STRESS_TASKS {
-        let stack = crate::memory::heap::alloc(SCHED_STRESS_STACK_SIZE) as u64;
+        let stack = unsafe { crate::memory::heap::alloc(SCHED_STRESS_STACK_SIZE) as u64 };
         if stack == 0 {
             crate::println!("[schedstress] stack allocation failed");
             break;
