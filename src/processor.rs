@@ -498,16 +498,33 @@ pub unsafe extern "sysv64" fn ap_entry() {
             // 3. Setup syscalls on this AP
             crate::syscall::init_cpu();
 
-            // 4. Signal online.
+            // 4. Bring up a periodic Local APIC timer on the AP. This is a
+            // deliberately conservative validation rate: the handler currently
+            // only sends LAPIC EOI and does not touch scheduler state yet.
+            //
+            // QEMU's xAPIC timer input clock is implementation/platform
+            // dependent, so this raw count is not yet a time unit. Once the
+            // interrupt path is proven stable we will calibrate it against PIT.
+            const AP_TIMER_TEST_COUNT: u32 = 10_000_000;
+            const AP_TIMER_DIVIDE_BY_16: u32 = 0x3;
+            lapic_timer_start(
+                lapic_base,
+                crate::interrupts::LAPIC_TIMER_VECTOR,
+                AP_TIMER_TEST_COUNT,
+                AP_TIMER_DIVIDE_BY_16,
+                true,
+            );
+
+            // 5. Signal online.
             core::ptr::write_volatile(
                 (TRAMPOLINE_PHYS as usize + TRAMP_OFF_ONLINE) as *mut u32,
                 1,
             );
 
-            // 5. Count this AP.
+            // 6. Count this AP.
             AP_ONLINE_COUNT.fetch_add(1, Ordering::Release);
 
-            // 6. Enter scheduler loop for AP
+            // 7. Enter scheduler loop for AP
             crate::process::run_ap_scheduler();
         } else {
             // Fallback
