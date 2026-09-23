@@ -11,8 +11,8 @@ A hobby OS written in Rust, targeting x86_64 UEFI.
 
 - UEFI boot with GOP framebuffer (1280×800 text console)
 - Ring 0/3 isolation with `syscall`/`sysret` and 25 system calls
-- Cooperative round-robin scheduler with per-CPU kernel stacks
-- SMP via INIT-SIPI-SIPI with per-CPU data (GS-base MSR)
+- Preemptive round-robin scheduler with per-CPU kernel stacks and LAPIC timer preemption
+- SMP via INIT-SIPI-SIPI with per-CPU data (GS-base MSR) and IRQ-safe `swapgs` handling across Ring 3/0
 - Custom KEF executable format (16-byte header, user code pages, 16 KB stack)
 - xHCI USB 3.0 driver (keyboard input via interrupt IN endpoint)
 - NVMe SSD driver with MMIO BAR mapping
@@ -74,7 +74,7 @@ kaguyaos/
 │   │   ├── mod.rs          # Frame allocator, page tables
 │   │   └── heap.rs         # Kernel + user heap allocators
 │   ├── process/            # Task management
-│   │   └── mod.rs          # Cooperative scheduler
+│   │   └── mod.rs          # Preemptive SMP scheduler
 │   ├── console/            # Display & terminal
 │   │   ├── mod.rs          # VGA framebuffer writer, println!
 │   │   └── term.rs         # Cell-based terminal renderer
