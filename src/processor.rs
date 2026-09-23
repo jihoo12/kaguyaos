@@ -479,12 +479,17 @@ pub unsafe extern "sysv64" fn ap_entry() {
         }
 
         if !my_percpu.is_null() {
-            set_percpu_data(my_percpu);
-            wrmsr(MSR_IA32_KERNEL_GS_BASE, my_percpu as u64);
-
-            // 1. Load GDT & IDT for this CPU
+            // 1. Load GDT & IDT for this CPU. gdt::init_cpu() reloads the
+            // GS segment selector, and on x86_64 that clears the active GS base.
+            // Install the per-CPU GS base *after* the segment reload.
             crate::gdt::init_cpu(my_cpu_index as usize);
             crate::interrupts::init_idt();
+
+            // We are still executing in kernel mode here. Keep the active GS
+            // base pointing at this CPU's PercpuData. KERNEL_GS_BASE is the
+            // user-side value that swapgs will exchange with on syscall entry.
+            set_percpu_data(my_percpu);
+            wrmsr(MSR_IA32_KERNEL_GS_BASE, 0);
 
             // 2. Enable this AP's Local APIC.
             let lapic_base = lapic_base_from_msr();
@@ -770,6 +775,7 @@ pub struct PercpuData {
     pub apic_id: u8,
     pub cpu_index: u8,
     pub current_task_index: usize,
+    pub idle_stack: u64,
     pub scheduler_ticks_left: u32,
     pub need_resched: bool,
 }
@@ -781,6 +787,7 @@ pub static mut PERCPU_DATA_SLOTS: [PercpuData; MAX_AP_COUNT + 1] = [const { Perc
     apic_id: 0,
     cpu_index: 0,
     current_task_index: usize::MAX,
+    idle_stack: 0,
     scheduler_ticks_left: 0,
     need_resched: false,
 } }; MAX_AP_COUNT + 1];

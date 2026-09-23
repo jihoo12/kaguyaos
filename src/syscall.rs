@@ -30,6 +30,7 @@ const MSR_KERNEL_GS_BASE: u32 = 0xC0000102;
 
 // EFER bits
 const EFER_SCE: u64 = 1; // System Call Extensions
+const EFER_NXE: u64 = 1 << 11; // Enable the page-table NX bit
 
 #[repr(C)]
 pub struct KernelGsBase {
@@ -60,9 +61,11 @@ static mut SYSCALL_STACK: AlignedStack = AlignedStack([0; 16384]);
 
 pub unsafe fn init_cpu() {
     unsafe {
-        // 1. Enable SCE in EFER
+        // 1. Enable syscalls and the page-table NX bit in EFER. The user
+        // heap is mapped with PAGE_NO_EXECUTE (bit 63); without EFER.NXE that
+        // bit is reserved and any access to the page raises #PF(RSVD).
         let efer = crate::processor::rdmsr(MSR_EFER);
-        crate::processor::wrmsr(MSR_EFER, efer | EFER_SCE);
+        crate::processor::wrmsr(MSR_EFER, efer | EFER_SCE | EFER_NXE);
 
         // 2. Setup STAR
         // Kernel Code is 0x08.
@@ -339,6 +342,14 @@ fn sys_add_task(entry: usize, user_rsp: usize) -> usize {
 }
 
 fn sys_switch_task() {
+    // The NIC is currently polled rather than interrupt-driven. A user task
+    // can repeatedly yield on an AP while remaining the only runnable task on
+    // that CPU; in that case switch_task() returns directly to the task and
+    // the AP's outer scheduler loop never gets a chance to poll RX. Make a
+    // cooperative yield a device-progress point as well.
+    unsafe {
+        crate::drivers::net::poll();
+    }
     crate::process::switch_task();
 }
 

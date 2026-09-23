@@ -1,7 +1,8 @@
 #![allow(static_mut_refs)]
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 // Re-using the allocator from the crate
 
@@ -26,7 +27,7 @@ pub struct Task {
 }
 
 pub struct Scheduler {
-    tasks: Vec<Task>,
+    tasks: Vec<Box<Task>>,
     // One runnable queue per logical CPU. Running tasks are never present in a queue.
     // For now new tasks stay on CPU 0; a follow-up change can enable AP scheduling
     // and distribute/steal tasks without changing the task store.
@@ -35,6 +36,7 @@ pub struct Scheduler {
 
 static mut SCHEDULER: Option<Scheduler> = None;
 static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1); // 0 is reserved for main kernel task
+static SCHEDULER_READY: AtomicBool = AtomicBool::new(false);
 static SCHEDULER_LOCK: crate::sync::Spinlock<()> = crate::sync::Spinlock::new(());
 
 /// Number of PIT ticks a task may run before round-robin preemption.
@@ -71,8 +73,36 @@ pub unsafe fn init() {
     };
 
     if let Some(scheduler) = unsafe { SCHEDULER.as_mut() } {
-        scheduler.tasks.push(main_task);
+        scheduler.tasks.push(Box::new(main_task));
     }
+
+    // APs are started before the process scheduler is initialized. Publish the
+    // fully initialized scheduler only after its task store and BSP dummy task
+    // are ready.
+    SCHEDULER_READY.store(true, Ordering::Release);
+}
+
+fn select_target_cpu(scheduler: &Scheduler) -> usize {
+    let online_cpus = (crate::processor::online_ap_count() as usize + 1)
+        .min(crate::processor::MAX_AP_COUNT + 1);
+
+    // APs do not have timer preemption yet. Treat an AP that is already
+    // running a task as unavailable: placing more work behind a cooperative
+    // task can make commands appear to be lost until that task yields/exits.
+    //
+    // Prefer an idle AP with an empty queue. Otherwise fall back to the BSP,
+    // whose PIT timer can preempt and rotate runnable tasks.
+    for cpu in 1..online_cpus {
+        unsafe {
+            if crate::processor::PERCPU_DATA_SLOTS[cpu].current_task_index == usize::MAX
+                && scheduler.run_queues[cpu].is_empty()
+            {
+                return cpu;
+            }
+        }
+    }
+
+    0
 }
 
 pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi: u64, rsi: u64) -> usize {
@@ -133,12 +163,18 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
                 exit_code: 0,
             };
 
-            scheduler.tasks.push(task);
+            scheduler.tasks.push(Box::new(task));
             let task_index = scheduler.tasks.len() - 1;
-            // CPU 0 is currently the only CPU that consumes a scheduler run queue.
-            // Keep new tasks runnable there until AP task execution is enabled.
-            scheduler.tasks[task_index].cpu_affinity = 0;
-            scheduler.run_queues[0].push_back(task_index);
+            // Keep the bootstrap init task on the BSP. It owns the initial
+            // userspace control flow and shell startup; AP scheduling is enabled
+            // for tasks created after init is running.
+            let target_cpu = if id == 1 {
+                0
+            } else {
+                select_target_cpu(scheduler)
+            };
+            scheduler.tasks[task_index].cpu_affinity = target_cpu;
+            scheduler.run_queues[target_cpu].push_back(task_index);
             id
         } else {
             0
@@ -208,12 +244,11 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
                 exit_code: 0,
             };
 
-            scheduler.tasks.push(task);
+            scheduler.tasks.push(Box::new(task));
             let task_index = scheduler.tasks.len() - 1;
-            // CPU 0 is currently the only CPU that consumes a scheduler run queue.
-            // Keep new tasks runnable there until AP task execution is enabled.
-            scheduler.tasks[task_index].cpu_affinity = 0;
-            scheduler.run_queues[0].push_back(task_index);
+            let target_cpu = select_target_cpu(scheduler);
+            scheduler.tasks[task_index].cpu_affinity = target_cpu;
+            scheduler.run_queues[target_cpu].push_back(task_index);
         }
     }
 }
@@ -239,6 +274,25 @@ pub fn switch_task() {
                         if current_index != usize::MAX
                             && scheduler.tasks[current_index].status == TaskStatus::Terminated
                         {
+                            // APs keep a saved idle scheduler context. Return to it
+                            // when their last user task exits instead of halting the CPU.
+                            if cpu_index != 0 && (*percpu).idle_stack != 0 {
+                                let old_stack_ref =
+                                    &mut scheduler.tasks[current_index].stack_top as *mut u64;
+                                let idle_stack = (*percpu).idle_stack;
+                                (*percpu).current_task_index = usize::MAX;
+                                (*percpu).user_stack = 0;
+                                (*percpu).scheduler_ticks_left = 0;
+                                (*percpu).need_resched = false;
+                                crate::processor::wrmsr(
+                                    crate::processor::MSR_IA32_KERNEL_GS_BASE,
+                                    0,
+                                );
+                                core::mem::drop(guard);
+                                context_switch(old_stack_ref, idle_stack);
+                                return;
+                            }
+
                             core::mem::drop(guard);
                             crate::println!("All tasks could be terminated, or deadlock. Halting.");
                             loop {
@@ -268,6 +322,10 @@ pub fn switch_task() {
             let mut dummy_sp = 0u64;
             let old_stack_ref = if current_index != usize::MAX {
                 &mut scheduler.tasks[current_index].stack_top as *mut u64
+            } else if cpu_index != 0 {
+                // Save the AP scheduler loop so the CPU can return here after
+                // its last runnable task exits.
+                &mut (*percpu).idle_stack as *mut u64
             } else {
                 &mut dummy_sp as *mut u64
             };
@@ -432,18 +490,45 @@ pub fn get_task_exit_code(task_id: usize) -> usize {
 }
 
 pub fn run_ap_scheduler() -> ! {
-    // APs poll the network NIC continuously.
-    // They never run user tasks — only the BSP schedules tasks.
-    // NOTE: We cannot use `hlt` here because no IRQs are routed to the AP
-    // (PIC only delivers to BSP). Instead we busy-poll with a small delay.
+    // APs now consume their own run queue. There is no AP-local scheduler
+    // timer yet, so AP tasks remain cooperative until LAPIC timer preemption
+    // is added in a follow-up change.
     unsafe {
         core::arch::asm!("sti");
-        loop {
+    }
+
+    // AP startup happens before process::init() on the BSP. Do not enter the
+    // scheduler/device-poll loop until the global scheduler has been published.
+    // The acquire pairs with process::init()'s release store.
+    while !SCHEDULER_READY.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+
+    // Do not use get_percpu_data() for this diagnostic: AP entry has already
+    // established the per-CPU GS base, but this helper may return null in the
+    // AP's current GS/swapgs state. switch_task() performs its own checked
+    // lookup and is the path we actually need to validate.
+    loop {
+        switch_task();
+
+        // Keep the existing AP-side NIC progress behavior while this PR is
+        // being diagnosed. This avoids changing scheduler and network behavior
+        // at the same time.
+        unsafe {
             crate::drivers::net::poll();
-            // Yield some CPU time; ~10k spin-loops ≈ a few hundred µs.
-            for _ in 0..10_000 {
-                core::hint::spin_loop();
-            }
+        }
+
+        // A task that starts running on an AP is cooperative until AP-local
+        // timer preemption is added. If it voluntarily yields, switch_task()
+        // returns here and the AP can dispatch another local task immediately.
+        //
+        // Keep device polling on the BSP for now. Polling the shared NIC from
+        // both CPUs would add unrelated driver concurrency to this scheduler PR.
+
+        // The legacy PIC timer is routed to the BSP, so an idle AP cannot hlt
+        // here yet. Keep polling its queue with a small backoff.
+        for _ in 0..10_000 {
+            core::hint::spin_loop();
         }
     }
 }

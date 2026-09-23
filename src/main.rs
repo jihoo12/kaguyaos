@@ -476,6 +476,13 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
         core::arch::asm!("sti");
         loop {
             process::switch_task();
+
+            // The NIC is still a polled device. Keep network RX progressing
+            // on the BSP as well as while an AP is idle: a user task running
+            // on an AP occupies that AP's scheduler loop, so AP-only polling
+            // would otherwise stop for the lifetime of commands such as ping.
+            crate::drivers::net::poll();
+
             // Re-enable interrupts before halting.  switch_task() may return
             // with IF=0 when the previous context originated from a syscall
             // handler (where SFMASK clears IF).  Without sti, the hlt would
