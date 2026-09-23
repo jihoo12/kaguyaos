@@ -389,6 +389,21 @@ pub fn scheduler_tick() {
     }
 }
 
+/// Undo quantum accounting when the PIT interrupted kernel mode. The global
+/// sleep clock still advances, but kernel execution remains non-preemptive.
+pub fn cancel_tick_reschedule() {
+    unsafe {
+        let percpu = crate::processor::get_percpu_data();
+        if percpu.is_null() || (*percpu).current_task_index == usize::MAX {
+            return;
+        }
+        if (*percpu).scheduler_ticks_left < DEFAULT_TIME_SLICE_TICKS {
+            (*percpu).scheduler_ticks_left += 1;
+        }
+        (*percpu).need_resched = false;
+    }
+}
+
 
 fn wake_sleeping_tasks(now: u64) {
     let _guard = SCHEDULER_LOCK.lock();
