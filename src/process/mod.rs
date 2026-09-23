@@ -344,7 +344,7 @@ unsafe extern "C" fn user_task_trampoline() {
 }
 
 
-const PREEMPT_STRESS_WORKERS: usize = 8;
+const PREEMPT_STRESS_WORKERS: usize = 6;
 static PREEMPT_STRESS_DONE: AtomicUsize = AtomicUsize::new(0);
 
 extern "C" fn preempt_stress_worker() {
@@ -385,12 +385,12 @@ pub fn start_preempt_stress_probe() {
     );
 
     for _ in 0..PREEMPT_STRESS_WORKERS {
-        let stack = unsafe { crate::memory::heap::alloc(16 * 1024) as u64 };
+        let stack = unsafe { crate::memory::heap::alloc(8 * 1024) as u64 };
         if stack == 0 {
             crate::println!("[sched-preempt-stress] ERROR kernel stack allocation failed");
             return;
         }
-        add_new_task(preempt_stress_worker, stack, 16 * 1024);
+        add_new_task(preempt_stress_worker, stack, 8 * 1024);
     }
 }
 
