@@ -83,6 +83,21 @@ const SCHED_STRESS_STACK_SIZE: usize = 4 * 1024;
 static CPU_CURRENT_TASK: [AtomicUsize; crate::processor::MAX_AP_COUNT + 1] =
     [const { AtomicUsize::new(usize::MAX) }; crate::processor::MAX_AP_COUNT + 1];
 
+/// Kernel stack base that this CPU has fully switched away from. Publishing it
+/// happens only after context_switch returns on the incoming/idle stack.
+static CPU_RETIRED_STACK: [AtomicUsize; crate::processor::MAX_AP_COUNT + 1] =
+    [const { AtomicUsize::new(0) }; crate::processor::MAX_AP_COUNT + 1];
+
+#[inline]
+fn publish_retired_stack(cpu: usize, stack_bottom: u64) {
+    CPU_RETIRED_STACK[cpu].store(stack_bottom as usize, Ordering::Release);
+}
+
+#[inline]
+fn take_retired_stack(cpu: usize) -> u64 {
+    CPU_RETIRED_STACK[cpu].swap(0, Ordering::AcqRel) as u64
+}
+
 #[inline]
 fn publish_current_task(cpu: usize, task_index: usize) {
     CPU_CURRENT_TASK[cpu].store(task_index, Ordering::Release);
@@ -509,6 +524,7 @@ pub fn scheduler_stress_done() -> usize {
 /// reaping has verified that no CPU publishes the task as current.
 struct SwitchPlan {
     old_stack_ref: *mut u64,
+    retired_stack_bottom: u64,
     new_stack: u64,
     new_kernel_stack_top: u64,
     new_user_rsp: u64,
@@ -554,6 +570,8 @@ pub fn switch_task() {
                     if (*percpu).idle_stack != 0 {
                         let old_stack_ref =
                             &mut scheduler.metadata.tasks[current_index].stack_top as *mut u64;
+                        let retired_stack_bottom =
+                            scheduler.metadata.tasks[current_index].kernel_stack_bottom;
                         let idle_stack = (*percpu).idle_stack;
                         scheduler.metadata.tasks[current_index].user_rsp = (*percpu).user_stack;
                         (*percpu).current_task_index = usize::MAX;
@@ -567,6 +585,9 @@ pub fn switch_task() {
                         );
                         core::mem::drop(guard);
                         context_switch(old_stack_ref, idle_stack);
+                        if retired_stack_bottom != 0 {
+                            publish_retired_stack(cpu_index, retired_stack_bottom);
+                        }
                         return;
                     }
                 }
@@ -629,8 +650,16 @@ pub fn switch_task() {
                     crate::processor::rdmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE);
             }
 
+            let retired_stack_bottom = if current_index != usize::MAX
+                && scheduler.metadata.tasks[current_index].status == TaskStatus::Zombie
+            {
+                scheduler.metadata.tasks[current_index].kernel_stack_bottom
+            } else {
+                0
+            };
             let plan = SwitchPlan {
                 old_stack_ref,
+                retired_stack_bottom,
                 new_stack: scheduler.metadata.tasks[next_index].stack_top,
                 new_kernel_stack_top: scheduler.metadata.tasks[next_index].kernel_stack_top,
                 new_user_rsp: scheduler.metadata.tasks[next_index].user_rsp,
@@ -653,6 +682,9 @@ pub fn switch_task() {
             );
 
             context_switch(plan.old_stack_ref, plan.new_stack);
+            if plan.retired_stack_bottom != 0 {
+                publish_retired_stack(cpu_index, plan.retired_stack_bottom);
+            }
         }
     }
 }
@@ -810,11 +842,24 @@ fn reap_zombies(scheduler: &mut Scheduler) {
             continue;
         }
 
-        // TEMP #47 stress isolation: do not reclaim zombie kernel stacks here.
-        // current-task publication can be cleared before context_switch has
-        // physically left the terminating stack, so another CPU may otherwise
-        // free a still-live stack. Keep it allocated for this validation run.
-        continue;
+        // Reclaim only after the owning CPU has returned from context_switch
+        // on a different stack and explicitly published this stack as retired.
+        let mut retired = false;
+        for cpu in 0..=crate::processor::MAX_AP_COUNT {
+            if take_retired_stack(cpu) == task.kernel_stack_bottom {
+                retired = true;
+                break;
+            }
+        }
+        if !retired {
+            continue;
+        }
+
+        unsafe {
+            crate::memory::heap::free(task.kernel_stack_bottom as *mut u8);
+        }
+        task.kernel_stack_bottom = 0;
+        task.kernel_stack_top = 0;
     }
 }
 
