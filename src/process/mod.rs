@@ -37,7 +37,10 @@ pub struct Scheduler {
     tasks: Vec<Box<Task>>,
     // One runnable queue per logical CPU. Running tasks are never present in a queue.
     // Idle CPUs may steal Ready work from another CPU while holding SCHEDULER_LOCK.
-    run_queues: [VecDeque<usize>; crate::processor::MAX_AP_COUNT + 1],
+    // Queue contents are independently synchronized per CPU. Task metadata and
+    // queue placement decisions remain protected by SCHEDULER_LOCK in this step.
+    // Lock order is always SCHEDULER_LOCK -> one run_queue lock.
+    run_queues: [crate::sync::Spinlock<VecDeque<usize>>; crate::processor::MAX_AP_COUNT + 1],
 }
 
 static mut SCHEDULER: Option<Scheduler> = None;
@@ -78,7 +81,7 @@ pub unsafe fn init() {
             // allocation during scheduler init and changes the kernel heap layout
             // before the first user task is created. The fixed-size table also
             // matches the statically bounded PERCPU_DATA_SLOTS topology.
-            run_queues: [const { VecDeque::new() }; crate::processor::MAX_AP_COUNT + 1],
+            run_queues: [const { crate::sync::Spinlock::new(VecDeque::new()) }; crate::processor::MAX_AP_COUNT + 1],
         });
     }
 
@@ -118,7 +121,7 @@ fn select_target_cpu(scheduler: &Scheduler) -> usize {
     // policy conservative avoids changing load balancing in the idle-context PR.
     for cpu in 1..online_cpus {
         if published_current_task(cpu) == usize::MAX
-            && scheduler.run_queues[cpu].is_empty()
+            && scheduler.run_queues[cpu].lock().is_empty()
         {
             return cpu;
         }
@@ -128,7 +131,8 @@ fn select_target_cpu(scheduler: &Scheduler) -> usize {
 }
 
 fn pop_ready_task(scheduler: &mut Scheduler, cpu_index: usize) -> Option<usize> {
-    while let Some(index) = scheduler.run_queues[cpu_index].pop_front() {
+    let mut queue = scheduler.run_queues[cpu_index].lock();
+    while let Some(index) = queue.pop_front() {
         if scheduler.tasks[index].status == TaskStatus::Ready {
             return Some(index);
         }
@@ -145,20 +149,33 @@ fn steal_ready_task(scheduler: &mut Scheduler, thief_cpu: usize) -> Option<usize
     // the task that will wake them (for example init waiting for a ping child).
     // Steal only excess queued work so every non-idle owner keeps one runnable
     // task that can drive its local scheduler/wakeup path.
-    let victim_cpu = (0..online_cpus)
-        .filter(|&cpu| cpu != thief_cpu && scheduler.run_queues[cpu].len() > 1)
-        .max_by_key(|&cpu| scheduler.run_queues[cpu].len())?;
+    // Inspect one queue at a time while SCHEDULER_LOCK keeps task metadata and
+    // placement stable. Never hold two run-queue locks simultaneously.
+    let mut victim_cpu = None;
+    let mut victim_len = 1usize;
+    for cpu in 0..online_cpus {
+        if cpu == thief_cpu {
+            continue;
+        }
+        let len = scheduler.run_queues[cpu].lock().len();
+        if len > victim_len {
+            victim_cpu = Some(cpu);
+            victim_len = len;
+        }
+    }
+    let victim_cpu = victim_cpu?;
+    let mut queue = scheduler.run_queues[victim_cpu].lock();
 
-    while scheduler.run_queues[victim_cpu].len() > 1 {
+    while queue.len() > 1 {
         // Hard-pinned tasks stay on their owner CPU. cpu_affinity is only a
         // soft preferred/last CPU and may change when ordinary work is stolen.
-        let steal_pos = scheduler.run_queues[victim_cpu]
+        let steal_pos = queue
             .iter()
             .rposition(|&index| {
                 scheduler.tasks[index].status == TaskStatus::Ready
                     && scheduler.tasks[index].pinned_cpu == usize::MAX
             })?;
-        let index = scheduler.run_queues[victim_cpu].remove(steal_pos)?;
+        let index = queue.remove(steal_pos)?;
         scheduler.tasks[index].cpu_affinity = thief_cpu;
         return Some(index);
     }
@@ -237,7 +254,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
                 select_target_cpu(scheduler)
             };
             scheduler.tasks[task_index].cpu_affinity = target_cpu;
-            scheduler.run_queues[target_cpu].push_back(task_index);
+            scheduler.run_queues[target_cpu].lock().push_back(task_index);
             if target_cpu != 0 {
                 crate::processor::send_ipi(target_cpu, crate::interrupts::SCHEDULER_WAKE_VECTOR);
             }
@@ -317,7 +334,7 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
             let task_index = scheduler.tasks.len() - 1;
             let target_cpu = select_target_cpu(scheduler);
             scheduler.tasks[task_index].cpu_affinity = target_cpu;
-            scheduler.run_queues[target_cpu].push_back(task_index);
+            scheduler.run_queues[target_cpu].lock().push_back(task_index);
             if target_cpu != 0 {
                 crate::processor::send_ipi(target_cpu, crate::interrupts::SCHEDULER_WAKE_VECTOR);
             }
@@ -384,7 +401,7 @@ pub fn switch_task() {
                 && scheduler.tasks[current_index].status == TaskStatus::Running
             {
                 scheduler.tasks[current_index].status = TaskStatus::Ready;
-                scheduler.run_queues[cpu_index].push_back(current_index);
+                scheduler.run_queues[cpu_index].lock().push_back(current_index);
             }
 
             // A sleeping task must never be selected from a stale queue entry.
@@ -398,6 +415,7 @@ pub fn switch_task() {
             if pinned_cpu != usize::MAX && pinned_cpu != cpu_index {
                 // Defensive: a pinned task should never enter another CPU's queue.
                 scheduler.run_queues[pinned_cpu.min(crate::processor::MAX_AP_COUNT)]
+                    .lock()
                     .push_back(next_index);
                 return;
             }
@@ -494,7 +512,7 @@ fn wake_sleeping_tasks_locked(scheduler: &mut Scheduler, now: u64) {
             } else {
                 scheduler.tasks[index].cpu_affinity.min(crate::processor::MAX_AP_COUNT)
             };
-            scheduler.run_queues[cpu].push_back(index);
+            scheduler.run_queues[cpu].lock().push_back(index);
         }
     }
 }
@@ -629,7 +647,7 @@ pub fn terminate_task(exit_code: usize) {
                             let cpu = scheduler.tasks[index]
                                 .cpu_affinity
                                 .min(crate::processor::MAX_AP_COUNT);
-                            scheduler.run_queues[cpu].push_back(index);
+                            scheduler.run_queues[cpu].lock().push_back(index);
                         }
                     }
 
