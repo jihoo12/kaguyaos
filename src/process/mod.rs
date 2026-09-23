@@ -9,6 +9,10 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskStatus {
     Ready,
+    /// Removed from a run queue and reserved by one scheduler CPU, but not yet
+    /// published as that CPU's Running task. This transitional state prevents
+    /// another CPU from selecting a stale duplicate queue entry.
+    Claimed,
     Running,
     Sleeping,
     Waiting,
@@ -160,17 +164,18 @@ fn select_target_cpu(scheduler: &Scheduler) -> usize {
     0
 }
 
-fn pop_ready_task(scheduler: &mut Scheduler, cpu_index: usize) -> Option<usize> {
+fn claim_local_ready_task(scheduler: &mut Scheduler, cpu_index: usize) -> Option<usize> {
     let mut queue = scheduler.run_queues[cpu_index].lock();
     while let Some(index) = queue.pop_front() {
         if scheduler.metadata.tasks[index].status == TaskStatus::Ready {
+            scheduler.metadata.tasks[index].status = TaskStatus::Claimed;
             return Some(index);
         }
     }
     None
 }
 
-fn steal_ready_task(scheduler: &mut Scheduler, thief_cpu: usize) -> Option<usize> {
+fn steal_and_claim_ready_task(scheduler: &mut Scheduler, thief_cpu: usize) -> Option<usize> {
     let online_cpus = (crate::processor::online_ap_count() as usize + 1)
         .min(crate::processor::MAX_AP_COUNT + 1);
 
@@ -206,6 +211,7 @@ fn steal_ready_task(scheduler: &mut Scheduler, thief_cpu: usize) -> Option<usize
                     && scheduler.metadata.tasks[index].pinned_cpu == usize::MAX
             })?;
         let index = queue.remove(steal_pos)?;
+        scheduler.metadata.tasks[index].status = TaskStatus::Claimed;
         scheduler.metadata.tasks[index].cpu_affinity = thief_cpu;
         return Some(index);
     }
@@ -396,8 +402,8 @@ pub fn switch_task() {
 
             // Prefer local work. Only an otherwise-idle CPU steals one Ready
             // task from the most loaded remote queue.
-            let Some(next_index) = pop_ready_task(scheduler, cpu_index)
-                .or_else(|| steal_ready_task(scheduler, cpu_index))
+            let Some(next_index) = claim_local_ready_task(scheduler, cpu_index)
+                .or_else(|| steal_and_claim_ready_task(scheduler, cpu_index))
             else {
                 if current_index != usize::MAX
                     && matches!(
@@ -439,16 +445,16 @@ pub fn switch_task() {
                 scheduler.run_queues[cpu_index].lock().push_back(current_index);
             }
 
-            // A sleeping task must never be selected from a stale queue entry.
-            // This can happen when the current task was already queued before it
-            // entered sleep. Skip it until the timer wakeup marks it Ready again.
-            if scheduler.metadata.tasks[next_index].status != TaskStatus::Ready {
+            // Queue removal claims the task before any later switch preparation.
+            // A different state here means the claim invariant was violated.
+            if scheduler.metadata.tasks[next_index].status != TaskStatus::Claimed {
                 return;
             }
 
             let pinned_cpu = scheduler.metadata.tasks[next_index].pinned_cpu;
             if pinned_cpu != usize::MAX && pinned_cpu != cpu_index {
                 // Defensive: a pinned task should never enter another CPU's queue.
+                scheduler.metadata.tasks[next_index].status = TaskStatus::Ready;
                 scheduler.run_queues[pinned_cpu.min(crate::processor::MAX_AP_COUNT)]
                     .lock()
                     .push_back(next_index);
@@ -749,7 +755,7 @@ pub fn get_task_status(task_id: usize) -> usize {
             for task in &scheduler.metadata.tasks {
                 if task.id == task_id {
                     return match task.status {
-                        TaskStatus::Ready => 0,
+                        TaskStatus::Ready | TaskStatus::Claimed => 0,
                         TaskStatus::Running => 1,
                         TaskStatus::Sleeping => 3,
                         TaskStatus::Waiting => 4,
