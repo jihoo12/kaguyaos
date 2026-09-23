@@ -155,14 +155,7 @@ fn steal_ready_task(scheduler: &mut Scheduler, thief_cpu: usize) -> Option<usize
                     && scheduler.tasks[index].id > 1
             })?;
         let index = scheduler.run_queues[victim_cpu].remove(steal_pos)?;
-        let task_id = scheduler.tasks[index].id;
         scheduler.tasks[index].cpu_affinity = thief_cpu;
-        crate::println!(
-            "[sched] CPU{} stole task {} from CPU{}",
-            thief_cpu,
-            task_id,
-            victim_cpu
-        );
         return Some(index);
     }
     None
@@ -318,79 +311,6 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
             scheduler.run_queues[target_cpu].push_back(task_index);
         }
     }
-}
-
-const STEAL_PROBE_TASKS: usize = 4;
-const STEAL_PROBE_STACK_SIZE: usize = 16 * 1024;
-static STEAL_PROBE_COMPLETED: AtomicUsize = AtomicUsize::new(0);
-
-extern "C" fn steal_probe_task() {
-    let percpu = unsafe { crate::processor::get_percpu_data() };
-    let cpu = if percpu.is_null() {
-        usize::MAX
-    } else {
-        unsafe { (*percpu).cpu_index as usize }
-    };
-    let task_id = current_task_id();
-    crate::println!("[stealtest] task {} ran on CPU{}", task_id, cpu);
-    STEAL_PROBE_COMPLETED.fetch_add(1, Ordering::Release);
-    terminate_task(0);
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
-/// Temporary #39 validation hook. Queue several kernel tasks on CPU0 so an
-/// idle AP must steal excess runnable work instead of relying on the KEF loader.
-pub fn start_steal_probe() {
-    STEAL_PROBE_COMPLETED.store(0, Ordering::Release);
-
-    let guard = SCHEDULER_LOCK.lock();
-    unsafe {
-        let Some(scheduler) = SCHEDULER.as_mut() else {
-            return;
-        };
-        for _ in 0..STEAL_PROBE_TASKS {
-            let stack_bottom = crate::memory::heap::alloc(STEAL_PROBE_STACK_SIZE) as u64;
-            let stack_top = stack_bottom + STEAL_PROBE_STACK_SIZE as u64;
-            let mut sp = (stack_top - 8) as *mut u64;
-
-            sp = sp.sub(1);
-            *sp = steal_probe_task as u64; // return address
-            sp = sp.sub(1); *sp = 0; // R15
-            sp = sp.sub(1); *sp = 0; // R14
-            sp = sp.sub(1); *sp = 0; // R13
-            sp = sp.sub(1); *sp = 0; // R12
-            sp = sp.sub(1); *sp = 0; // RBX
-            sp = sp.sub(1); *sp = 0; // RBP
-            sp = sp.sub(1); *sp = 0; // RDI
-            sp = sp.sub(1); *sp = 0; // RSI
-
-            let id = NEXT_TASK_ID.fetch_add(1, Ordering::SeqCst);
-            scheduler.tasks.push(Box::new(Task {
-                id,
-                stack_top: sp as u64,
-                stack_bottom,
-                status: TaskStatus::Ready,
-                cpu_affinity: 0,
-                kernel_stack_bottom: stack_bottom,
-                kernel_stack_top: stack_top,
-                gs_base: 0,
-                user_rsp: 0,
-                exit_code: 0,
-                wake_tick: 0,
-                waiting_for: usize::MAX,
-            }));
-            let index = scheduler.tasks.len() - 1;
-            scheduler.run_queues[0].push_back(index);
-        }
-    }
-    core::mem::drop(guard);
-    crate::println!("[stealtest] queued {} kernel tasks on CPU0", STEAL_PROBE_TASKS);
-}
-
-pub fn steal_probe_completed() -> usize {
-    STEAL_PROBE_COMPLETED.load(Ordering::Acquire)
 }
 
 pub fn switch_task() {
