@@ -262,6 +262,25 @@ pub fn switch_task() {
                         if current_index != usize::MAX
                             && scheduler.tasks[current_index].status == TaskStatus::Terminated
                         {
+                            // APs keep a saved idle scheduler context. Return to it
+                            // when their last user task exits instead of halting the CPU.
+                            if cpu_index != 0 && (*percpu).idle_stack != 0 {
+                                let old_stack_ref =
+                                    &mut scheduler.tasks[current_index].stack_top as *mut u64;
+                                let idle_stack = (*percpu).idle_stack;
+                                (*percpu).current_task_index = usize::MAX;
+                                (*percpu).user_stack = 0;
+                                (*percpu).scheduler_ticks_left = 0;
+                                (*percpu).need_resched = false;
+                                crate::processor::wrmsr(
+                                    crate::processor::MSR_IA32_KERNEL_GS_BASE,
+                                    0,
+                                );
+                                core::mem::drop(guard);
+                                context_switch(old_stack_ref, idle_stack);
+                                return;
+                            }
+
                             core::mem::drop(guard);
                             crate::println!("All tasks could be terminated, or deadlock. Halting.");
                             loop {
@@ -291,6 +310,10 @@ pub fn switch_task() {
             let mut dummy_sp = 0u64;
             let old_stack_ref = if current_index != usize::MAX {
                 &mut scheduler.tasks[current_index].stack_top as *mut u64
+            } else if cpu_index != 0 {
+                // Save the AP scheduler loop so the CPU can return here after
+                // its last runnable task exits.
+                &mut (*percpu).idle_stack as *mut u64
             } else {
                 &mut dummy_sp as *mut u64
             };
