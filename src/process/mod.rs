@@ -169,6 +169,12 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
             };
             scheduler.tasks[task_index].cpu_affinity = target_cpu;
             scheduler.run_queues[target_cpu].push_back(task_index);
+            crate::println!(
+                "[sched] enqueue task={} cpu={} queue_len={}",
+                id,
+                target_cpu,
+                scheduler.run_queues[target_cpu].len()
+            );
             id
         } else {
             0
@@ -298,6 +304,15 @@ pub fn switch_task() {
                 }
             };
 
+            if cpu_index != 0 {
+                crate::println!(
+                    "[sched] cpu={} dispatch task={} current={}",
+                    cpu_index,
+                    scheduler.tasks[next_index].id,
+                    current_index
+                );
+            }
+
             // A running task goes to the tail, giving round-robin fairness.
             // Terminated tasks are deliberately not requeued.
             if current_index != usize::MAX
@@ -345,6 +360,14 @@ pub fn switch_task() {
             let new_user_gs = scheduler.tasks[next_index].gs_base;
             crate::processor::wrmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE, new_user_gs);
 
+            if cpu_index != 0 {
+                crate::println!(
+                    "[sched] cpu={} context_switch task={} new_rsp={:#x}",
+                    cpu_index,
+                    next_index,
+                    new_stack
+                );
+            }
             core::mem::drop(guard);
             context_switch(old_stack_ref, new_stack);
         }
@@ -493,6 +516,13 @@ pub fn run_ap_scheduler() -> ! {
 
     loop {
         switch_task();
+
+        // Keep the existing AP-side NIC progress behavior while this PR is
+        // being diagnosed. This avoids changing scheduler and network behavior
+        // at the same time.
+        unsafe {
+            crate::drivers::net::poll();
+        }
 
         // A task that starts running on an AP is cooperative until AP-local
         // timer preemption is added. If it voluntarily yields, switch_task()
