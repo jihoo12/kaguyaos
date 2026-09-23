@@ -70,16 +70,6 @@ static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1); // 0 is reserved for mai
 static SCHEDULER_READY: AtomicBool = AtomicBool::new(false);
 static SCHEDULER_TICKS: AtomicUsize = AtomicUsize::new(0);
 
-// Temporary #47 kernel-side stress probe counters.
-static SCHED_STRESS_DONE: AtomicUsize = AtomicUsize::new(0);
-static SCHED_STRESS_FIRST_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
-static SCHED_STRESS_BATCH: AtomicUsize = AtomicUsize::new(0);
-static SCHED_STRESS_PENDING_BATCH: AtomicUsize = AtomicUsize::new(usize::MAX);
-const SCHED_STRESS_BATCH_TASKS: usize = 4;
-const SCHED_STRESS_BATCHES: usize = 4;
-const SCHED_STRESS_TASKS: usize = SCHED_STRESS_BATCH_TASKS * SCHED_STRESS_BATCHES;
-const SCHED_STRESS_STACK_SIZE: usize = 8 * 1024;
-
 /// Scheduler-owned publication of each CPU's current task slot.
 ///
 /// Local CPUs still use PercpuData for their fast path. Cross-CPU scheduler
@@ -328,10 +318,6 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
                 select_target_cpu(scheduler)
             };
             scheduler.metadata.tasks[task_index].cpu_affinity = target_cpu;
-            crate::println!(
-                "[schedstress] enqueue task {} index {} -> CPU{}",
-                id, task_index, target_cpu
-            );
             scheduler.run_queues[target_cpu].lock().push_back(task_index);
             if target_cpu != 0 {
                 crate::processor::send_ipi(target_cpu, crate::interrupts::SCHEDULER_WAKE_VECTOR);
@@ -407,14 +393,6 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
             let task_index = scheduler.metadata.tasks.len() - 1;
             let target_cpu = select_target_cpu(scheduler);
             scheduler.metadata.tasks[task_index].cpu_affinity = target_cpu;
-            if id >= SCHED_STRESS_FIRST_ID.load(Ordering::SeqCst) {
-                crate::println!(
-                    "[schedstress] enqueue task {} index {} -> CPU{}",
-                    id,
-                    task_index,
-                    target_cpu
-                );
-            }
             scheduler.run_queues[target_cpu].lock().push_back(task_index);
             if target_cpu != 0 {
                 crate::processor::send_ipi(target_cpu, crate::interrupts::SCHEDULER_WAKE_VECTOR);
@@ -423,45 +401,6 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
     }
 }
 
-/// Temporary #47 stress worker. Each worker is a real scheduler-managed kernel
-/// task, so completion exercises claim -> run -> terminate -> switch-away.
-extern "C" fn sched_stress_worker() {
-    // Keep the tiny worker atomic with respect to timer preemption. The current
-    // scheduler publishes an outgoing Running task as Ready before assembly has
-    // saved its final RSP; allowing timer preemption here can let another CPU
-    // claim that not-yet-saved context and corrupt the queue/stack. This probe
-    // is intended to validate #47's claimed-task switch-plan path separately.
-    unsafe { core::arch::asm!("cli", options(nostack, preserves_flags)); }
-    let cpu = unsafe {
-        let percpu = crate::processor::get_percpu_data();
-        if percpu.is_null() { usize::MAX } else { (*percpu).cpu_index as usize }
-    };
-    let done = SCHED_STRESS_DONE.fetch_add(1, Ordering::SeqCst) + 1;
-    let task_id = current_task_id();
-    crate::println!("[schedstress] task {} complete on CPU{} ({}/{})",
-        task_id, cpu, done, SCHED_STRESS_TASKS);
-    // A fresh kernel task must never have an idle scheduler continuation saved
-    // inside its own stack. Capture the per-CPU scheduler stack before exit so
-    // we can distinguish queue corruption from a bad idle-context restore.
-    unsafe {
-        let percpu = crate::processor::get_percpu_data();
-        if !percpu.is_null() {
-            crate::println!(
-                "[schedstress] CPU{} task {} idle_stack={:#x}",
-                cpu,
-                task_id,
-                (*percpu).idle_stack
-            );
-        }
-    }
-    terminate_task(0);
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
-/// Queue a burst of independent kernel tasks for the #47 SMP/context-switch
-/// stress run. This is temporary validation code and must be removed before merge.
 /// Enter the BSP scheduler loop as an idle scheduler context. The boot dummy
 /// task must not remain published as Running once normal task dispatch begins.
 pub fn enter_bsp_scheduler_idle() {
@@ -486,49 +425,6 @@ pub fn enter_bsp_scheduler_idle() {
         (*percpu).idle_stack = 0;
         (*percpu).scheduler_ticks_left = 0;
         (*percpu).need_resched = false;
-    }
-}
-
-fn queue_scheduler_stress_batch(batch: usize) {
-    crate::println!(
-        "[schedstress] queueing batch {}/{} ({} tasks)",
-        batch + 1,
-        SCHED_STRESS_BATCHES,
-        SCHED_STRESS_BATCH_TASKS
-    );
-    for _ in 0..SCHED_STRESS_BATCH_TASKS {
-        let stack = unsafe { crate::memory::heap::alloc(SCHED_STRESS_STACK_SIZE) as u64 };
-        if stack == 0 {
-            crate::println!("[schedstress] stack allocation failed");
-            break;
-        }
-        add_new_task(sched_stress_worker, stack, SCHED_STRESS_STACK_SIZE);
-    }
-}
-
-pub fn start_scheduler_stress_probe() {
-    SCHED_STRESS_DONE.store(0, Ordering::SeqCst);
-    SCHED_STRESS_BATCH.store(0, Ordering::SeqCst);
-    SCHED_STRESS_PENDING_BATCH.store(usize::MAX, Ordering::SeqCst);
-    SCHED_STRESS_FIRST_ID.store(NEXT_TASK_ID.load(Ordering::SeqCst), Ordering::SeqCst);
-    crate::println!(
-        "[schedstress] running {} tasks in {} batches from id {}",
-        SCHED_STRESS_TASKS,
-        SCHED_STRESS_BATCHES,
-        SCHED_STRESS_FIRST_ID.load(Ordering::SeqCst)
-    );
-    queue_scheduler_stress_batch(0);
-}
-
-pub fn scheduler_stress_done() -> usize {
-    SCHED_STRESS_DONE.load(Ordering::SeqCst)
-}
-
-/// Service a pending temporary stress batch outside SCHEDULER_LOCK.
-pub fn service_scheduler_stress_probe() {
-    let batch = SCHED_STRESS_PENDING_BATCH.swap(usize::MAX, Ordering::AcqRel);
-    if batch != usize::MAX {
-        queue_scheduler_stress_batch(batch);
     }
 }
 
@@ -566,26 +462,6 @@ pub fn switch_task() {
                 let now = SCHEDULER_TICKS.load(Ordering::Relaxed) as u64;
                 wake_sleeping_tasks_locked(scheduler, now);
                 reap_zombies(scheduler);
-
-                // Temporary #47 probe: only publish the next batch request
-                // while holding scheduler metadata. add_new_task() takes
-                // SCHEDULER_LOCK itself, so actual allocation/enqueue must happen
-                // after this scheduler critical section has been left.
-                let batch = SCHED_STRESS_BATCH.load(Ordering::SeqCst);
-                if batch + 1 < SCHED_STRESS_BATCHES
-                    && SCHED_STRESS_DONE.load(Ordering::SeqCst)
-                        >= (batch + 1) * SCHED_STRESS_BATCH_TASKS
-                    && SCHED_STRESS_BATCH
-                        .compare_exchange(batch, batch + 1, Ordering::SeqCst, Ordering::SeqCst)
-                        .is_ok()
-                {
-                    SCHED_STRESS_PENDING_BATCH.store(batch + 1, Ordering::Release);
-                    // The request is serviced by the BSP scheduler loop outside
-                    // SCHEDULER_LOCK. If CPU0 is currently running init while an
-                    // AP completes the last worker, ensure CPU0 gets another
-                    // scheduler entry instead of leaving the pending batch idle.
-                    (*percpu).need_resched = true;
-                }
             }
 
             // Prefer local work. Only an otherwise-idle CPU steals one Ready
@@ -638,14 +514,6 @@ pub fn switch_task() {
                 && scheduler.metadata.tasks[current_index].status == TaskStatus::Running
             {
                 scheduler.metadata.tasks[current_index].status = TaskStatus::Ready;
-                if SCHED_STRESS_FIRST_ID.load(Ordering::SeqCst) != usize::MAX {
-                    crate::println!(
-                        "[schedstress] requeue CPU{} current index {} task {}",
-                        cpu_index,
-                        current_index,
-                        scheduler.metadata.tasks[current_index].id
-                    );
-                }
                 scheduler.run_queues[cpu_index].lock().push_back(current_index);
             }
 
