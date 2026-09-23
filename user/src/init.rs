@@ -106,7 +106,6 @@ fn exec_program(name: &str, args: &str) {
     }
 }
 
-
 // ── Command dispatch ───────────────────────────────────────────────────────
 
 #[inline(never)]
@@ -178,7 +177,6 @@ fn process_command(cmd_ptr: *const u8, cmd_len: usize) {
             exec_program(fname, rest);
         } else if bytes_eq(cmd_ptr, cmd_len, b"ping") {
             exec_program("ping.kef", "");
-
         } else if bytes_eq(cmd_ptr, cmd_len, b"shutdown") {
             println("Goodbye!");
             std::shutdown();
