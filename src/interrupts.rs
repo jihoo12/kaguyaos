@@ -268,13 +268,13 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) { unsafe {
             // The PIT is the scheduler's global wall-clock source. Advance it
             // on every timer IRQ, even when the BSP was interrupted in kernel
             // mode; sleeping tasks may be running on another CPU.
-            crate::process::scheduler_tick();
+            crate::process::scheduler_clock_tick();
 
             // Only charge a scheduling quantum when a user task was actually
             // interrupted. Kernel-mode work remains non-preemptive for now.
             let cs = core::ptr::read_unaligned(core::ptr::addr_of!((*frame).cs));
-            if cs & 3 != 3 {
-                crate::process::cancel_tick_reschedule();
+            if cs & 3 == 3 {
+                crate::process::scheduler_tick();
             }
         }
         1 => {
@@ -302,10 +302,21 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) { unsafe {
 /// quantum accounting is connected after the AP timer source is calibrated
 /// and validated independently.
 #[unsafe(no_mangle)]
-pub unsafe extern "sysv64" fn lapic_timer_handler(_frame: *mut InterruptFrame) {
+pub unsafe extern "sysv64" fn lapic_timer_handler(frame: *mut InterruptFrame) {
     unsafe {
+        // The AP timer owns only this CPU's scheduling quantum. The BSP PIT
+        // remains the single global wall-clock source used by sleep deadlines.
+        let cs = core::ptr::read_unaligned(core::ptr::addr_of!((*frame).cs));
+        if cs & 3 == 3 {
+            crate::process::scheduler_tick();
+        }
+
+        // Acknowledge before switching away so the LAPIC does not leave this
+        // vector in-service across a context switch.
         let lapic_base = crate::processor::lapic_base_from_msr();
         crate::processor::lapic_eoi(lapic_base);
+
+        crate::process::reschedule_if_needed();
     }
 }
 
