@@ -175,12 +175,6 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
             };
             scheduler.tasks[task_index].cpu_affinity = target_cpu;
             scheduler.run_queues[target_cpu].push_back(task_index);
-            crate::println!(
-                "[sched] enqueue task={} cpu={} queue_len={}",
-                id,
-                target_cpu,
-                scheduler.run_queues[target_cpu].len()
-            );
             id
         } else {
             0
@@ -310,15 +304,6 @@ pub fn switch_task() {
                 }
             };
 
-            if cpu_index != 0 {
-                crate::println!(
-                    "[sched] cpu={} dispatch task={} current={}",
-                    cpu_index,
-                    scheduler.tasks[next_index].id,
-                    current_index
-                );
-            }
-
             // A running task goes to the tail, giving round-robin fairness.
             // Terminated tasks are deliberately not requeued.
             if current_index != usize::MAX
@@ -366,24 +351,6 @@ pub fn switch_task() {
             let new_user_gs = scheduler.tasks[next_index].gs_base;
             crate::processor::wrmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE, new_user_gs);
 
-            if cpu_index != 0 {
-                crate::println!(
-                    "[sched] cpu={} context_switch task={} new_rsp={:#x} cr3={:#x}",
-                    cpu_index,
-                    next_index,
-                    new_stack,
-                    crate::memory::current_pml4_phys()
-                );
-
-                // The BSP installs user mappings after AP startup. The AP may
-                // have cached an earlier non-present translation for those
-                // addresses while idling/polling. Reloading the shared CR3 here
-                // gives this CPU a local TLB flush before it enters a user task.
-                // This is a stopgap until page-table updates grow a real SMP
-                // TLB-shootdown mechanism.
-                let cr3 = crate::memory::current_pml4_phys();
-                core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, preserves_flags));
-            }
             core::mem::drop(guard);
             context_switch(old_stack_ref, new_stack);
         }
@@ -541,15 +508,6 @@ pub fn run_ap_scheduler() -> ! {
     // established the per-CPU GS base, but this helper may return null in the
     // AP's current GS/swapgs state. switch_task() performs its own checked
     // lookup and is the path we actually need to validate.
-    let percpu = unsafe { crate::processor::get_percpu_data() };
-    crate::println!(
-        "[sched] AP scheduler ready gs={:#x} kgs={:#x} percpu={:#x} cr3={:#x}",
-        unsafe { crate::processor::rdmsr(crate::processor::MSR_IA32_GS_BASE) },
-        unsafe { crate::processor::rdmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE) },
-        percpu as u64,
-        crate::memory::current_pml4_phys()
-    );
-
     loop {
         switch_task();
 
