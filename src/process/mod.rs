@@ -80,24 +80,23 @@ fn select_target_cpu(scheduler: &Scheduler) -> usize {
     let online_cpus = (crate::processor::online_ap_count() as usize + 1)
         .min(crate::processor::MAX_AP_COUNT + 1);
 
-    let mut best_cpu = 0;
-    let mut best_load = usize::MAX;
-
-    for cpu in 0..online_cpus {
-        let mut load = scheduler.run_queues[cpu].len();
+    // APs do not have timer preemption yet. Treat an AP that is already
+    // running a task as unavailable: placing more work behind a cooperative
+    // task can make commands appear to be lost until that task yields/exits.
+    //
+    // Prefer an idle AP with an empty queue. Otherwise fall back to the BSP,
+    // whose PIT timer can preempt and rotate runnable tasks.
+    for cpu in 1..online_cpus {
         unsafe {
-            if crate::processor::PERCPU_DATA_SLOTS[cpu].current_task_index != usize::MAX {
-                load += 1;
+            if crate::processor::PERCPU_DATA_SLOTS[cpu].current_task_index == usize::MAX
+                && scheduler.run_queues[cpu].is_empty()
+            {
+                return cpu;
             }
-        }
-
-        if load < best_load {
-            best_load = load;
-            best_cpu = cpu;
         }
     }
 
-    best_cpu
+    0
 }
 
 pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi: u64, rsi: u64) -> usize {
