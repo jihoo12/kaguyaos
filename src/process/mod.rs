@@ -425,13 +425,14 @@ fn wake_sleeping_tasks(now: u64) {
             for index in 0..scheduler.tasks.len() {
                 if scheduler.tasks[index].status == TaskStatus::Sleeping && scheduler.tasks[index].wake_tick <= now {
                     scheduler.tasks[index].status = TaskStatus::Ready;
-                    // APs currently have no local timer/preemption. A task that
-                    // sleeps there switches back to the AP idle scheduler context,
-                    // but the PIT wakeup originates on the BSP. Put the awakened
-                    // task on the BSP queue for now so the IRQ return path can
-                    // immediately dispatch it with real timer-backed spacing.
-                    scheduler.tasks[index].cpu_affinity = 0;
-                    scheduler.run_queues[0].push_back(index);
+                    // Preserve the task's CPU affinity. APs now have their own
+                    // scheduler timer and continuously poll their local queue from
+                    // the idle scheduler context, so a sleeping AP task can wake
+                    // back onto the CPU it was running on.
+                    let cpu = scheduler.tasks[index]
+                        .cpu_affinity
+                        .min(crate::processor::MAX_AP_COUNT);
+                    scheduler.run_queues[cpu].push_back(index);
                 }
             }
         }
