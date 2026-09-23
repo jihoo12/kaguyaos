@@ -238,6 +238,9 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
             };
             scheduler.tasks[task_index].cpu_affinity = target_cpu;
             scheduler.run_queues[target_cpu].push_back(task_index);
+            if target_cpu != 0 {
+                crate::processor::send_ipi(target_cpu, crate::interrupts::SCHEDULER_WAKE_VECTOR);
+            }
             id
         } else {
             0
@@ -315,6 +318,9 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
             let target_cpu = select_target_cpu(scheduler);
             scheduler.tasks[task_index].cpu_affinity = target_cpu;
             scheduler.run_queues[target_cpu].push_back(task_index);
+            if target_cpu != 0 {
+                crate::processor::send_ipi(target_cpu, crate::interrupts::SCHEDULER_WAKE_VECTOR);
+            }
         }
     }
 }
@@ -745,10 +751,10 @@ pub fn run_ap_scheduler() -> ! {
             crate::drivers::net::poll();
         }
 
-        // Keep polling with a small backoff. An idle AP can now steal remote
-        // runnable work; interrupt-driven idle wakeup remains a follow-up.
-        for _ in 0..10_000 {
-            core::hint::spin_loop();
+        // Sleep until a local timer/device interrupt or scheduler wake IPI arrives.
+        // Queue producers kick an AP after placing runnable work on its queue.
+        unsafe {
+            core::arch::asm!("sti; hlt", options(nomem, nostack));
         }
     }
 }
