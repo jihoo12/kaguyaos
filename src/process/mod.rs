@@ -293,6 +293,11 @@ pub fn switch_task() {
                                 let old_stack_ref =
                                     &mut scheduler.tasks[current_index].stack_top as *mut u64;
                                 let idle_stack = (*percpu).idle_stack;
+                                // Preserve the syscall-saved user RSP before
+                                // leaving this CPU. The syscall entry path stores it
+                                // in percpu.user_stack; clearing it here loses the
+                                // task's user stack when the task later migrates.
+                                scheduler.tasks[current_index].user_rsp = (*percpu).user_stack;
                                 (*percpu).current_task_index = usize::MAX;
                                 (*percpu).user_stack = 0;
                                 (*percpu).scheduler_ticks_left = 0;
