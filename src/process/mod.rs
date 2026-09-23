@@ -531,7 +531,13 @@ pub fn run_ap_scheduler() -> ! {
     // established the per-CPU GS base, but this helper may return null in the
     // AP's current GS/swapgs state. switch_task() performs its own checked
     // lookup and is the path we actually need to validate.
-    crate::println!("[sched] AP scheduler ready");
+    let percpu = unsafe { crate::processor::get_percpu_data() };
+    crate::println!(
+        "[sched] AP scheduler ready gs={:#x} kgs={:#x} percpu={:#x}",
+        unsafe { crate::processor::rdmsr(crate::processor::MSR_IA32_GS_BASE) },
+        unsafe { crate::processor::rdmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE) },
+        percpu as u64
+    );
 
     loop {
         switch_task();
