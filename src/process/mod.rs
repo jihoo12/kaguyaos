@@ -146,18 +146,24 @@ fn steal_ready_task(scheduler: &mut Scheduler, thief_cpu: usize) -> Option<usize
         .max_by_key(|&cpu| scheduler.run_queues[cpu].len())?;
 
     while scheduler.run_queues[victim_cpu].len() > 1 {
-        let index = scheduler.run_queues[victim_cpu].pop_back()?;
-        if scheduler.tasks[index].status == TaskStatus::Ready {
-            let task_id = scheduler.tasks[index].id;
-            scheduler.tasks[index].cpu_affinity = thief_cpu;
-            crate::println!(
-                "[sched] CPU{} stole task {} from CPU{}",
-                thief_cpu,
-                task_id,
-                victim_cpu
-            );
-            return Some(index);
-        }
+        // Task 0 is the BSP scheduler/main context and task 1 is bootstrap
+        // init. They are BSP-owned contexts rather than migratable work.
+        let steal_pos = scheduler.run_queues[victim_cpu]
+            .iter()
+            .rposition(|&index| {
+                scheduler.tasks[index].status == TaskStatus::Ready
+                    && scheduler.tasks[index].id > 1
+            })?;
+        let index = scheduler.run_queues[victim_cpu].remove(steal_pos)?;
+        let task_id = scheduler.tasks[index].id;
+        scheduler.tasks[index].cpu_affinity = thief_cpu;
+        crate::println!(
+            "[sched] CPU{} stole task {} from CPU{}",
+            thief_cpu,
+            task_id,
+            victim_cpu
+        );
+        return Some(index);
     }
     None
 }
