@@ -184,9 +184,18 @@ fn process_command(cmd_ptr: *const u8, cmd_len: usize) {
             // placed on the AP and the second falls back to the BSP. Seeing
             // both finish proves timer-driven progress on both CPUs.
             let first = std::exec("preempt.kef");
-            let second = std::exec("preempt.kef");
-            if first == usize::MAX || second == usize::MAX {
-                println("preempt: failed to start probe tasks");
+            if first == usize::MAX {
+                println("preempt: first task failed");
+            } else {
+                // Let the first CPU-bound task occupy the AP before starting a
+                // second copy. This avoids racing two filesystem/loader execs
+                // back-to-back while still testing that the shell keeps making
+                // progress while the AP task never yields.
+                std::sleep(100);
+                let second = std::exec("preempt.kef");
+                if second == usize::MAX {
+                    println("preempt: second task failed");
+                }
             }
             std::yield_task();
         } else if bytes_eq(cmd_ptr, cmd_len, b"shutdown") {
