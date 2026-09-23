@@ -17,6 +17,7 @@ pub struct Task {
     pub stack_top: u64,    // Saved Stack Pointer (current RSP)
     pub stack_bottom: u64, // For deallocation reference (user stack if usermode)
     pub status: TaskStatus,
+    pub cpu_affinity: usize,
     pub kernel_stack_bottom: u64,
     pub kernel_stack_top: u64,
     pub gs_base: u64, // User GS base value
@@ -61,6 +62,7 @@ pub unsafe fn init() {
         stack_top: 0,
         stack_bottom: 0,
         status: TaskStatus::Running,
+        cpu_affinity: 0,
         kernel_stack_bottom: 0,
         kernel_stack_top: 0,
         gs_base: 0,
@@ -123,6 +125,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
                 stack_top: sp as u64,
                 stack_bottom: user_rsp - stack_size as u64,
                 status: TaskStatus::Ready,
+                cpu_affinity: 0,
                 kernel_stack_bottom,
                 kernel_stack_top,
                 gs_base: 0,
@@ -193,6 +196,7 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
                 stack_top: sp as u64, // The saved RSP
                 stack_bottom,
                 status: TaskStatus::Ready,
+                cpu_affinity: 0,
                 kernel_stack_bottom: stack_bottom,
                 kernel_stack_top: stack_top,
                 gs_base: 0,
