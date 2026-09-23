@@ -82,6 +82,7 @@ fn cmd_help() {
     println("  rm <file>         Delete a file");
     println("  exec <file> [args] Execute a KEF binary");
     println("  clear             Clear screen");
+    println("  preempt           Run AP timer preemption probe");
     println("  shutdown          Shut down");
 }
 
@@ -177,6 +178,17 @@ fn process_command(cmd_ptr: *const u8, cmd_len: usize) {
             exec_program(fname, rest);
         } else if bytes_eq(cmd_ptr, cmd_len, b"ping") {
             exec_program("ping.kef", "");
+        } else if bytes_eq(cmd_ptr, cmd_len, b"preempt") {
+            // Start two CPU-bound tasks back-to-back. Neither task yields or
+            // sleeps while spinning. With one AP available, the first task is
+            // placed on the AP and the second falls back to the BSP. Seeing
+            // both finish proves timer-driven progress on both CPUs.
+            let first = std::exec("preempt.kef");
+            let second = std::exec("preempt.kef");
+            if first == usize::MAX || second == usize::MAX {
+                println("preempt: failed to start probe tasks");
+            }
+            std::yield_task();
         } else if bytes_eq(cmd_ptr, cmd_len, b"shutdown") {
             println("Goodbye!");
             std::shutdown();
