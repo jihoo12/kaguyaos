@@ -374,6 +374,15 @@ pub fn switch_task() {
                     new_stack,
                     crate::memory::current_pml4_phys()
                 );
+
+                // The BSP installs user mappings after AP startup. The AP may
+                // have cached an earlier non-present translation for those
+                // addresses while idling/polling. Reloading the shared CR3 here
+                // gives this CPU a local TLB flush before it enters a user task.
+                // This is a stopgap until page-table updates grow a real SMP
+                // TLB-shootdown mechanism.
+                let cr3 = crate::memory::current_pml4_phys();
+                core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, preserves_flags));
             }
             core::mem::drop(guard);
             context_switch(old_stack_ref, new_stack);
