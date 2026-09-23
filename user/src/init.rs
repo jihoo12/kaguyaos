@@ -82,7 +82,6 @@ fn cmd_help() {
     println("  rm <file>         Delete a file");
     println("  exec <file> [args] Execute a KEF binary");
     println("  clear             Clear screen");
-    println("  schedstress       Run scheduler switch stress probe");
     println("  shutdown          Shut down");
 }
 
@@ -178,30 +177,6 @@ fn process_command(cmd_ptr: *const u8, cmd_len: usize) {
             exec_program(fname, rest);
         } else if bytes_eq(cmd_ptr, cmd_len, b"ping") {
             exec_program("ping.kef", "");
-        } else if bytes_eq(cmd_ptr, cmd_len, b"schedstress") {
-            println("[schedstress] starting 64 sequential task switches");
-            let mut passed = 0usize;
-            let mut i = 0usize;
-            while i < 64 {
-                let task_id = std::exec("ls.kef");
-                if task_id == usize::MAX {
-                    println("[schedstress] exec failed");
-                    break;
-                }
-                let exit_code = std::wait_task(task_id);
-                if exit_code != 0 {
-                    println("[schedstress] child failed");
-                    break;
-                }
-                passed += 1;
-                // Give the remote CPU a chance to return through its idle
-                // scheduler context before the next wake/claim/switch cycle.
-                std::sleep(10);
-                i += 1;
-            }
-            print("[schedstress] complete: ");
-            print_u64(passed as u64);
-            println("/64");
         } else if bytes_eq(cmd_ptr, cmd_len, b"shutdown") {
             println("Goodbye!");
             std::shutdown();
