@@ -10,7 +10,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 pub enum TaskStatus {
     Ready,
     Running,
-    Terminated,
+    Zombie,
 }
 
 pub struct Task {
@@ -257,6 +257,8 @@ pub fn switch_task() {
     unsafe {
         let guard = SCHEDULER_LOCK.lock();
         if let Some(scheduler) = SCHEDULER.as_mut() {
+            reap_zombies(scheduler);
+
             let percpu = crate::processor::get_percpu_data();
             if percpu.is_null() {
                 return;
@@ -272,7 +274,7 @@ pub fn switch_task() {
                     Some(_) => continue, // Defensive: discard a stale queue entry.
                     None => {
                         if current_index != usize::MAX
-                            && scheduler.tasks[current_index].status == TaskStatus::Terminated
+                            && scheduler.tasks[current_index].status == TaskStatus::Zombie
                         {
                             // APs keep a saved idle scheduler context. Return to it
                             // when their last user task exits instead of halting the CPU.
@@ -390,6 +392,37 @@ pub fn reschedule_if_needed() {
     switch_task();
 }
 
+/// Reclaim resources owned by zombie tasks that are no longer running on any CPU.
+///
+/// Task slots stay allocated so run-queue/current-task indices remain stable. This
+/// first reaping step releases the per-task kernel stack, which is the largest
+/// scheduler-owned allocation. User stacks belong to the shared userspace heap
+/// and are left alone until address spaces/lifetimes are separated.
+fn reap_zombies(scheduler: &mut Scheduler) {
+    let current_indices: [usize; crate::processor::MAX_AP_COUNT + 1] =
+        core::array::from_fn(|cpu| unsafe {
+            crate::processor::PERCPU_DATA_SLOTS[cpu].current_task_index
+        });
+
+    for (index, task) in scheduler.tasks.iter_mut().enumerate() {
+        if task.status != TaskStatus::Zombie || task.kernel_stack_bottom == 0 {
+            continue;
+        }
+
+        // A terminating task switches away using its kernel stack. Do not free
+        // that stack until no CPU advertises this slot as its current task.
+        if current_indices.contains(&index) {
+            continue;
+        }
+
+        unsafe {
+            crate::memory::heap::free(task.kernel_stack_bottom as *mut u8);
+        }
+        task.kernel_stack_bottom = 0;
+        task.kernel_stack_top = 0;
+    }
+}
+
 pub fn terminate_task(exit_code: usize) {
     let guard = SCHEDULER_LOCK.lock();
     unsafe {
@@ -398,7 +431,7 @@ pub fn terminate_task(exit_code: usize) {
             if !percpu.is_null() {
                 let current_index = (*percpu).current_task_index;
                 if current_index != usize::MAX {
-                    scheduler.tasks[current_index].status = TaskStatus::Terminated;
+                    scheduler.tasks[current_index].status = TaskStatus::Zombie;
                     scheduler.tasks[current_index].exit_code = exit_code;
 
                     crate::println!("Task {} terminated with exit code {}.", scheduler.tasks[current_index].id, exit_code);
@@ -466,7 +499,7 @@ pub fn get_task_status(task_id: usize) -> usize {
                     return match task.status {
                         TaskStatus::Ready => 0,
                         TaskStatus::Running => 1,
-                        TaskStatus::Terminated => 2,
+                        TaskStatus::Zombie => 2,
                     };
                 }
             }
