@@ -200,7 +200,7 @@ fn process_command(cmd_ptr: *const u8, cmd_len: usize) {
                 i += 1;
             }
             print("[schedstress] complete: ");
-            print_usize(passed);
+            print_u64(passed as u64);
             println("/64");
         } else if bytes_eq(cmd_ptr, cmd_len, b"shutdown") {
             println("Goodbye!");
