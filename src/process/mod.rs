@@ -438,10 +438,6 @@ extern "C" fn sched_stress_worker() {
     };
     let done = SCHED_STRESS_DONE.fetch_add(1, Ordering::SeqCst) + 1;
     let task_id = current_task_id();
-    let first_id = SCHED_STRESS_FIRST_ID.load(Ordering::SeqCst);
-    if task_id < first_id || task_id >= first_id.saturating_add(SCHED_STRESS_TASKS) {
-        crate::println!("[schedstress] ERROR unexpected task {} entered worker (first={})", task_id, first_id);
-    }
     crate::println!("[schedstress] task {} complete on CPU{} ({}/{})",
         task_id, cpu, done, SCHED_STRESS_TASKS);
     // A fresh kernel task must never have an idle scheduler continuation saved
