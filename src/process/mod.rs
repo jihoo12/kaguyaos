@@ -408,7 +408,7 @@ fn wake_sleeping_tasks(now: u64) {
 pub fn sleep_current(milliseconds: usize) {
     if milliseconds == 0 { switch_task(); return; }
     let ticks = ((milliseconds as u64).saturating_add(9) / 10).max(1);
-    let deadline = SCHEDULER_TICKS.load(Ordering::Relaxed).saturating_add(ticks);
+    let deadline = (SCHEDULER_TICKS.load(Ordering::Relaxed) as u64).saturating_add(ticks);
     let guard = SCHEDULER_LOCK.lock();
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_mut() {
