@@ -40,6 +40,23 @@ static mut SCHEDULER: Option<Scheduler> = None;
 static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1); // 0 is reserved for main kernel task
 static SCHEDULER_READY: AtomicBool = AtomicBool::new(false);
 static SCHEDULER_TICKS: AtomicUsize = AtomicUsize::new(0);
+
+/// Scheduler-owned publication of each CPU's current task slot.
+///
+/// Local CPUs still use PercpuData for their fast path. Cross-CPU scheduler
+/// decisions use this atomic mirror instead of racing on another CPU's GS data.
+static CPU_CURRENT_TASK: [AtomicUsize; crate::processor::MAX_AP_COUNT + 1] =
+    [const { AtomicUsize::new(usize::MAX) }; crate::processor::MAX_AP_COUNT + 1];
+
+#[inline]
+fn publish_current_task(cpu: usize, task_index: usize) {
+    CPU_CURRENT_TASK[cpu].store(task_index, Ordering::Release);
+}
+
+#[inline]
+fn published_current_task(cpu: usize) -> usize {
+    CPU_CURRENT_TASK[cpu].load(Ordering::Acquire)
+}
 static SCHEDULER_LOCK: crate::sync::Spinlock<()> = crate::sync::Spinlock::new(());
 
 /// Number of PIT ticks a task may run before round-robin preemption.
@@ -97,12 +114,10 @@ fn select_target_cpu(scheduler: &Scheduler) -> usize {
     // Prefer an idle AP with an empty queue. Otherwise fall back to the BSP,
     // whose PIT timer can preempt and rotate runnable tasks.
     for cpu in 1..online_cpus {
-        unsafe {
-            if crate::processor::PERCPU_DATA_SLOTS[cpu].current_task_index == usize::MAX
-                && scheduler.run_queues[cpu].is_empty()
-            {
-                return cpu;
-            }
+        if published_current_task(cpu) == usize::MAX
+            && scheduler.run_queues[cpu].is_empty()
+        {
+            return cpu;
         }
     }
 
@@ -263,6 +278,10 @@ pub fn switch_task() {
     unsafe {
         let guard = SCHEDULER_LOCK.lock();
         if let Some(scheduler) = SCHEDULER.as_mut() {
+            // Wake expired sleepers only after the normal scheduler path owns
+            // SCHEDULER_LOCK. Timer IRQs never acquire this lock.
+            let now = SCHEDULER_TICKS.load(Ordering::Relaxed) as u64;
+            wake_sleeping_tasks_locked(scheduler, now);
             reap_zombies(scheduler);
 
             let percpu = crate::processor::get_percpu_data();
@@ -299,6 +318,7 @@ pub fn switch_task() {
                                 // task's user stack when the task later migrates.
                                 scheduler.tasks[current_index].user_rsp = (*percpu).user_stack;
                                 (*percpu).current_task_index = usize::MAX;
+                                publish_current_task(cpu_index, usize::MAX);
                                 (*percpu).user_stack = 0;
                                 (*percpu).scheduler_ticks_left = 0;
                                 (*percpu).need_resched = false;
@@ -344,6 +364,7 @@ pub fn switch_task() {
             scheduler.tasks[next_index].status = TaskStatus::Running;
             scheduler.tasks[next_index].cpu_affinity = cpu_index;
             (*percpu).current_task_index = next_index;
+            publish_current_task(cpu_index, next_index);
             (*percpu).scheduler_ticks_left = DEFAULT_TIME_SLICE_TICKS;
             (*percpu).need_resched = false;
 
@@ -393,8 +414,7 @@ pub fn switch_task() {
 /// Advance the scheduler's global wall clock. The BSP PIT is the sole owner
 /// of this clock for now, so AP-local timer interrupts must not call this.
 pub fn scheduler_clock_tick() {
-    let now = SCHEDULER_TICKS.fetch_add(1, Ordering::Relaxed) as u64 + 1;
-    wake_sleeping_tasks(now);
+    SCHEDULER_TICKS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[inline]
@@ -423,23 +443,18 @@ pub fn scheduler_tick() {
 }
 
 
-fn wake_sleeping_tasks(now: u64) {
-    let _guard = SCHEDULER_LOCK.lock();
-    unsafe {
-        if let Some(scheduler) = SCHEDULER.as_mut() {
-            for index in 0..scheduler.tasks.len() {
-                if scheduler.tasks[index].status == TaskStatus::Sleeping && scheduler.tasks[index].wake_tick <= now {
-                    scheduler.tasks[index].status = TaskStatus::Ready;
-                    // Preserve the task's CPU affinity. APs now have their own
-                    // scheduler timer and continuously poll their local queue from
-                    // the idle scheduler context, so a sleeping AP task can wake
-                    // back onto the CPU it was running on.
-                    let cpu = scheduler.tasks[index]
-                        .cpu_affinity
-                        .min(crate::processor::MAX_AP_COUNT);
-                    scheduler.run_queues[cpu].push_back(index);
-                }
-            }
+fn wake_sleeping_tasks_locked(scheduler: &mut Scheduler, now: u64) {
+    for index in 0..scheduler.tasks.len() {
+        if scheduler.tasks[index].status == TaskStatus::Sleeping
+            && scheduler.tasks[index].wake_tick <= now
+        {
+            scheduler.tasks[index].status = TaskStatus::Ready;
+            // Preserve the task's CPU affinity. The owning CPU will observe
+            // the ready task from its local scheduler path.
+            let cpu = scheduler.tasks[index]
+                .cpu_affinity
+                .min(crate::processor::MAX_AP_COUNT);
+            scheduler.run_queues[cpu].push_back(index);
         }
     }
 }
@@ -485,9 +500,7 @@ pub fn reschedule_if_needed() {
 /// and are left alone until address spaces/lifetimes are separated.
 fn reap_zombies(scheduler: &mut Scheduler) {
     let current_indices: [usize; crate::processor::MAX_AP_COUNT + 1] =
-        core::array::from_fn(|cpu| unsafe {
-            crate::processor::PERCPU_DATA_SLOTS[cpu].current_task_index
-        });
+        core::array::from_fn(published_current_task);
 
     for (index, task) in scheduler.tasks.iter_mut().enumerate() {
         if task.status != TaskStatus::Zombie || task.kernel_stack_bottom == 0 {
