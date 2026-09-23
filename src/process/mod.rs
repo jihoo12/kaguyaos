@@ -10,6 +10,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 pub enum TaskStatus {
     Ready,
     Running,
+    Sleeping,
     Zombie,
 }
 
@@ -24,6 +25,7 @@ pub struct Task {
     pub gs_base: u64, // User GS base value
     pub user_rsp: u64, // User stack pointer value
     pub exit_code: usize,
+    pub wake_tick: u64,
 }
 
 pub struct Scheduler {
@@ -37,6 +39,7 @@ pub struct Scheduler {
 static mut SCHEDULER: Option<Scheduler> = None;
 static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1); // 0 is reserved for main kernel task
 static SCHEDULER_READY: AtomicBool = AtomicBool::new(false);
+static SCHEDULER_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SCHEDULER_LOCK: crate::sync::Spinlock<()> = crate::sync::Spinlock::new(());
 
 /// Number of PIT ticks a task may run before round-robin preemption.
@@ -70,6 +73,7 @@ pub unsafe fn init() {
         gs_base: 0,
         user_rsp: 0,
         exit_code: 0,
+        wake_tick: 0,
     };
 
     if let Some(scheduler) = unsafe { SCHEDULER.as_mut() } {
@@ -161,6 +165,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
                 gs_base: 0,
                 user_rsp,
                 exit_code: 0,
+                wake_tick: 0,
             };
 
             scheduler.tasks.push(Box::new(task));
@@ -242,6 +247,7 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
                 gs_base: 0,
                 user_rsp: 0,
                 exit_code: 0,
+                wake_tick: 0,
             };
 
             scheduler.tasks.push(Box::new(task));
@@ -365,6 +371,9 @@ pub fn switch_task() {
 /// quantum expires we defer the actual context switch until after the PIC EOI,
 /// avoiding a switch while the timer interrupt is still in-service.
 pub fn scheduler_tick() {
+    let now = SCHEDULER_TICKS.fetch_add(1, Ordering::Relaxed) as u64 + 1;
+    wake_sleeping_tasks(now);
+
     unsafe {
         let percpu = crate::processor::get_percpu_data();
         if percpu.is_null() || (*percpu).current_task_index == usize::MAX {
@@ -378,6 +387,43 @@ pub fn scheduler_tick() {
             (*percpu).need_resched = true;
         }
     }
+}
+
+
+fn wake_sleeping_tasks(now: u64) {
+    let _guard = SCHEDULER_LOCK.lock();
+    unsafe {
+        if let Some(scheduler) = SCHEDULER.as_mut() {
+            for index in 0..scheduler.tasks.len() {
+                if scheduler.tasks[index].status == TaskStatus::Sleeping && scheduler.tasks[index].wake_tick <= now {
+                    scheduler.tasks[index].status = TaskStatus::Ready;
+                    let cpu = scheduler.tasks[index].cpu_affinity;
+                    scheduler.run_queues[cpu].push_back(index);
+                }
+            }
+        }
+    }
+}
+
+pub fn sleep_current(milliseconds: usize) {
+    if milliseconds == 0 { switch_task(); return; }
+    let ticks = ((milliseconds as u64).saturating_add(9) / 10).max(1);
+    let deadline = SCHEDULER_TICKS.load(Ordering::Relaxed).saturating_add(ticks);
+    let guard = SCHEDULER_LOCK.lock();
+    unsafe {
+        if let Some(scheduler) = SCHEDULER.as_mut() {
+            let percpu = crate::processor::get_percpu_data();
+            if !percpu.is_null() {
+                let current_index = (*percpu).current_task_index;
+                if current_index != usize::MAX {
+                    scheduler.tasks[current_index].wake_tick = deadline;
+                    scheduler.tasks[current_index].status = TaskStatus::Sleeping;
+                }
+            }
+        }
+    }
+    core::mem::drop(guard);
+    switch_task();
 }
 
 /// Consume a pending reschedule request and switch tasks if necessary.
@@ -499,6 +545,7 @@ pub fn get_task_status(task_id: usize) -> usize {
                     return match task.status {
                         TaskStatus::Ready => 0,
                         TaskStatus::Running => 1,
+                        TaskStatus::Sleeping => 3,
                         TaskStatus::Zombie => 2,
                     };
                 }
