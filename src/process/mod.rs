@@ -328,6 +328,17 @@ pub fn switch_task() {
                 return;
             }
 
+            if scheduler.tasks[next_index].wake_tick != 0 {
+                crate::println!(
+                    "[sleep] dispatch task={} cpu={} now={} deadline={} status={:?}",
+                    scheduler.tasks[next_index].id,
+                    cpu_index,
+                    SCHEDULER_TICKS.load(Ordering::Relaxed),
+                    scheduler.tasks[next_index].wake_tick,
+                    scheduler.tasks[next_index].status
+                );
+                scheduler.tasks[next_index].wake_tick = 0;
+            }
             scheduler.tasks[next_index].status = TaskStatus::Running;
             scheduler.tasks[next_index].cpu_affinity = cpu_index;
             (*percpu).current_task_index = next_index;
@@ -418,6 +429,13 @@ fn wake_sleeping_tasks(now: u64) {
         if let Some(scheduler) = SCHEDULER.as_mut() {
             for index in 0..scheduler.tasks.len() {
                 if scheduler.tasks[index].status == TaskStatus::Sleeping && scheduler.tasks[index].wake_tick <= now {
+                    crate::println!(
+                        "[sleep] wake task={} now={} deadline={} from_cpu={}",
+                        scheduler.tasks[index].id,
+                        now,
+                        scheduler.tasks[index].wake_tick,
+                        scheduler.tasks[index].cpu_affinity
+                    );
                     scheduler.tasks[index].status = TaskStatus::Ready;
                     // APs currently have no local timer/preemption. A task that
                     // sleeps there switches back to the AP idle scheduler context,
@@ -443,6 +461,14 @@ pub fn sleep_current(milliseconds: usize) {
             if !percpu.is_null() {
                 let current_index = (*percpu).current_task_index;
                 if current_index != usize::MAX {
+                    crate::println!(
+                        "[sleep] enter task={} cpu={} now={} deadline={} ms={}",
+                        scheduler.tasks[current_index].id,
+                        (*percpu).cpu_index,
+                        SCHEDULER_TICKS.load(Ordering::Relaxed),
+                        deadline,
+                        milliseconds
+                    );
                     scheduler.tasks[current_index].wake_tick = deadline;
                     scheduler.tasks[current_index].status = TaskStatus::Sleeping;
                 }
