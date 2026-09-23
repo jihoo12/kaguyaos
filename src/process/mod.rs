@@ -10,6 +10,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 pub enum TaskStatus {
     Ready,
     Running,
+    Sleeping,
     Zombie,
 }
 
@@ -24,6 +25,7 @@ pub struct Task {
     pub gs_base: u64, // User GS base value
     pub user_rsp: u64, // User stack pointer value
     pub exit_code: usize,
+    pub wake_tick: u64,
 }
 
 pub struct Scheduler {
@@ -37,6 +39,7 @@ pub struct Scheduler {
 static mut SCHEDULER: Option<Scheduler> = None;
 static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1); // 0 is reserved for main kernel task
 static SCHEDULER_READY: AtomicBool = AtomicBool::new(false);
+static SCHEDULER_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SCHEDULER_LOCK: crate::sync::Spinlock<()> = crate::sync::Spinlock::new(());
 
 /// Number of PIT ticks a task may run before round-robin preemption.
@@ -70,6 +73,7 @@ pub unsafe fn init() {
         gs_base: 0,
         user_rsp: 0,
         exit_code: 0,
+        wake_tick: 0,
     };
 
     if let Some(scheduler) = unsafe { SCHEDULER.as_mut() } {
@@ -161,6 +165,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
                 gs_base: 0,
                 user_rsp,
                 exit_code: 0,
+                wake_tick: 0,
             };
 
             scheduler.tasks.push(Box::new(task));
@@ -242,6 +247,7 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
                 gs_base: 0,
                 user_rsp: 0,
                 exit_code: 0,
+                wake_tick: 0,
             };
 
             scheduler.tasks.push(Box::new(task));
@@ -274,14 +280,24 @@ pub fn switch_task() {
                     Some(_) => continue, // Defensive: discard a stale queue entry.
                     None => {
                         if current_index != usize::MAX
-                            && scheduler.tasks[current_index].status == TaskStatus::Zombie
+                            && matches!(
+                                scheduler.tasks[current_index].status,
+                                TaskStatus::Zombie | TaskStatus::Sleeping
+                            )
                         {
-                            // APs keep a saved idle scheduler context. Return to it
-                            // when their last user task exits instead of halting the CPU.
+                            // APs keep a saved idle scheduler context. A sleeping
+                            // task must switch away even when there is no other
+                            // runnable task on this CPU; otherwise sleep_current()
+                            // would simply return to the same task immediately.
                             if cpu_index != 0 && (*percpu).idle_stack != 0 {
                                 let old_stack_ref =
                                     &mut scheduler.tasks[current_index].stack_top as *mut u64;
                                 let idle_stack = (*percpu).idle_stack;
+                                // Preserve the syscall-saved user RSP before
+                                // leaving this CPU. The syscall entry path stores it
+                                // in percpu.user_stack; clearing it here loses the
+                                // task's user stack when the task later migrates.
+                                scheduler.tasks[current_index].user_rsp = (*percpu).user_stack;
                                 (*percpu).current_task_index = usize::MAX;
                                 (*percpu).user_stack = 0;
                                 (*percpu).scheduler_ticks_left = 0;
@@ -295,10 +311,12 @@ pub fn switch_task() {
                                 return;
                             }
 
-                            core::mem::drop(guard);
-                            crate::println!("All tasks could be terminated, or deadlock. Halting.");
-                            loop {
-                                core::arch::asm!("hlt");
+                            if scheduler.tasks[current_index].status == TaskStatus::Zombie {
+                                core::mem::drop(guard);
+                                crate::println!("All tasks could be terminated, or deadlock. Halting.");
+                                loop {
+                                    core::arch::asm!("hlt");
+                                }
                             }
                         }
                         return;
@@ -307,7 +325,7 @@ pub fn switch_task() {
             };
 
             // A running task goes to the tail, giving round-robin fairness.
-            // Terminated tasks are deliberately not requeued.
+            // Sleeping/zombie tasks are deliberately not requeued.
             if current_index != usize::MAX
                 && scheduler.tasks[current_index].status == TaskStatus::Running
             {
@@ -315,6 +333,14 @@ pub fn switch_task() {
                 scheduler.run_queues[cpu_index].push_back(current_index);
             }
 
+            // A sleeping task must never be selected from a stale queue entry.
+            // This can happen when the current task was already queued before it
+            // entered sleep. Skip it until the timer wakeup marks it Ready again.
+            if scheduler.tasks[next_index].status != TaskStatus::Ready {
+                return;
+            }
+
+            scheduler.tasks[next_index].wake_tick = 0;
             scheduler.tasks[next_index].status = TaskStatus::Running;
             scheduler.tasks[next_index].cpu_affinity = cpu_index;
             (*percpu).current_task_index = next_index;
@@ -365,6 +391,9 @@ pub fn switch_task() {
 /// quantum expires we defer the actual context switch until after the PIC EOI,
 /// avoiding a switch while the timer interrupt is still in-service.
 pub fn scheduler_tick() {
+    let now = SCHEDULER_TICKS.fetch_add(1, Ordering::Relaxed) as u64 + 1;
+    wake_sleeping_tasks(now);
+
     unsafe {
         let percpu = crate::processor::get_percpu_data();
         if percpu.is_null() || (*percpu).current_task_index == usize::MAX {
@@ -378,6 +407,63 @@ pub fn scheduler_tick() {
             (*percpu).need_resched = true;
         }
     }
+}
+
+/// Undo quantum accounting when the PIT interrupted kernel mode. The global
+/// sleep clock still advances, but kernel execution remains non-preemptive.
+pub fn cancel_tick_reschedule() {
+    unsafe {
+        let percpu = crate::processor::get_percpu_data();
+        if percpu.is_null() || (*percpu).current_task_index == usize::MAX {
+            return;
+        }
+        if (*percpu).scheduler_ticks_left < DEFAULT_TIME_SLICE_TICKS {
+            (*percpu).scheduler_ticks_left += 1;
+        }
+        (*percpu).need_resched = false;
+    }
+}
+
+
+fn wake_sleeping_tasks(now: u64) {
+    let _guard = SCHEDULER_LOCK.lock();
+    unsafe {
+        if let Some(scheduler) = SCHEDULER.as_mut() {
+            for index in 0..scheduler.tasks.len() {
+                if scheduler.tasks[index].status == TaskStatus::Sleeping && scheduler.tasks[index].wake_tick <= now {
+                    scheduler.tasks[index].status = TaskStatus::Ready;
+                    // APs currently have no local timer/preemption. A task that
+                    // sleeps there switches back to the AP idle scheduler context,
+                    // but the PIT wakeup originates on the BSP. Put the awakened
+                    // task on the BSP queue for now so the IRQ return path can
+                    // immediately dispatch it with real timer-backed spacing.
+                    scheduler.tasks[index].cpu_affinity = 0;
+                    scheduler.run_queues[0].push_back(index);
+                }
+            }
+        }
+    }
+}
+
+pub fn sleep_current(milliseconds: usize) {
+    if milliseconds == 0 { switch_task(); return; }
+    let ticks = ((milliseconds as u64).saturating_add(9) / 10).max(1);
+    let deadline = (SCHEDULER_TICKS.load(Ordering::Relaxed) as u64).saturating_add(ticks);
+    let guard = SCHEDULER_LOCK.lock();
+    unsafe {
+        if let Some(scheduler) = SCHEDULER.as_mut() {
+            let percpu = crate::processor::get_percpu_data();
+            if !percpu.is_null() {
+                let current_index = (*percpu).current_task_index;
+                if current_index != usize::MAX {
+                    scheduler.tasks[current_index].wake_tick = deadline;
+                    scheduler.tasks[current_index].status = TaskStatus::Sleeping;
+                }
+            }
+        }
+    }
+    core::mem::drop(guard);
+    switch_task();
 }
 
 /// Consume a pending reschedule request and switch tasks if necessary.
@@ -499,6 +585,7 @@ pub fn get_task_status(task_id: usize) -> usize {
                     return match task.status {
                         TaskStatus::Ready => 0,
                         TaskStatus::Running => 1,
+                        TaskStatus::Sleeping => 3,
                         TaskStatus::Zombie => 2,
                     };
                 }

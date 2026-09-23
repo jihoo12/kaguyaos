@@ -103,6 +103,11 @@ pub fn yield_task() {
     unsafe { syscall0(4); }
 }
 
+/// Sleep for at least `milliseconds`, rounded up to the kernel timer tick.
+pub fn sleep(milliseconds: usize) {
+    unsafe { syscall1(25, milliseconds); }
+}
+
 pub fn shutdown() -> ! {
     unsafe { syscall0(7); }
     loop {}
