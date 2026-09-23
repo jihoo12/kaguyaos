@@ -34,6 +34,7 @@ All pointer arguments are validated against user address-space limits and page t
 | 17 | `get_task_exit_code` | `RDI=task_id` | `usize` | Get terminated task's exit code |
 | 21 | `exec` | `RDI=name_ptr, RSI=name_len` | `task_id` | Execute a KEF binary (no arguments) |
 | 22 | `exec2` | `RDI=name_ptr, RSI=name_len, RDX=args_ptr, R10=args_len` | `task_id` | Execute a KEF binary with arguments |
+| 26 | `wait_task` | `RDI=task_id` | `exit_code` | Block current task until the target task exits |
 
 ## Filesystem (FAT16 on NVMe)
 
@@ -73,5 +74,5 @@ All pointer arguments are validated against user address-space limits and page t
 - **Argument passing**: Syscall number in `RAX`, up to 6 args in `RDI`, `RSI`, `RDX`, `R10`, `R8`, `R9`.
 - **String args**: Pass a pointer and length (e.g., `RDI=name_ptr, RSI=name_len`).
 - **Packed IP**: For `net_send_ping`, pack 4 bytes of IPv4 into a single `u32` (e.g., `0x0A000202` for `10.0.2.2`).
-- **Task IDs**: Returned by `add_task`, `exec`, `exec2`. Use with `get_task_status` / `get_task_exit_code`.
+- **Task IDs**: Returned by `add_task`, `exec`, `exec2`. Use with `wait_task`, `get_task_status`, or `get_task_exit_code`.
 - **ICMP replies**: `net_recv_ping` is non-blocking. Call `yield` in a loop to poll for replies.
