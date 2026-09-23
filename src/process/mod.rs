@@ -11,6 +11,7 @@ pub enum TaskStatus {
     Ready,
     Running,
     Sleeping,
+    Waiting,
     Zombie,
 }
 
@@ -26,6 +27,7 @@ pub struct Task {
     pub user_rsp: u64, // User stack pointer value
     pub exit_code: usize,
     pub wake_tick: u64,
+    pub waiting_for: usize,
 }
 
 pub struct Scheduler {
@@ -91,6 +93,7 @@ pub unsafe fn init() {
         user_rsp: 0,
         exit_code: 0,
         wake_tick: 0,
+        waiting_for: usize::MAX,
     };
 
     if let Some(scheduler) = unsafe { SCHEDULER.as_mut() } {
@@ -178,6 +181,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
                 user_rsp,
                 exit_code: 0,
                 wake_tick: 0,
+                waiting_for: usize::MAX,
             };
 
             scheduler.tasks.push(Box::new(task));
@@ -260,6 +264,7 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
                 user_rsp: 0,
                 exit_code: 0,
                 wake_tick: 0,
+                waiting_for: usize::MAX,
             };
 
             scheduler.tasks.push(Box::new(task));
@@ -298,7 +303,7 @@ pub fn switch_task() {
                         if current_index != usize::MAX
                             && matches!(
                                 scheduler.tasks[current_index].status,
-                                TaskStatus::Zombie | TaskStatus::Sleeping
+                                TaskStatus::Zombie | TaskStatus::Sleeping | TaskStatus::Waiting
                             )
                         {
                             // Every CPU keeps a saved idle scheduler context. A sleeping
@@ -334,7 +339,7 @@ pub fn switch_task() {
             };
 
             // A running task goes to the tail, giving round-robin fairness.
-            // Sleeping/zombie tasks are deliberately not requeued.
+            // Sleeping/waiting/zombie tasks are deliberately not requeued.
             if current_index != usize::MAX
                 && scheduler.tasks[current_index].status == TaskStatus::Running
             {
@@ -445,6 +450,50 @@ fn wake_sleeping_tasks_locked(scheduler: &mut Scheduler, now: u64) {
     }
 }
 
+pub fn wait_task(task_id: usize) -> usize {
+    let guard = SCHEDULER_LOCK.lock();
+    let mut should_switch = false;
+    let result = unsafe {
+        let Some(scheduler) = SCHEDULER.as_mut() else {
+            return usize::MAX;
+        };
+        let Some(target_index) = scheduler.tasks.iter().position(|task| task.id == task_id) else {
+            return usize::MAX;
+        };
+        if scheduler.tasks[target_index].status == TaskStatus::Zombie {
+            scheduler.tasks[target_index].exit_code
+        } else {
+            let percpu = crate::processor::get_percpu_data();
+            if percpu.is_null() {
+                return usize::MAX;
+            }
+            let current_index = (*percpu).current_task_index;
+            if current_index == usize::MAX || current_index == target_index {
+                return usize::MAX;
+            }
+            scheduler.tasks[current_index].status = TaskStatus::Waiting;
+            scheduler.tasks[current_index].waiting_for = task_id;
+            should_switch = true;
+            0
+        }
+    };
+    core::mem::drop(guard);
+    if should_switch {
+        switch_task();
+        let guard = SCHEDULER_LOCK.lock();
+        let exit_code = unsafe {
+            SCHEDULER.as_ref()
+                .and_then(|scheduler| scheduler.tasks.iter().find(|task| task.id == task_id))
+                .map(|task| task.exit_code)
+                .unwrap_or(usize::MAX)
+        };
+        core::mem::drop(guard);
+        exit_code
+    } else {
+        result
+    }
+}
+
 pub fn sleep_current(milliseconds: usize) {
     if milliseconds == 0 { switch_task(); return; }
     let ticks = ((milliseconds as u64).saturating_add(9) / 10).max(1);
@@ -517,6 +566,23 @@ pub fn terminate_task(exit_code: usize) {
                 if current_index != usize::MAX {
                     scheduler.tasks[current_index].status = TaskStatus::Zombie;
                     scheduler.tasks[current_index].exit_code = exit_code;
+                    let terminated_id = scheduler.tasks[current_index].id;
+
+                    // Wake tasks blocked in wait_task() for this task. Preserve
+                    // the waiter's CPU affinity so its syscall can resume on the
+                    // CPU whose kernel stack/context it already owns.
+                    for index in 0..scheduler.tasks.len() {
+                        if scheduler.tasks[index].status == TaskStatus::Waiting
+                            && scheduler.tasks[index].waiting_for == terminated_id
+                        {
+                            scheduler.tasks[index].status = TaskStatus::Ready;
+                            scheduler.tasks[index].waiting_for = usize::MAX;
+                            let cpu = scheduler.tasks[index]
+                                .cpu_affinity
+                                .min(crate::processor::MAX_AP_COUNT);
+                            scheduler.run_queues[cpu].push_back(index);
+                        }
+                    }
 
                     crate::println!("Task {} terminated with exit code {}.", scheduler.tasks[current_index].id, exit_code);
                 }
@@ -584,6 +650,7 @@ pub fn get_task_status(task_id: usize) -> usize {
                         TaskStatus::Ready => 0,
                         TaskStatus::Running => 1,
                         TaskStatus::Sleeping => 3,
+                        TaskStatus::Waiting => 4,
                         TaskStatus::Zombie => 2,
                     };
                 }

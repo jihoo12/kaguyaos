@@ -280,6 +280,10 @@ extern "sysv64" fn syscall_dispatcher_impl(
             crate::process::sleep_current(arg1);
             0
         }
+        26 => {
+            // sys_wait_task(task_id) -> exit_code
+            crate::process::wait_task(arg1)
+        }
         _ => {
             // Unknown syscall
             let _ = crate::println!("Unknown syscall: {}", id);

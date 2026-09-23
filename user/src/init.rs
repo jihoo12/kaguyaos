@@ -93,7 +93,7 @@ fn exec_program(name: &str, args: &str) {
             print("Error: failed to execute ");
             println(name);
         } else {
-            std::yield_task();
+            let _ = std::wait_task(task_id);
         }
     } else {
         let task_id = std::exec(name);
@@ -101,7 +101,7 @@ fn exec_program(name: &str, args: &str) {
             print("Error: failed to execute ");
             println(name);
         } else {
-            std::yield_task();
+            let _ = std::wait_task(task_id);
         }
     }
 }

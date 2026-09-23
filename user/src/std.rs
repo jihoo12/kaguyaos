@@ -171,6 +171,11 @@ pub fn get_task_status(task_id: usize) -> usize {
     unsafe { syscall1(16, task_id) }
 }
 
+/// Block until task_id exits and return its exit code.
+pub fn wait_task(task_id: usize) -> usize {
+    unsafe { syscall1(26, task_id) }
+}
+
 /// Returns exit code of a finished task.
 pub fn get_task_exit_code(task_id: usize) -> usize {
     unsafe { syscall1(17, task_id) }
