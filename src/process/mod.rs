@@ -107,12 +107,9 @@ fn select_target_cpu(scheduler: &Scheduler) -> usize {
     let online_cpus = (crate::processor::online_ap_count() as usize + 1)
         .min(crate::processor::MAX_AP_COUNT + 1);
 
-    // APs do not have timer preemption yet. Treat an AP that is already
-    // running a task as unavailable: placing more work behind a cooperative
-    // task can make commands appear to be lost until that task yields/exits.
-    //
-    // Prefer an idle AP with an empty queue. Otherwise fall back to the BSP,
-    // whose PIT timer can preempt and rotate runnable tasks.
+    // Prefer an idle AP with an empty queue. Otherwise fall back to the BSP.
+    // Both BSP and AP user tasks are timer-preemptible; keeping this placement
+    // policy conservative avoids changing load balancing in the idle-context PR.
     for cpu in 1..online_cpus {
         if published_current_task(cpu) == usize::MAX
             && scheduler.run_queues[cpu].is_empty()
@@ -304,11 +301,11 @@ pub fn switch_task() {
                                 TaskStatus::Zombie | TaskStatus::Sleeping
                             )
                         {
-                            // APs keep a saved idle scheduler context. A sleeping
-                            // task must switch away even when there is no other
-                            // runnable task on this CPU; otherwise sleep_current()
-                            // would simply return to the same task immediately.
-                            if cpu_index != 0 && (*percpu).idle_stack != 0 {
+                            // Every CPU keeps a saved idle scheduler context. A sleeping
+                            // or zombie task must switch back to it when the local
+                            // run queue is empty; otherwise the BSP used to halt
+                            // permanently when its last task exited.
+                            if (*percpu).idle_stack != 0 {
                                 let old_stack_ref =
                                     &mut scheduler.tasks[current_index].stack_top as *mut u64;
                                 let idle_stack = (*percpu).idle_stack;
@@ -329,14 +326,6 @@ pub fn switch_task() {
                                 core::mem::drop(guard);
                                 context_switch(old_stack_ref, idle_stack);
                                 return;
-                            }
-
-                            if scheduler.tasks[current_index].status == TaskStatus::Zombie {
-                                core::mem::drop(guard);
-                                crate::println!("All tasks could be terminated, or deadlock. Halting.");
-                                loop {
-                                    core::arch::asm!("hlt");
-                                }
                             }
                         }
                         return;
@@ -368,15 +357,12 @@ pub fn switch_task() {
             (*percpu).scheduler_ticks_left = DEFAULT_TIME_SLICE_TICKS;
             (*percpu).need_resched = false;
 
-            let mut dummy_sp = 0u64;
             let old_stack_ref = if current_index != usize::MAX {
                 &mut scheduler.tasks[current_index].stack_top as *mut u64
-            } else if cpu_index != 0 {
-                // Save the AP scheduler loop so the CPU can return here after
-                // its last runnable task exits.
-                &mut (*percpu).idle_stack as *mut u64
             } else {
-                &mut dummy_sp as *mut u64
+                // Save this CPU's scheduler loop as its idle context. Both BSP
+                // and AP tasks can later return here after sleeping or exiting.
+                &mut (*percpu).idle_stack as *mut u64
             };
             let new_stack = scheduler.tasks[next_index].stack_top;
 
@@ -622,9 +608,8 @@ pub fn get_task_exit_code(task_id: usize) -> usize {
 }
 
 pub fn run_ap_scheduler() -> ! {
-    // APs now consume their own run queue. There is no AP-local scheduler
-    // timer yet, so AP tasks remain cooperative until LAPIC timer preemption
-    // is added in a follow-up change.
+    // APs consume their own run queue and use the LAPIC timer for user-mode
+    // preemption. switch_task() saves this loop as the CPU's idle context.
     unsafe {
         core::arch::asm!("sti");
     }
@@ -650,15 +635,8 @@ pub fn run_ap_scheduler() -> ! {
             crate::drivers::net::poll();
         }
 
-        // A task that starts running on an AP is cooperative until AP-local
-        // timer preemption is added. If it voluntarily yields, switch_task()
-        // returns here and the AP can dispatch another local task immediately.
-        //
-        // Keep device polling on the BSP for now. Polling the shared NIC from
-        // both CPUs would add unrelated driver concurrency to this scheduler PR.
-
-        // The legacy PIC timer is routed to the BSP, so an idle AP cannot hlt
-        // here yet. Keep polling its queue with a small backoff.
+        // Keep polling the local run queue with a small backoff. Work stealing
+        // and an interrupt-driven idle wakeup are separate follow-up changes.
         for _ in 0..10_000 {
             core::hint::spin_loop();
         }
