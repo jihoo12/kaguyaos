@@ -75,29 +75,6 @@ pub unsafe fn init() {
     }
 }
 
-fn select_target_cpu(scheduler: &Scheduler) -> usize {
-    let online_cpus = (crate::processor::online_ap_count() as usize + 1)
-        .min(crate::processor::MAX_AP_COUNT + 1);
-
-    let mut best_cpu = 0;
-    let mut best_load = usize::MAX;
-
-    for cpu in 0..online_cpus {
-        let mut load = scheduler.run_queues[cpu].len();
-        unsafe {
-            if crate::processor::PERCPU_DATA_SLOTS[cpu].current_task_index != usize::MAX {
-                load += 1;
-            }
-        }
-        if load < best_load {
-            best_load = load;
-            best_cpu = cpu;
-        }
-    }
-
-    best_cpu
-}
-
 pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi: u64, rsi: u64) -> usize {
     let _guard = SCHEDULER_LOCK.lock();
     unsafe {
@@ -158,9 +135,10 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
 
             scheduler.tasks.push(task);
             let task_index = scheduler.tasks.len() - 1;
-            let target_cpu = select_target_cpu(scheduler);
-            scheduler.tasks[task_index].cpu_affinity = target_cpu;
-            scheduler.run_queues[target_cpu].push_back(task_index);
+            // CPU 0 is currently the only CPU that consumes a scheduler run queue.
+            // Keep new tasks runnable there until AP task execution is enabled.
+            scheduler.tasks[task_index].cpu_affinity = 0;
+            scheduler.run_queues[0].push_back(task_index);
             id
         } else {
             0
@@ -232,9 +210,10 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
 
             scheduler.tasks.push(task);
             let task_index = scheduler.tasks.len() - 1;
-            let target_cpu = select_target_cpu(scheduler);
-            scheduler.tasks[task_index].cpu_affinity = target_cpu;
-            scheduler.run_queues[target_cpu].push_back(task_index);
+            // CPU 0 is currently the only CPU that consumes a scheduler run queue.
+            // Keep new tasks runnable there until AP task execution is enabled.
+            scheduler.tasks[task_index].cpu_affinity = 0;
+            scheduler.run_queues[0].push_back(task_index);
         }
     }
 }
