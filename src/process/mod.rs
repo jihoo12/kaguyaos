@@ -494,11 +494,13 @@ pub fn run_ap_scheduler() -> ! {
 
     loop {
         switch_task();
-        // The network driver exposes poll as unsafe because it touches device
-        // state/MMIO. AP scheduling does not change that contract.
-        unsafe {
-            crate::drivers::net::poll();
-        }
+
+        // A task that starts running on an AP is cooperative until AP-local
+        // timer preemption is added. If it voluntarily yields, switch_task()
+        // returns here and the AP can dispatch another local task immediately.
+        //
+        // Keep device polling on the BSP for now. Polling the shared NIC from
+        // both CPUs would add unrelated driver concurrency to this scheduler PR.
 
         // The legacy PIC timer is routed to the BSP, so an idle AP cannot hlt
         // here yet. Keep polling its queue with a small backoff.
