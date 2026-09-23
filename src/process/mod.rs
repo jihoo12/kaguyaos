@@ -20,7 +20,10 @@ pub struct Task {
     pub stack_top: u64,    // Saved Stack Pointer (current RSP)
     pub stack_bottom: u64, // For deallocation reference (user stack if usermode)
     pub status: TaskStatus,
+    /// Preferred/last CPU for normal placement and wakeup.
     pub cpu_affinity: usize,
+    /// Hard CPU pin. `usize::MAX` means migratable.
+    pub pinned_cpu: usize,
     pub kernel_stack_bottom: u64,
     pub kernel_stack_top: u64,
     pub gs_base: u64, // User GS base value
@@ -86,6 +89,7 @@ pub unsafe fn init() {
         stack_bottom: 0,
         status: TaskStatus::Running,
         cpu_affinity: 0,
+        pinned_cpu: 0,
         kernel_stack_bottom: 0,
         kernel_stack_top: 0,
         gs_base: 0,
@@ -146,13 +150,13 @@ fn steal_ready_task(scheduler: &mut Scheduler, thief_cpu: usize) -> Option<usize
         .max_by_key(|&cpu| scheduler.run_queues[cpu].len())?;
 
     while scheduler.run_queues[victim_cpu].len() > 1 {
-        // Task 0 is the BSP scheduler/main context and task 1 is bootstrap
-        // init. They are BSP-owned contexts rather than migratable work.
+        // Hard-pinned tasks stay on their owner CPU. cpu_affinity is only a
+        // soft preferred/last CPU and may change when ordinary work is stolen.
         let steal_pos = scheduler.run_queues[victim_cpu]
             .iter()
             .rposition(|&index| {
                 scheduler.tasks[index].status == TaskStatus::Ready
-                    && scheduler.tasks[index].id > 1
+                    && scheduler.tasks[index].pinned_cpu == usize::MAX
             })?;
         let index = scheduler.run_queues[victim_cpu].remove(steal_pos)?;
         scheduler.tasks[index].cpu_affinity = thief_cpu;
@@ -212,6 +216,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
                 stack_bottom: user_rsp - stack_size as u64,
                 status: TaskStatus::Ready,
                 cpu_affinity: 0,
+                pinned_cpu: usize::MAX,
                 kernel_stack_bottom,
                 kernel_stack_top,
                 gs_base: 0,
@@ -223,10 +228,10 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
 
             scheduler.tasks.push(Box::new(task));
             let task_index = scheduler.tasks.len() - 1;
-            // Keep the bootstrap init task on the BSP. It owns the initial
-            // userspace control flow and shell startup; AP scheduling is enabled
-            // for tasks created after init is running.
+            // Bootstrap init owns the initial userspace control flow and shell,
+            // so pin it explicitly to the BSP. Other user tasks remain migratable.
             let target_cpu = if id == 1 {
+                scheduler.tasks[task_index].pinned_cpu = 0;
                 0
             } else {
                 select_target_cpu(scheduler)
@@ -295,6 +300,7 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
                 stack_bottom,
                 status: TaskStatus::Ready,
                 cpu_affinity: 0,
+                pinned_cpu: usize::MAX,
                 kernel_stack_bottom: stack_bottom,
                 kernel_stack_top: stack_top,
                 gs_base: 0,
@@ -382,6 +388,13 @@ pub fn switch_task() {
                 return;
             }
 
+            let pinned_cpu = scheduler.tasks[next_index].pinned_cpu;
+            if pinned_cpu != usize::MAX && pinned_cpu != cpu_index {
+                // Defensive: a pinned task should never enter another CPU's queue.
+                scheduler.run_queues[pinned_cpu.min(crate::processor::MAX_AP_COUNT)]
+                    .push_back(next_index);
+                return;
+            }
             scheduler.tasks[next_index].wake_tick = 0;
             scheduler.tasks[next_index].status = TaskStatus::Running;
             scheduler.tasks[next_index].cpu_affinity = cpu_index;
@@ -470,9 +483,11 @@ fn wake_sleeping_tasks_locked(scheduler: &mut Scheduler, now: u64) {
             scheduler.tasks[index].status = TaskStatus::Ready;
             // Preserve the task's CPU affinity. The owning CPU will observe
             // the ready task from its local scheduler path.
-            let cpu = scheduler.tasks[index]
-                .cpu_affinity
-                .min(crate::processor::MAX_AP_COUNT);
+            let cpu = if scheduler.tasks[index].pinned_cpu != usize::MAX {
+                scheduler.tasks[index].pinned_cpu.min(crate::processor::MAX_AP_COUNT)
+            } else {
+                scheduler.tasks[index].cpu_affinity.min(crate::processor::MAX_AP_COUNT)
+            };
             scheduler.run_queues[cpu].push_back(index);
         }
     }
