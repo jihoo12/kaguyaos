@@ -473,6 +473,7 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
         memory::commit_frame_allocator(&allocator);
 
         println!("Starting scheduler loop on BSP...");
+        process::enter_bsp_scheduler_idle();
         // Temporary #47 validation: queue a burst of real kernel tasks after
         // AP startup and user init are ready, before entering the BSP loop.
         process::start_scheduler_stress_probe();
