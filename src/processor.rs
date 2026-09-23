@@ -595,6 +595,8 @@ pub unsafe fn start_all_aps(madt: &MadtInfo, bsp_apic_id: u8) {
             (*ap_percpu).cpu_index = (ap_index + 1) as u8;
             (*ap_percpu).kernel_stack = stack_top;
             (*ap_percpu).current_task_index = usize::MAX;
+            (*ap_percpu).scheduler_ticks_left = 0;
+            (*ap_percpu).need_resched = false;
         }
 
         // Write handshake params for this AP.
@@ -768,6 +770,8 @@ pub struct PercpuData {
     pub apic_id: u8,
     pub cpu_index: u8,
     pub current_task_index: usize,
+    pub scheduler_ticks_left: u32,
+    pub need_resched: bool,
 }
 
 pub static mut PERCPU_DATA_SLOTS: [PercpuData; MAX_AP_COUNT + 1] = [const { PercpuData {
@@ -777,6 +781,8 @@ pub static mut PERCPU_DATA_SLOTS: [PercpuData; MAX_AP_COUNT + 1] = [const { Perc
     apic_id: 0,
     cpu_index: 0,
     current_task_index: usize::MAX,
+    scheduler_ticks_left: 0,
+    need_resched: false,
 } }; MAX_AP_COUNT + 1];
 
 /// Set the GS base for the current CPU to `ptr`, making per-CPU data

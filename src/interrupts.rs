@@ -256,10 +256,11 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) { unsafe {
 
     match irq {
         0 => {
-            // Timer: preempt user-mode tasks so the shell can't starve children.
+            // Charge the interrupted user task for one timer tick. The actual
+            // switch is deferred until after the PIC EOI below.
             let cs = core::ptr::read_unaligned(core::ptr::addr_of!((*frame).cs));
             if cs & 3 == 3 {
-                crate::process::switch_task();
+                crate::process::scheduler_tick();
             }
         }
         1 => {
@@ -275,6 +276,10 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) { unsafe {
     }
 
     unsafe { crate::pic::notify_eoi(irq as u8) };
+
+    if irq == 0 {
+        crate::process::reschedule_if_needed();
+    }
 }}
 
 #[unsafe(no_mangle)]
