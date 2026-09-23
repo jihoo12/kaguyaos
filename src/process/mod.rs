@@ -376,18 +376,23 @@ pub fn switch_task() {
     unsafe {
         let guard = SCHEDULER_LOCK.lock();
         if let Some(scheduler) = SCHEDULER.as_mut() {
-            // Wake expired sleepers only after the normal scheduler path owns
-            // SCHEDULER_LOCK. Timer IRQs never acquire this lock.
-            let now = SCHEDULER_TICKS.load(Ordering::Relaxed) as u64;
-            wake_sleeping_tasks_locked(scheduler, now);
-            reap_zombies(scheduler);
-
+            // Keep the hot scheduling decision focused on the current CPU.
+            // Global sleeper/zombie maintenance is performed by CPU0 below,
+            // avoiding repeated full task-table scans on every AP reschedule.
             let percpu = crate::processor::get_percpu_data();
             if percpu.is_null() {
                 return;
             }
             let current_index = (*percpu).current_task_index;
             let cpu_index = (*percpu).cpu_index as usize;
+
+            // CPU0 owns global scheduler maintenance. Timer IRQs remain lock-free;
+            // this work runs only after entering the normal scheduler path.
+            if cpu_index == 0 {
+                let now = SCHEDULER_TICKS.load(Ordering::Relaxed) as u64;
+                wake_sleeping_tasks_locked(scheduler, now);
+                reap_zombies(scheduler);
+            }
 
             // Prefer local work. Only an otherwise-idle CPU steals one Ready
             // task from the most loaded remote queue.
