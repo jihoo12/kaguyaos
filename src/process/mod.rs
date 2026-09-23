@@ -1,4 +1,5 @@
 #![allow(static_mut_refs)]
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -26,7 +27,7 @@ pub struct Task {
 }
 
 pub struct Scheduler {
-    tasks: Vec<Task>,
+    tasks: Vec<Box<Task>>,
     // One runnable queue per logical CPU. Running tasks are never present in a queue.
     // For now new tasks stay on CPU 0; a follow-up change can enable AP scheduling
     // and distribute/steal tasks without changing the task store.
@@ -71,7 +72,7 @@ pub unsafe fn init() {
     };
 
     if let Some(scheduler) = unsafe { SCHEDULER.as_mut() } {
-        scheduler.tasks.push(main_task);
+        scheduler.tasks.push(Box::new(main_task));
     }
 }
 
@@ -133,7 +134,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
                 exit_code: 0,
             };
 
-            scheduler.tasks.push(task);
+            scheduler.tasks.push(Box::new(task));
             let task_index = scheduler.tasks.len() - 1;
             // CPU 0 is currently the only CPU that consumes a scheduler run queue.
             // Keep new tasks runnable there until AP task execution is enabled.
@@ -208,7 +209,7 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
                 exit_code: 0,
             };
 
-            scheduler.tasks.push(task);
+            scheduler.tasks.push(Box::new(task));
             let task_index = scheduler.tasks.len() - 1;
             // CPU 0 is currently the only CPU that consumes a scheduler run queue.
             // Keep new tasks runnable there until AP task execution is enabled.
