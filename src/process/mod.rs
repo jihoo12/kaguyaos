@@ -136,13 +136,17 @@ fn steal_ready_task(scheduler: &mut Scheduler, thief_cpu: usize) -> Option<usize
     let online_cpus = (crate::processor::online_ap_count() as usize + 1)
         .min(crate::processor::MAX_AP_COUNT + 1);
 
-    // Steal only when the local queue is empty. Prefer the most loaded remote
-    // queue and take from its back, leaving its oldest runnable work local.
+    // Do not migrate the only queued task away from its owner. Sleeping tasks
+    // wake back onto their affinity CPU, and that CPU may currently be running
+    // the task that will wake them (for example init waiting for a ping child).
+    // Steal only excess queued work so every non-idle owner keeps one runnable
+    // task that can drive its local scheduler/wakeup path.
     let victim_cpu = (0..online_cpus)
-        .filter(|&cpu| cpu != thief_cpu)
+        .filter(|&cpu| cpu != thief_cpu && scheduler.run_queues[cpu].len() > 1)
         .max_by_key(|&cpu| scheduler.run_queues[cpu].len())?;
 
-    while let Some(index) = scheduler.run_queues[victim_cpu].pop_back() {
+    while scheduler.run_queues[victim_cpu].len() > 1 {
+        let index = scheduler.run_queues[victim_cpu].pop_back()?;
         if scheduler.tasks[index].status == TaskStatus::Ready {
             scheduler.tasks[index].cpu_affinity = thief_cpu;
             return Some(index);
