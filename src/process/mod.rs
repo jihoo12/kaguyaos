@@ -399,18 +399,19 @@ pub fn reschedule_if_needed() {
 /// scheduler-owned allocation. User stacks belong to the shared userspace heap
 /// and are left alone until address spaces/lifetimes are separated.
 fn reap_zombies(scheduler: &mut Scheduler) {
-    for task in scheduler.tasks.iter_mut() {
+    let current_indices: [usize; crate::processor::MAX_AP_COUNT + 1] =
+        core::array::from_fn(|cpu| unsafe {
+            crate::processor::PERCPU_DATA_SLOTS[cpu].current_task_index
+        });
+
+    for (index, task) in scheduler.tasks.iter_mut().enumerate() {
         if task.status != TaskStatus::Zombie || task.kernel_stack_bottom == 0 {
             continue;
         }
 
-        let still_current = (0..crate::processor::online_cpu_count()).any(|cpu| unsafe {
-            crate::processor::PERCPU_DATA_SLOTS[cpu].current_task_index
-                < scheduler.tasks.len()
-                && scheduler.tasks[crate::processor::PERCPU_DATA_SLOTS[cpu].current_task_index].id
-                    == task.id
-        });
-        if still_current {
+        // A terminating task switches away using its kernel stack. Do not free
+        // that stack until no CPU advertises this slot as its current task.
+        if current_indices.contains(&index) {
             continue;
         }
 
