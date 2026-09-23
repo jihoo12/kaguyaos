@@ -74,6 +74,7 @@ static SCHEDULER_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SCHED_STRESS_DONE: AtomicUsize = AtomicUsize::new(0);
 static SCHED_STRESS_FIRST_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
 static SCHED_STRESS_BATCH: AtomicUsize = AtomicUsize::new(0);
+static SCHED_STRESS_PENDING_BATCH: AtomicUsize = AtomicUsize::new(usize::MAX);
 const SCHED_STRESS_BATCH_TASKS: usize = 4;
 const SCHED_STRESS_BATCHES: usize = 4;
 const SCHED_STRESS_TASKS: usize = SCHED_STRESS_BATCH_TASKS * SCHED_STRESS_BATCHES;
@@ -512,6 +513,7 @@ fn queue_scheduler_stress_batch(batch: usize) {
 pub fn start_scheduler_stress_probe() {
     SCHED_STRESS_DONE.store(0, Ordering::SeqCst);
     SCHED_STRESS_BATCH.store(0, Ordering::SeqCst);
+    SCHED_STRESS_PENDING_BATCH.store(usize::MAX, Ordering::SeqCst);
     SCHED_STRESS_FIRST_ID.store(NEXT_TASK_ID.load(Ordering::SeqCst), Ordering::SeqCst);
     crate::println!(
         "[schedstress] running {} tasks in {} batches from id {}",
@@ -524,6 +526,14 @@ pub fn start_scheduler_stress_probe() {
 
 pub fn scheduler_stress_done() -> usize {
     SCHED_STRESS_DONE.load(Ordering::SeqCst)
+}
+
+/// Service a pending temporary stress batch outside SCHEDULER_LOCK.
+pub fn service_scheduler_stress_probe() {
+    let batch = SCHED_STRESS_PENDING_BATCH.swap(usize::MAX, Ordering::AcqRel);
+    if batch != usize::MAX {
+        queue_scheduler_stress_batch(batch);
+    }
 }
 
 /// Context-switch metadata captured while SCHEDULER_LOCK owns task state.
@@ -561,9 +571,10 @@ pub fn switch_task() {
                 wake_sleeping_tasks_locked(scheduler, now);
                 reap_zombies(scheduler);
 
-                // Temporary #47 probe: queue the next batch only after every
-                // worker in the previous batch has terminated. Reaping above
-                // runs first, so later batches exercise freed-stack reuse.
+                // Temporary #47 probe: only publish the next batch request
+                // while holding scheduler metadata. add_new_task() takes
+                // SCHEDULER_LOCK itself, so actual allocation/enqueue must happen
+                // after this scheduler critical section has been left.
                 let batch = SCHED_STRESS_BATCH.load(Ordering::SeqCst);
                 if batch + 1 < SCHED_STRESS_BATCHES
                     && SCHED_STRESS_DONE.load(Ordering::SeqCst)
@@ -572,7 +583,7 @@ pub fn switch_task() {
                         .compare_exchange(batch, batch + 1, Ordering::SeqCst, Ordering::SeqCst)
                         .is_ok()
                 {
-                    queue_scheduler_stress_batch(batch + 1);
+                    SCHED_STRESS_PENDING_BATCH.store(batch + 1, Ordering::Release);
                 }
             }
 
