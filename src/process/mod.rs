@@ -172,6 +172,15 @@ fn select_target_cpu(scheduler: &Scheduler) -> usize {
 fn claim_local_ready_task(scheduler: &mut Scheduler, cpu_index: usize) -> Option<usize> {
     let mut queue = scheduler.run_queues[cpu_index].lock();
     while let Some(index) = queue.pop_front() {
+        if index >= scheduler.metadata.tasks.len() {
+            crate::println!(
+                "[sched] dropping invalid CPU{} run-queue index {} (tasks={})",
+                cpu_index,
+                index,
+                scheduler.metadata.tasks.len()
+            );
+            continue;
+        }
         if scheduler.metadata.tasks[index].status == TaskStatus::Ready {
             scheduler.metadata.tasks[index].status = TaskStatus::Claimed;
             return Some(index);
@@ -212,7 +221,8 @@ fn steal_and_claim_ready_task(scheduler: &mut Scheduler, thief_cpu: usize) -> Op
         let steal_pos = queue
             .iter()
             .rposition(|&index| {
-                scheduler.metadata.tasks[index].status == TaskStatus::Ready
+                index < scheduler.metadata.tasks.len()
+                    && scheduler.metadata.tasks[index].status == TaskStatus::Ready
                     && scheduler.metadata.tasks[index].pinned_cpu == usize::MAX
             })?;
         let index = queue.remove(steal_pos)?;
