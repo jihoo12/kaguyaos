@@ -72,6 +72,7 @@ static SCHEDULER_TICKS: AtomicUsize = AtomicUsize::new(0);
 
 // Temporary #47 kernel-side stress probe counters.
 static SCHED_STRESS_DONE: AtomicUsize = AtomicUsize::new(0);
+static SCHED_STRESS_FIRST_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
 const SCHED_STRESS_TASKS: usize = 16;
 const SCHED_STRESS_STACK_SIZE: usize = 4 * 1024;
 
@@ -416,6 +417,10 @@ extern "C" fn sched_stress_worker() {
     };
     let done = SCHED_STRESS_DONE.fetch_add(1, Ordering::SeqCst) + 1;
     let task_id = current_task_id();
+    let first_id = SCHED_STRESS_FIRST_ID.load(Ordering::SeqCst);
+    if task_id < first_id || task_id >= first_id.saturating_add(SCHED_STRESS_TASKS) {
+        crate::println!("[schedstress] ERROR unexpected task {} entered worker (first={})", task_id, first_id);
+    }
     crate::println!("[schedstress] task {} complete on CPU{} ({}/{})",
         task_id, cpu, done, SCHED_STRESS_TASKS);
     // A fresh kernel task must never have an idle scheduler continuation saved
@@ -442,7 +447,12 @@ extern "C" fn sched_stress_worker() {
 /// stress run. This is temporary validation code and must be removed before merge.
 pub fn start_scheduler_stress_probe() {
     SCHED_STRESS_DONE.store(0, Ordering::SeqCst);
-    crate::println!("[schedstress] queueing {} kernel tasks", SCHED_STRESS_TASKS);
+    SCHED_STRESS_FIRST_ID.store(NEXT_TASK_ID.load(Ordering::SeqCst), Ordering::SeqCst);
+    crate::println!(
+        "[schedstress] queueing {} kernel tasks from id {}",
+        SCHED_STRESS_TASKS,
+        SCHED_STRESS_FIRST_ID.load(Ordering::SeqCst)
+    );
     for _ in 0..SCHED_STRESS_TASKS {
         let stack = unsafe { crate::memory::heap::alloc(SCHED_STRESS_STACK_SIZE) as u64 };
         if stack == 0 {
