@@ -770,6 +770,7 @@ pub struct PercpuData {
     pub apic_id: u8,
     pub cpu_index: u8,
     pub current_task_index: usize,
+    pub idle_stack: u64,
     pub scheduler_ticks_left: u32,
     pub need_resched: bool,
 }
@@ -781,6 +782,7 @@ pub static mut PERCPU_DATA_SLOTS: [PercpuData; MAX_AP_COUNT + 1] = [const { Perc
     apic_id: 0,
     cpu_index: 0,
     current_task_index: usize::MAX,
+    idle_stack: 0,
     scheduler_ticks_left: 0,
     need_resched: false,
 } }; MAX_AP_COUNT + 1];
