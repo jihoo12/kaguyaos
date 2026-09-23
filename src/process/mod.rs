@@ -394,6 +394,14 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
             let task_index = scheduler.metadata.tasks.len() - 1;
             let target_cpu = select_target_cpu(scheduler);
             scheduler.metadata.tasks[task_index].cpu_affinity = target_cpu;
+            if id >= SCHED_STRESS_FIRST_ID.load(Ordering::SeqCst) {
+                crate::println!(
+                    "[schedstress] enqueue task {} index {} -> CPU{}",
+                    id,
+                    task_index,
+                    target_cpu
+                );
+            }
             scheduler.run_queues[target_cpu].lock().push_back(task_index);
             if target_cpu != 0 {
                 crate::processor::send_ipi(target_cpu, crate::interrupts::SCHEDULER_WAKE_VECTOR);
@@ -544,6 +552,14 @@ pub fn switch_task() {
                 && scheduler.metadata.tasks[current_index].status == TaskStatus::Running
             {
                 scheduler.metadata.tasks[current_index].status = TaskStatus::Ready;
+                if SCHED_STRESS_FIRST_ID.load(Ordering::SeqCst) != usize::MAX {
+                    crate::println!(
+                        "[schedstress] requeue CPU{} current index {} task {}",
+                        cpu_index,
+                        current_index,
+                        scheduler.metadata.tasks[current_index].id
+                    );
+                }
                 scheduler.run_queues[cpu_index].lock().push_back(current_index);
             }
 
