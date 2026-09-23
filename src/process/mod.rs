@@ -35,6 +35,10 @@ static mut SCHEDULER: Option<Scheduler> = None;
 static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1); // 0 is reserved for main kernel task
 static SCHEDULER_LOCK: crate::sync::Spinlock<()> = crate::sync::Spinlock::new(());
 
+/// Number of PIT ticks a task may run before round-robin preemption.
+/// The PIT currently runs at 100 Hz, so 5 ticks is roughly a 50 ms slice.
+pub const DEFAULT_TIME_SLICE_TICKS: u32 = 5;
+
 /// Initialize the global scheduler.
 /// This must be called only once.
 pub unsafe fn init() {
@@ -239,6 +243,8 @@ pub fn switch_task() {
 
             scheduler.tasks[next_index].status = TaskStatus::Running;
             (*percpu).current_task_index = next_index;
+            (*percpu).scheduler_ticks_left = DEFAULT_TIME_SLICE_TICKS;
+            (*percpu).need_resched = false;
 
             let mut dummy_sp = 0u64;
             let old_stack_ref = if current_index != usize::MAX {
@@ -273,6 +279,39 @@ pub fn switch_task() {
             context_switch(old_stack_ref, new_stack);
         }
     }
+}
+
+/// Account one timer tick for the current CPU.
+///
+/// The IRQ path only calls this for a task interrupted in user mode. When the
+/// quantum expires we defer the actual context switch until after the PIC EOI,
+/// avoiding a switch while the timer interrupt is still in-service.
+pub fn scheduler_tick() {
+    unsafe {
+        let percpu = crate::processor::get_percpu_data();
+        if percpu.is_null() || (*percpu).current_task_index == usize::MAX {
+            return;
+        }
+
+        if (*percpu).scheduler_ticks_left > 0 {
+            (*percpu).scheduler_ticks_left -= 1;
+        }
+        if (*percpu).scheduler_ticks_left == 0 {
+            (*percpu).need_resched = true;
+        }
+    }
+}
+
+/// Consume a pending reschedule request and switch tasks if necessary.
+pub fn reschedule_if_needed() {
+    unsafe {
+        let percpu = crate::processor::get_percpu_data();
+        if percpu.is_null() || !(*percpu).need_resched {
+            return;
+        }
+        (*percpu).need_resched = false;
+    }
+    switch_task();
 }
 
 pub fn terminate_task(exit_code: usize) {
