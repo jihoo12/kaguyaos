@@ -326,29 +326,24 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
             sp = sp.sub(1);
             *sp = entry_point as u64; // RIP
 
-            // RBP
+            // context_switch restores RSI, RDI, RBP, RBX, R12-R15 in
+            // that order before returning to RIP.
             sp = sp.sub(1);
-            *sp = 0; // Initial RBP
-
-            // RBX
+            *sp = 0; // R15
             sp = sp.sub(1);
-            *sp = 0;
-
-            // R12
+            *sp = 0; // R14
             sp = sp.sub(1);
-            *sp = 0;
-
-            // R13
+            *sp = 0; // R13
             sp = sp.sub(1);
-            *sp = 0;
-
-            // R14
+            *sp = 0; // R12
             sp = sp.sub(1);
-            *sp = 0;
-
-            // R15
+            *sp = 0; // RBX
             sp = sp.sub(1);
-            *sp = 0; // r15
+            *sp = 0; // RBP
+            sp = sp.sub(1);
+            *sp = 0; // RDI
+            sp = sp.sub(1);
+            *sp = 0; // RSI
 
             let task = Task {
                 id,
