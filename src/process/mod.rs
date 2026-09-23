@@ -281,6 +281,7 @@ pub fn switch_task() {
             }
 
             scheduler.tasks[next_index].status = TaskStatus::Running;
+            scheduler.tasks[next_index].cpu_affinity = cpu_index;
             (*percpu).current_task_index = next_index;
             (*percpu).scheduler_ticks_left = DEFAULT_TIME_SLICE_TICKS;
             (*percpu).need_resched = false;
