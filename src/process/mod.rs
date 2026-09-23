@@ -160,7 +160,14 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
 
             scheduler.tasks.push(Box::new(task));
             let task_index = scheduler.tasks.len() - 1;
-            let target_cpu = select_target_cpu(scheduler);
+            // Keep the bootstrap init task on the BSP. It owns the initial
+            // userspace control flow and shell startup; AP scheduling is enabled
+            // for tasks created after init is running.
+            let target_cpu = if id == 1 {
+                0
+            } else {
+                select_target_cpu(scheduler)
+            };
             scheduler.tasks[task_index].cpu_affinity = target_cpu;
             scheduler.run_queues[target_cpu].push_back(task_index);
             id
