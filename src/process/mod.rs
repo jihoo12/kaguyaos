@@ -77,6 +77,15 @@ static SCHEDULER_TICKS: AtomicUsize = AtomicUsize::new(0);
 static CPU_CURRENT_TASK: [AtomicUsize; crate::processor::MAX_AP_COUNT + 1] =
     [const { AtomicUsize::new(usize::MAX) }; crate::processor::MAX_AP_COUNT + 1];
 
+/// Post-switch zombie stack acknowledgements. Assembly claims a free slot only
+/// after loading the incoming RSP, so no acknowledged stack is still active.
+/// A bounded array avoids allocation/locking in the naked switch path.
+const RETIRED_STACK_SLOTS: usize = 64;
+static RETIRED_STACKS: [AtomicUsize; RETIRED_STACK_SLOTS] =
+    [const { AtomicUsize::new(0) }; RETIRED_STACK_SLOTS];
+
+/// Kernel stack base that this CPU has fully switched away from. Publishing it
+/// happens only after context_switch returns on the incoming/idle stack.
 #[inline]
 fn publish_current_task(cpu: usize, task_index: usize) {
     CPU_CURRENT_TASK[cpu].store(task_index, Ordering::Release);
@@ -167,6 +176,15 @@ fn select_target_cpu(scheduler: &Scheduler) -> usize {
 fn claim_local_ready_task(scheduler: &mut Scheduler, cpu_index: usize) -> Option<usize> {
     let mut queue = scheduler.run_queues[cpu_index].lock();
     while let Some(index) = queue.pop_front() {
+        if index >= scheduler.metadata.tasks.len() {
+            crate::println!(
+                "[sched] dropping invalid CPU{} run-queue index {} (tasks={})",
+                cpu_index,
+                index,
+                scheduler.metadata.tasks.len()
+            );
+            continue;
+        }
         if scheduler.metadata.tasks[index].status == TaskStatus::Ready {
             scheduler.metadata.tasks[index].status = TaskStatus::Claimed;
             return Some(index);
@@ -207,10 +225,20 @@ fn steal_and_claim_ready_task(scheduler: &mut Scheduler, thief_cpu: usize) -> Op
         let steal_pos = queue
             .iter()
             .rposition(|&index| {
-                scheduler.metadata.tasks[index].status == TaskStatus::Ready
+                index < scheduler.metadata.tasks.len()
+                    && scheduler.metadata.tasks[index].status == TaskStatus::Ready
                     && scheduler.metadata.tasks[index].pinned_cpu == usize::MAX
             })?;
         let index = queue.remove(steal_pos)?;
+        if index >= scheduler.metadata.tasks.len() {
+            crate::println!(
+                "[sched] dropping invalid stolen CPU{} index {} (tasks={})",
+                victim_cpu,
+                index,
+                scheduler.metadata.tasks.len()
+            );
+            continue;
+        }
         scheduler.metadata.tasks[index].status = TaskStatus::Claimed;
         scheduler.metadata.tasks[index].cpu_affinity = thief_cpu;
         return Some(index);
@@ -326,29 +354,24 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
             sp = sp.sub(1);
             *sp = entry_point as u64; // RIP
 
-            // RBP
+            // context_switch restores RSI, RDI, RBP, RBX, R12-R15 in
+            // that order before returning to RIP.
             sp = sp.sub(1);
-            *sp = 0; // Initial RBP
-
-            // RBX
+            *sp = 0; // R15
             sp = sp.sub(1);
-            *sp = 0;
-
-            // R12
+            *sp = 0; // R14
             sp = sp.sub(1);
-            *sp = 0;
-
-            // R13
+            *sp = 0; // R13
             sp = sp.sub(1);
-            *sp = 0;
-
-            // R14
+            *sp = 0; // R12
             sp = sp.sub(1);
-            *sp = 0;
-
-            // R15
+            *sp = 0; // RBX
             sp = sp.sub(1);
-            *sp = 0; // r15
+            *sp = 0; // RBP
+            sp = sp.sub(1);
+            *sp = 0; // RDI
+            sp = sp.sub(1);
+            *sp = 0; // RSI
 
             let task = Task {
                 id,
@@ -376,6 +399,47 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
             }
         }
     }
+}
+
+/// Enter the BSP scheduler loop as an idle scheduler context. The boot dummy
+/// task must not remain published as Running once normal task dispatch begins.
+pub fn enter_bsp_scheduler_idle() {
+    let _guard = SCHEDULER_LOCK.lock();
+    unsafe {
+        let percpu = crate::processor::get_percpu_data();
+        if percpu.is_null() {
+            return;
+        }
+        let cpu = (*percpu).cpu_index as usize;
+        if cpu != 0 {
+            return;
+        }
+        if let Some(scheduler) = SCHEDULER.as_mut() {
+            let current = (*percpu).current_task_index;
+            if current != usize::MAX && current < scheduler.metadata.tasks.len() {
+                scheduler.metadata.tasks[current].status = TaskStatus::Zombie;
+            }
+        }
+        (*percpu).current_task_index = usize::MAX;
+        publish_current_task(0, usize::MAX);
+        (*percpu).idle_stack = 0;
+        (*percpu).scheduler_ticks_left = 0;
+        (*percpu).need_resched = false;
+    }
+}
+
+/// Context-switch metadata captured while SCHEDULER_LOCK owns task state.
+///
+/// `Claimed` guarantees the incoming task cannot be selected by another CPU.
+/// Raw stack pointers are used only after task slots have become stable and zombie
+/// reaping has verified that no CPU publishes the task as current.
+struct SwitchPlan {
+    old_stack_ref: *mut u64,
+    retired_stack_bottom: u64,
+    new_stack: u64,
+    new_kernel_stack_top: u64,
+    new_user_rsp: u64,
+    new_user_gs: u64,
 }
 
 pub fn switch_task() {
@@ -429,7 +493,15 @@ pub fn switch_task() {
                             0,
                         );
                         core::mem::drop(guard);
-                        context_switch(old_stack_ref, idle_stack);
+                        let retired_stack_bottom =
+                            scheduler.metadata.tasks[current_index].kernel_stack_bottom;
+                        context_switch(
+                            old_stack_ref,
+                            idle_stack,
+                            RETIRED_STACKS.as_ptr(),
+                            retired_stack_bottom,
+                            RETIRED_STACK_SLOTS,
+                        );
                         return;
                     }
                 }
@@ -475,30 +547,53 @@ pub fn switch_task() {
                 // and AP tasks can later return here after sleeping or exiting.
                 &mut (*percpu).idle_stack as *mut u64
             };
-            let new_stack = scheduler.metadata.tasks[next_index].stack_top;
 
-            let new_kernel_stack_top = scheduler.metadata.tasks[next_index].kernel_stack_top;
-            if new_kernel_stack_top != 0 {
-                (*percpu).kernel_stack = new_kernel_stack_top;
-                crate::gdt::set_tss_stack_cpu(cpu_index, new_kernel_stack_top);
-            }
-
+            // Save metadata that belongs to the outgoing task while the global
+            // metadata lock still protects it.
             if current_index != usize::MAX {
                 scheduler.metadata.tasks[current_index].user_rsp = (*percpu).user_stack;
-            }
-            (*percpu).user_stack = scheduler.metadata.tasks[next_index].user_rsp;
-
-            if current_index != usize::MAX {
-                let old_user_gs =
+                scheduler.metadata.tasks[current_index].gs_base =
                     crate::processor::rdmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE);
-                scheduler.metadata.tasks[current_index].gs_base = old_user_gs;
             }
 
-            let new_user_gs = scheduler.metadata.tasks[next_index].gs_base;
-            crate::processor::wrmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE, new_user_gs);
+            let retired_stack_bottom = if current_index != usize::MAX
+                && scheduler.metadata.tasks[current_index].status == TaskStatus::Zombie
+            {
+                scheduler.metadata.tasks[current_index].kernel_stack_bottom
+            } else {
+                0
+            };
+            let plan = SwitchPlan {
+                old_stack_ref,
+                retired_stack_bottom,
+                new_stack: scheduler.metadata.tasks[next_index].stack_top,
+                new_kernel_stack_top: scheduler.metadata.tasks[next_index].kernel_stack_top,
+                new_user_rsp: scheduler.metadata.tasks[next_index].user_rsp,
+                new_user_gs: scheduler.metadata.tasks[next_index].gs_base,
+            };
 
+            // From this point on, only CPU-local state and the already-claimed
+            // incoming context are touched. Release global metadata ownership
+            // before programming TSS/per-CPU/MSR state and switching stacks.
             core::mem::drop(guard);
-            context_switch(old_stack_ref, new_stack);
+
+            if plan.new_kernel_stack_top != 0 {
+                (*percpu).kernel_stack = plan.new_kernel_stack_top;
+                crate::gdt::set_tss_stack_cpu(cpu_index, plan.new_kernel_stack_top);
+            }
+            (*percpu).user_stack = plan.new_user_rsp;
+            crate::processor::wrmsr(
+                crate::processor::MSR_IA32_KERNEL_GS_BASE,
+                plan.new_user_gs,
+            );
+
+            context_switch(
+                plan.old_stack_ref,
+                plan.new_stack,
+                RETIRED_STACKS.as_ptr(),
+                plan.retired_stack_bottom,
+                RETIRED_STACK_SLOTS,
+            );
         }
     }
 }
@@ -656,6 +751,28 @@ fn reap_zombies(scheduler: &mut Scheduler) {
             continue;
         }
 
+        // Assembly publishes the old kernel stack only after loading the
+        // incoming RSP. Consume only a matching acknowledgement; unrelated
+        // per-CPU retirement slots remain intact for their zombie.
+        let mut acknowledged = false;
+        for slot in RETIRED_STACKS.iter() {
+            if slot
+                .compare_exchange(
+                    task.kernel_stack_bottom as usize,
+                    0,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                acknowledged = true;
+                break;
+            }
+        }
+        if !acknowledged {
+            continue;
+        }
+
         unsafe {
             crate::memory::heap::free(task.kernel_stack_bottom as *mut u8);
         }
@@ -705,7 +822,13 @@ pub fn terminate_task(exit_code: usize) {
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
-unsafe extern "sysv64" fn context_switch(old_stack_ptr: *mut u64, new_stack_ptr: u64) {
+unsafe extern "sysv64" fn context_switch(
+    old_stack_ptr: *mut u64,
+    new_stack_ptr: u64,
+    retired_stacks: *const AtomicUsize,
+    retired_stack_bottom: u64,
+    retired_stack_slots: usize,
+) {
     core::arch::naked_asm!(
         "push r15",
         "push r14",
@@ -715,10 +838,26 @@ unsafe extern "sysv64" fn context_switch(old_stack_ptr: *mut u64, new_stack_ptr:
         "push rbp",
         "push rdi",
         "push rsi",
-        // Save current RSP to the old_stack_ptr location
+        // Save current RSP to the old_stack_ptr location.
         "mov [rdi], rsp",
-        // Load new RSP
+        // From this instruction onward the outgoing stack is no longer active.
         "mov rsp, rsi",
+        // Publish zombie-stack retirement from the new stack. xchg with memory
+        // is atomic and acts as the release point observed by CPU0's reaper.
+        "test rcx, rcx",
+        "jz 3f",
+        "mov r9, rdx",
+        "mov r10, r8",
+        "2:",
+        "xor eax, eax",
+        "lock cmpxchg [r9], rcx",
+        "jz 3f",
+        "add r9, 8",
+        "dec r10",
+        "jnz 2b",
+        // The ring should be generously sized; if it is ever full, leave the
+        // zombie unreclaimed rather than overwrite an acknowledgement.
+        "3:",
         "pop rsi",
         "pop rdi",
         "pop rbp",

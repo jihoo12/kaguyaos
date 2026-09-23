@@ -473,6 +473,7 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
         memory::commit_frame_allocator(&allocator);
 
         println!("Starting scheduler loop on BSP...");
+        process::enter_bsp_scheduler_idle();
         core::arch::asm!("sti");
         loop {
             process::switch_task();
