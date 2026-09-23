@@ -480,6 +480,7 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
         core::arch::asm!("sti");
         loop {
             process::switch_task();
+            process::service_scheduler_stress_probe();
 
             // The NIC is still a polled device. Keep network RX progressing
             // on the BSP as well as while an AP is idle: a user task running
