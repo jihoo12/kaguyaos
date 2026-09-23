@@ -385,7 +385,7 @@ pub fn start_preempt_stress_probe() {
     );
 
     for _ in 0..PREEMPT_STRESS_WORKERS {
-        let stack = crate::memory::heap::alloc(16 * 1024) as u64;
+        let stack = unsafe { crate::memory::heap::alloc(16 * 1024) as u64 };
         if stack == 0 {
             crate::println!("[sched-preempt-stress] ERROR kernel stack allocation failed");
             return;
