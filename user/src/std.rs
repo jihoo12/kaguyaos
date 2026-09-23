@@ -272,6 +272,3 @@ pub fn net_send_ping(dst_ip: [u8; 4]) -> u32 {
 pub fn net_recv_ping(buf: &mut [u8]) -> usize {
     unsafe { syscall2(24, buf.as_mut_ptr() as usize, buf.len()) }
 }
-// Temporary #39 scheduler validation hooks.
-pub fn start_steal_probe() { unsafe { syscall0(27); } }
-pub fn steal_probe_completed() -> usize { unsafe { syscall0(28) } }
