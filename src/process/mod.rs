@@ -29,7 +29,7 @@ pub struct Scheduler {
     // One runnable queue per logical CPU. Running tasks are never present in a queue.
     // For now new tasks stay on CPU 0; a follow-up change can enable AP scheduling
     // and distribute/steal tasks without changing the task store.
-    run_queues: Vec<VecDeque<usize>>,
+    run_queues: [VecDeque<usize>; crate::processor::MAX_AP_COUNT + 1],
 }
 
 static mut SCHEDULER: Option<Scheduler> = None;
@@ -47,9 +47,11 @@ pub unsafe fn init() {
     unsafe {
         SCHEDULER = Some(Scheduler {
             tasks: Vec::new(),
-            run_queues: (0..=crate::processor::MAX_AP_COUNT)
-                .map(|_| VecDeque::new())
-                .collect(),
+            // Keep the queue table inline. A Vec<VecDeque<_>> adds a heap
+            // allocation during scheduler init and changes the kernel heap layout
+            // before the first user task is created. The fixed-size table also
+            // matches the statically bounded PERCPU_DATA_SLOTS topology.
+            run_queues: [const { VecDeque::new() }; crate::processor::MAX_AP_COUNT + 1],
         });
     }
 
