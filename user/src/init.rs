@@ -82,6 +82,7 @@ fn cmd_help() {
     println("  rm <file>         Delete a file");
     println("  exec <file> [args] Execute a KEF binary");
     println("  clear             Clear screen");
+    println("  ipistress         Repeatedly wake idle AP with short tasks");
     println("  shutdown          Shut down");
 }
 
@@ -104,6 +105,31 @@ fn exec_program(name: &str, args: &str) {
             let _ = std::wait_task(task_id);
         }
     }
+}
+
+
+#[inline(never)]
+fn ipi_stress() {
+    const ROUNDS: usize = 32;
+    println("[ipistress] starting 32 sequential ls tasks");
+    let mut round = 0usize;
+    while round < ROUNDS {
+        let task_id = std::exec("ls.kef");
+        if task_id == usize::MAX {
+            println("[ipistress] exec failed");
+            return;
+        }
+        let exit_code = std::wait_task(task_id);
+        if exit_code != 0 {
+            println("[ipistress] task failed");
+            return;
+        }
+        // Give the remote CPU an idle window before the next queue insertion.
+        // This makes each round exercise the hlt -> scheduler IPI wake path.
+        std::sleep(20);
+        round += 1;
+    }
+    println("[ipistress] complete: 32/32");
 }
 
 // ── Command dispatch ───────────────────────────────────────────────────────
@@ -177,6 +203,8 @@ fn process_command(cmd_ptr: *const u8, cmd_len: usize) {
             exec_program(fname, rest);
         } else if bytes_eq(cmd_ptr, cmd_len, b"ping") {
             exec_program("ping.kef", "");
+        } else if bytes_eq(cmd_ptr, cmd_len, b"ipistress") {
+            ipi_stress();
         } else if bytes_eq(cmd_ptr, cmd_len, b"shutdown") {
             println("Goodbye!");
             std::shutdown();
