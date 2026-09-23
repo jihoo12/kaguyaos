@@ -518,6 +518,13 @@ lapic_timer_irq:
 
 .global lapic_timer_common
 lapic_timer_common:
+    # Hardware interrupts do not execute SWAPGS automatically. If the timer
+    # interrupted CPL3, GS still contains the task's user GS base; switch to
+    # this CPU's kernel per-CPU base before calling Rust scheduler code.
+    testb $3, 24(%rsp)
+    jz 1f
+    swapgs
+1:
     pushq %rax
     pushq %rbx
     pushq %rcx
@@ -560,10 +567,21 @@ lapic_timer_common:
     popq %rax
 
     addq $16, %rsp
+    # Restore the user GS base only when returning to CPL3.
+    testb $3, 8(%rsp)
+    jz 2f
+    swapgs
+2:
     iretq
 
 .global irq_common
 irq_common:
+    # PIC IRQs can also arrive while a user task is running. Establish the
+    # kernel per-CPU GS base before any Rust handler can access scheduler state.
+    testb $3, 24(%rsp)
+    jz 3f
+    swapgs
+3:
     pushq %rax
     pushq %rbx
     pushq %rcx
@@ -606,6 +624,11 @@ irq_common:
     popq %rax
 
     addq $16, %rsp
+    # Pair the entry SWAPGS when returning to user mode.
+    testb $3, 8(%rsp)
+    jz 4f
+    swapgs
+4:
     iretq
 
 .global isr_common
