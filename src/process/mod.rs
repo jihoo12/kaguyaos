@@ -13,6 +13,9 @@ pub enum TaskStatus {
     /// published as that CPU's Running task. This transitional state prevents
     /// another CPU from selecting a stale duplicate queue entry.
     Claimed,
+    /// The CPU has selected another task, but context_switch has not yet saved
+    /// this task's final RSP. It must not be visible in any run queue yet.
+    SwitchingOut,
     Running,
     Sleeping,
     Waiting,
@@ -76,6 +79,12 @@ static SCHEDULER_TICKS: AtomicUsize = AtomicUsize::new(0);
 /// decisions use this atomic mirror instead of racing on another CPU's GS data.
 static CPU_CURRENT_TASK: [AtomicUsize; crate::processor::MAX_AP_COUNT + 1] =
     [const { AtomicUsize::new(usize::MAX) }; crate::processor::MAX_AP_COUNT + 1];
+
+/// Per-CPU handoff published by context_switch only after the outgoing RSP has
+/// been saved and the incoming stack is active. Value is task_index + 1; zero
+/// means no completed runnable handoff is pending.
+static CPU_SWITCHED_OUT: [AtomicUsize; crate::processor::MAX_AP_COUNT + 1] =
+    [const { AtomicUsize::new(0) }; crate::processor::MAX_AP_COUNT + 1];
 
 /// Post-switch zombie stack acknowledgements. Assembly claims a free slot only
 /// after loading the incoming RSP, so no acknowledged stack is still active.
@@ -435,11 +444,29 @@ pub fn enter_bsp_scheduler_idle() {
 /// reaping has verified that no CPU publishes the task as current.
 struct SwitchPlan {
     old_stack_ref: *mut u64,
+    switched_out_task: usize,
     retired_stack_bottom: u64,
     new_stack: u64,
     new_kernel_stack_top: u64,
     new_user_rsp: u64,
     new_user_gs: u64,
+}
+
+fn finish_switched_out_task(scheduler: &mut Scheduler, cpu_index: usize) {
+    let encoded = CPU_SWITCHED_OUT[cpu_index].swap(0, Ordering::AcqRel);
+    if encoded == 0 {
+        return;
+    }
+    let index = encoded - 1;
+    if index >= scheduler.metadata.tasks.len()
+        || scheduler.metadata.tasks[index].status != TaskStatus::SwitchingOut
+    {
+        return;
+    }
+
+    scheduler.metadata.tasks[index].status = TaskStatus::Ready;
+    scheduler.metadata.tasks[index].cpu_affinity = cpu_index;
+    scheduler.run_queues[cpu_index].lock().push_back(index);
 }
 
 pub fn switch_task() {
@@ -463,6 +490,11 @@ pub fn switch_task() {
                 wake_sleeping_tasks_locked(scheduler, now);
                 reap_zombies(scheduler);
             }
+
+            // Make the previous preempted task runnable only after assembly has
+            // saved its final RSP. This closes the SMP window where another CPU
+            // could otherwise claim a stale context.
+            finish_switched_out_task(scheduler, cpu_index);
 
             // Prefer local work. Only an otherwise-idle CPU steals one Ready
             // task from the most loaded remote queue.
@@ -498,9 +530,10 @@ pub fn switch_task() {
                         context_switch(
                             old_stack_ref,
                             idle_stack,
+                            CPU_SWITCHED_OUT.as_ptr().add(cpu_index),
+                            0,
                             RETIRED_STACKS.as_ptr(),
                             retired_stack_bottom,
-                            RETIRED_STACK_SLOTS,
                         );
                         return;
                     }
@@ -508,14 +541,17 @@ pub fn switch_task() {
                 return;
             };
 
-            // A running task goes to the tail, giving round-robin fairness.
-            // Sleeping/waiting/zombie tasks are deliberately not requeued.
-            if current_index != usize::MAX
+            // A preempted Running task cannot enter a run queue until assembly
+            // has saved its final RSP. context_switch publishes the completed
+            // handoff from the incoming stack; the next scheduler entry drains it.
+            let switched_out_task = if current_index != usize::MAX
                 && scheduler.metadata.tasks[current_index].status == TaskStatus::Running
             {
-                scheduler.metadata.tasks[current_index].status = TaskStatus::Ready;
-                scheduler.run_queues[cpu_index].lock().push_back(current_index);
-            }
+                scheduler.metadata.tasks[current_index].status = TaskStatus::SwitchingOut;
+                current_index + 1
+            } else {
+                0
+            };
 
             // Queue removal claims the task before any later switch preparation.
             // A different state here means the claim invariant was violated.
@@ -565,6 +601,7 @@ pub fn switch_task() {
             };
             let plan = SwitchPlan {
                 old_stack_ref,
+                switched_out_task,
                 retired_stack_bottom,
                 new_stack: scheduler.metadata.tasks[next_index].stack_top,
                 new_kernel_stack_top: scheduler.metadata.tasks[next_index].kernel_stack_top,
@@ -590,9 +627,10 @@ pub fn switch_task() {
             context_switch(
                 plan.old_stack_ref,
                 plan.new_stack,
+                CPU_SWITCHED_OUT.as_ptr().add(cpu_index),
+                plan.switched_out_task,
                 RETIRED_STACKS.as_ptr(),
                 plan.retired_stack_bottom,
-                RETIRED_STACK_SLOTS,
             );
         }
     }
@@ -825,9 +863,10 @@ pub fn terminate_task(exit_code: usize) {
 unsafe extern "sysv64" fn context_switch(
     old_stack_ptr: *mut u64,
     new_stack_ptr: u64,
+    switched_out_slot: *const AtomicUsize,
+    switched_out_task: usize,
     retired_stacks: *const AtomicUsize,
     retired_stack_bottom: u64,
-    retired_stack_slots: usize,
 ) {
     core::arch::naked_asm!(
         "push r15",
@@ -894,7 +933,7 @@ pub fn get_task_status(task_id: usize) -> usize {
             for task in &scheduler.metadata.tasks {
                 if task.id == task_id {
                     return match task.status {
-                        TaskStatus::Ready | TaskStatus::Claimed => 0,
+                        TaskStatus::Ready | TaskStatus::Claimed | TaskStatus::SwitchingOut => 0,
                         TaskStatus::Running => 1,
                         TaskStatus::Sleeping => 3,
                         TaskStatus::Waiting => 4,
