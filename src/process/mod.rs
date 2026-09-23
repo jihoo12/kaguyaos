@@ -313,12 +313,19 @@ pub fn switch_task() {
             };
 
             // A running task goes to the tail, giving round-robin fairness.
-            // Terminated tasks are deliberately not requeued.
+            // Sleeping/zombie tasks are deliberately not requeued.
             if current_index != usize::MAX
                 && scheduler.tasks[current_index].status == TaskStatus::Running
             {
                 scheduler.tasks[current_index].status = TaskStatus::Ready;
                 scheduler.run_queues[cpu_index].push_back(current_index);
+            }
+
+            // A sleeping task must never be selected from a stale queue entry.
+            // This can happen when the current task was already queued before it
+            // entered sleep. Skip it until the timer wakeup marks it Ready again.
+            if scheduler.tasks[next_index].status != TaskStatus::Ready {
+                return;
             }
 
             scheduler.tasks[next_index].status = TaskStatus::Running;
