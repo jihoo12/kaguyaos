@@ -455,18 +455,21 @@ pub fn get_task_exit_code(task_id: usize) -> usize {
 }
 
 pub fn run_ap_scheduler() -> ! {
-    // APs poll the network NIC continuously.
-    // They never run user tasks — only the BSP schedules tasks.
-    // NOTE: We cannot use `hlt` here because no IRQs are routed to the AP
-    // (PIC only delivers to BSP). Instead we busy-poll with a small delay.
+    // APs now consume their own run queue. There is no AP-local scheduler
+    // timer yet, so AP tasks remain cooperative until LAPIC timer preemption
+    // is added in a follow-up change.
     unsafe {
         core::arch::asm!("sti");
-        loop {
-            crate::drivers::net::poll();
-            // Yield some CPU time; ~10k spin-loops ≈ a few hundred µs.
-            for _ in 0..10_000 {
-                core::hint::spin_loop();
-            }
+    }
+
+    loop {
+        switch_task();
+        crate::drivers::net::poll();
+
+        // The legacy PIC timer is routed to the BSP, so an idle AP cannot hlt
+        // here yet. Keep polling its queue with a small backoff.
+        for _ in 0..10_000 {
+            core::hint::spin_loop();
         }
     }
 }
