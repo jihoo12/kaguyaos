@@ -70,6 +70,11 @@ static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1); // 0 is reserved for mai
 static SCHEDULER_READY: AtomicBool = AtomicBool::new(false);
 static SCHEDULER_TICKS: AtomicUsize = AtomicUsize::new(0);
 
+// Temporary #47 kernel-side stress probe counters.
+static SCHED_STRESS_DONE: AtomicUsize = AtomicUsize::new(0);
+const SCHED_STRESS_TASKS: usize = 32;
+const SCHED_STRESS_STACK_SIZE: usize = 16 * 1024;
+
 /// Scheduler-owned publication of each CPU's current task slot.
 ///
 /// Local CPUs still use PercpuData for their fast path. Cross-CPU scheduler
@@ -371,6 +376,41 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
             }
         }
     }
+}
+
+/// Temporary #47 stress worker. Each worker is a real scheduler-managed kernel
+/// task, so completion exercises claim -> run -> terminate -> switch-away.
+extern "C" fn sched_stress_worker() {
+    let cpu = unsafe {
+        let percpu = crate::processor::get_percpu_data();
+        if percpu.is_null() { usize::MAX } else { (*percpu).cpu_index as usize }
+    };
+    let done = SCHED_STRESS_DONE.fetch_add(1, Ordering::SeqCst) + 1;
+    crate::println!("[schedstress] task {} complete on CPU{} ({}/{})",
+        current_task_id(), cpu, done, SCHED_STRESS_TASKS);
+    terminate_task(0);
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+/// Queue a burst of independent kernel tasks for the #47 SMP/context-switch
+/// stress run. This is temporary validation code and must be removed before merge.
+pub fn start_scheduler_stress_probe() {
+    SCHED_STRESS_DONE.store(0, Ordering::SeqCst);
+    crate::println!("[schedstress] queueing {} kernel tasks", SCHED_STRESS_TASKS);
+    for _ in 0..SCHED_STRESS_TASKS {
+        let stack = crate::memory::heap::alloc(SCHED_STRESS_STACK_SIZE) as u64;
+        if stack == 0 {
+            crate::println!("[schedstress] stack allocation failed");
+            break;
+        }
+        add_new_task(sched_stress_worker, stack, SCHED_STRESS_STACK_SIZE);
+    }
+}
+
+pub fn scheduler_stress_done() -> usize {
+    SCHED_STRESS_DONE.load(Ordering::SeqCst)
 }
 
 /// Context-switch metadata captured while SCHEDULER_LOCK owns task state.
