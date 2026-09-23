@@ -167,6 +167,18 @@ unsafe fn icr_send(lapic_base: u64, dest_apic_id: u8, icr_low: u32) {
     }
 }
 
+/// Send a fixed-vector IPI to an online logical CPU.
+pub fn send_ipi(cpu_index: usize, vector: u8) {
+    if cpu_index == 0 || cpu_index > MAX_AP_COUNT {
+        return;
+    }
+    unsafe {
+        let dest_apic_id = PERCPU_DATA_SLOTS[cpu_index].apic_id;
+        let lapic_base = lapic_base_from_msr();
+        icr_send(lapic_base, dest_apic_id, vector as u32);
+    }
+}
+
 // ─── Trampoline ──────────────────────────────────────────────────────────────
 
 /// Physical address of the trampoline page (must be < 1 MiB and page-aligned).
