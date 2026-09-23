@@ -83,11 +83,12 @@ const SCHED_STRESS_STACK_SIZE: usize = 4 * 1024;
 static CPU_CURRENT_TASK: [AtomicUsize; crate::processor::MAX_AP_COUNT + 1] =
     [const { AtomicUsize::new(usize::MAX) }; crate::processor::MAX_AP_COUNT + 1];
 
-/// One pending zombie stack retirement per CPU. A CPU cannot retire another
-/// zombie stack until it has left the previous context, so this slot cannot be
-/// overwritten before the assembly acknowledgement is complete.
-static CPU_RETIRED_STACK: [AtomicUsize; crate::processor::MAX_AP_COUNT + 1] =
-    [const { AtomicUsize::new(0) }; crate::processor::MAX_AP_COUNT + 1];
+/// Post-switch zombie stack acknowledgements. Assembly claims a free slot only
+/// after loading the incoming RSP, so no acknowledged stack is still active.
+/// A bounded array avoids allocation/locking in the naked switch path.
+const RETIRED_STACK_SLOTS: usize = 64;
+static RETIRED_STACKS: [AtomicUsize; RETIRED_STACK_SLOTS] =
+    [const { AtomicUsize::new(0) }; RETIRED_STACK_SLOTS];
 
 /// Kernel stack base that this CPU has fully switched away from. Publishing it
 /// happens only after context_switch returns on the incoming/idle stack.
@@ -518,7 +519,6 @@ pub fn scheduler_stress_done() -> usize {
 struct SwitchPlan {
     old_stack_ref: *mut u64,
     retired_stack_bottom: u64,
-    retired_stack_slot: *const AtomicUsize,
     new_stack: u64,
     new_kernel_stack_top: u64,
     new_user_rsp: u64,
@@ -578,13 +578,12 @@ pub fn switch_task() {
                         core::mem::drop(guard);
                         let retired_stack_bottom =
                             scheduler.metadata.tasks[current_index].kernel_stack_bottom;
-                        let retired_stack_slot =
-                            &CPU_RETIRED_STACK[cpu_index] as *const AtomicUsize;
                         context_switch(
                             old_stack_ref,
                             idle_stack,
-                            retired_stack_slot,
+                            RETIRED_STACKS.as_ptr(),
                             retired_stack_bottom,
+                            RETIRED_STACK_SLOTS,
                         );
                         return;
                     }
@@ -658,7 +657,6 @@ pub fn switch_task() {
             let plan = SwitchPlan {
                 old_stack_ref,
                 retired_stack_bottom,
-                retired_stack_slot: &CPU_RETIRED_STACK[cpu_index] as *const AtomicUsize,
                 new_stack: scheduler.metadata.tasks[next_index].stack_top,
                 new_kernel_stack_top: scheduler.metadata.tasks[next_index].kernel_stack_top,
                 new_user_rsp: scheduler.metadata.tasks[next_index].user_rsp,
@@ -683,8 +681,9 @@ pub fn switch_task() {
             context_switch(
                 plan.old_stack_ref,
                 plan.new_stack,
-                plan.retired_stack_slot,
+                RETIRED_STACKS.as_ptr(),
                 plan.retired_stack_bottom,
+                RETIRED_STACK_SLOTS,
             );
         }
     }
@@ -847,8 +846,8 @@ fn reap_zombies(scheduler: &mut Scheduler) {
         // incoming RSP. Consume only a matching acknowledgement; unrelated
         // per-CPU retirement slots remain intact for their zombie.
         let mut acknowledged = false;
-        for cpu in 0..=crate::processor::MAX_AP_COUNT {
-            if CPU_RETIRED_STACK[cpu]
+        for slot in RETIRED_STACKS.iter() {
+            if slot
                 .compare_exchange(
                     task.kernel_stack_bottom as usize,
                     0,
@@ -917,8 +916,9 @@ pub fn terminate_task(exit_code: usize) {
 unsafe extern "sysv64" fn context_switch(
     old_stack_ptr: *mut u64,
     new_stack_ptr: u64,
-    retired_stack_slot: *const AtomicUsize,
+    retired_stacks: *const AtomicUsize,
     retired_stack_bottom: u64,
+    retired_stack_slots: usize,
 ) {
     core::arch::naked_asm!(
         "push r15",
@@ -936,9 +936,19 @@ unsafe extern "sysv64" fn context_switch(
         // Publish zombie-stack retirement from the new stack. xchg with memory
         // is atomic and acts as the release point observed by CPU0's reaper.
         "test rcx, rcx",
-        "jz 2f",
-        "xchg [rdx], rcx",
+        "jz 3f",
+        "mov r9, rdx",
+        "mov r10, r8",
         "2:",
+        "xor eax, eax",
+        "lock cmpxchg [r9], rcx",
+        "jz 3f",
+        "add r9, 8",
+        "dec r10",
+        "jnz 2b",
+        // The ring should be generously sized; if it is ever full, leave the
+        // zombie unreclaimed rather than overwrite an acknowledgement.
+        "3:",
         "pop rsi",
         "pop rdi",
         "pop rbp",
