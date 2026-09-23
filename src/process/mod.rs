@@ -2,7 +2,7 @@
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 // Re-using the allocator from the crate
 
@@ -36,6 +36,7 @@ pub struct Scheduler {
 
 static mut SCHEDULER: Option<Scheduler> = None;
 static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1); // 0 is reserved for main kernel task
+static SCHEDULER_READY: AtomicBool = AtomicBool::new(false);
 static SCHEDULER_LOCK: crate::sync::Spinlock<()> = crate::sync::Spinlock::new(());
 
 /// Number of PIT ticks a task may run before round-robin preemption.
@@ -74,6 +75,11 @@ pub unsafe fn init() {
     if let Some(scheduler) = unsafe { SCHEDULER.as_mut() } {
         scheduler.tasks.push(Box::new(main_task));
     }
+
+    // APs are started before the process scheduler is initialized. Publish the
+    // fully initialized scheduler only after its task store and BSP dummy task
+    // are ready.
+    SCHEDULER_READY.store(true, Ordering::Release);
 }
 
 fn select_target_cpu(scheduler: &Scheduler) -> usize {
@@ -513,6 +519,18 @@ pub fn run_ap_scheduler() -> ! {
     unsafe {
         core::arch::asm!("sti");
     }
+
+    // AP startup happens before process::init() on the BSP. Do not enter the
+    // scheduler/device-poll loop until the global scheduler has been published.
+    // The acquire pairs with process::init()'s release store.
+    while !SCHEDULER_READY.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+
+    crate::println!(
+        "[sched] AP cpu={} scheduler ready",
+        unsafe { (*crate::processor::get_percpu_data()).cpu_index }
+    );
 
     loop {
         switch_task();
