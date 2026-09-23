@@ -280,10 +280,15 @@ pub fn switch_task() {
                     Some(_) => continue, // Defensive: discard a stale queue entry.
                     None => {
                         if current_index != usize::MAX
-                            && scheduler.tasks[current_index].status == TaskStatus::Zombie
+                            && matches!(
+                                scheduler.tasks[current_index].status,
+                                TaskStatus::Zombie | TaskStatus::Sleeping
+                            )
                         {
-                            // APs keep a saved idle scheduler context. Return to it
-                            // when their last user task exits instead of halting the CPU.
+                            // APs keep a saved idle scheduler context. A sleeping
+                            // task must switch away even when there is no other
+                            // runnable task on this CPU; otherwise sleep_current()
+                            // would simply return to the same task immediately.
                             if cpu_index != 0 && (*percpu).idle_stack != 0 {
                                 let old_stack_ref =
                                     &mut scheduler.tasks[current_index].stack_top as *mut u64;
@@ -301,10 +306,12 @@ pub fn switch_task() {
                                 return;
                             }
 
-                            core::mem::drop(guard);
-                            crate::println!("All tasks could be terminated, or deadlock. Halting.");
-                            loop {
-                                core::arch::asm!("hlt");
+                            if scheduler.tasks[current_index].status == TaskStatus::Zombie {
+                                core::mem::drop(guard);
+                                crate::println!("All tasks could be terminated, or deadlock. Halting.");
+                                loop {
+                                    core::arch::asm!("hlt");
+                                }
                             }
                         }
                         return;
