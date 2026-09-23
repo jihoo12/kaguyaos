@@ -226,6 +226,15 @@ fn steal_and_claim_ready_task(scheduler: &mut Scheduler, thief_cpu: usize) -> Op
                     && scheduler.metadata.tasks[index].pinned_cpu == usize::MAX
             })?;
         let index = queue.remove(steal_pos)?;
+        if index >= scheduler.metadata.tasks.len() {
+            crate::println!(
+                "[sched] dropping invalid stolen CPU{} index {} (tasks={})",
+                victim_cpu,
+                index,
+                scheduler.metadata.tasks.len()
+            );
+            continue;
+        }
         scheduler.metadata.tasks[index].status = TaskStatus::Claimed;
         scheduler.metadata.tasks[index].cpu_affinity = thief_cpu;
         return Some(index);
@@ -416,14 +425,10 @@ extern "C" fn sched_stress_worker() {
         let percpu = crate::processor::get_percpu_data();
         if !percpu.is_null() {
             crate::println!(
-                "[schedstress] CPU{} task {} idle_stack={:#x} task_stack={:#x}",
+                "[schedstress] CPU{} task {} idle_stack={:#x}",
                 cpu,
                 task_id,
-                (*percpu).idle_stack,
-                SCHEDULER.as_ref()
-                    .and_then(|scheduler| scheduler.metadata.tasks.iter().find(|task| task.id == task_id))
-                    .map(|task| task.stack_top)
-                    .unwrap_or(0)
+                (*percpu).idle_stack
             );
         }
     }
