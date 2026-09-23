@@ -263,6 +263,10 @@ pub fn switch_task() {
     unsafe {
         let guard = SCHEDULER_LOCK.lock();
         if let Some(scheduler) = SCHEDULER.as_mut() {
+            // Wake expired sleepers only after the normal scheduler path owns
+            // SCHEDULER_LOCK. Timer IRQs never acquire this lock.
+            let now = SCHEDULER_TICKS.load(Ordering::Relaxed) as u64;
+            wake_sleeping_tasks_locked(scheduler, now);
             reap_zombies(scheduler);
 
             let percpu = crate::processor::get_percpu_data();
@@ -393,8 +397,7 @@ pub fn switch_task() {
 /// Advance the scheduler's global wall clock. The BSP PIT is the sole owner
 /// of this clock for now, so AP-local timer interrupts must not call this.
 pub fn scheduler_clock_tick() {
-    let now = SCHEDULER_TICKS.fetch_add(1, Ordering::Relaxed) as u64 + 1;
-    wake_sleeping_tasks(now);
+    SCHEDULER_TICKS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[inline]
@@ -423,23 +426,18 @@ pub fn scheduler_tick() {
 }
 
 
-fn wake_sleeping_tasks(now: u64) {
-    let _guard = SCHEDULER_LOCK.lock();
-    unsafe {
-        if let Some(scheduler) = SCHEDULER.as_mut() {
-            for index in 0..scheduler.tasks.len() {
-                if scheduler.tasks[index].status == TaskStatus::Sleeping && scheduler.tasks[index].wake_tick <= now {
-                    scheduler.tasks[index].status = TaskStatus::Ready;
-                    // Preserve the task's CPU affinity. APs now have their own
-                    // scheduler timer and continuously poll their local queue from
-                    // the idle scheduler context, so a sleeping AP task can wake
-                    // back onto the CPU it was running on.
-                    let cpu = scheduler.tasks[index]
-                        .cpu_affinity
-                        .min(crate::processor::MAX_AP_COUNT);
-                    scheduler.run_queues[cpu].push_back(index);
-                }
-            }
+fn wake_sleeping_tasks_locked(scheduler: &mut Scheduler, now: u64) {
+    for index in 0..scheduler.tasks.len() {
+        if scheduler.tasks[index].status == TaskStatus::Sleeping
+            && scheduler.tasks[index].wake_tick <= now
+        {
+            scheduler.tasks[index].status = TaskStatus::Ready;
+            // Preserve the task's CPU affinity. The owning CPU will observe
+            // the ready task from its local scheduler path.
+            let cpu = scheduler.tasks[index]
+                .cpu_affinity
+                .min(crate::processor::MAX_AP_COUNT);
+            scheduler.run_queues[cpu].push_back(index);
         }
     }
 }
