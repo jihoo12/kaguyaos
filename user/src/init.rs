@@ -214,7 +214,7 @@ pub extern "C" fn _start(_args_ptr: *const u8, _args_len: usize) -> ! {
             let key = std::read_key() as u8;
 
             if key == 0 {
-                let _ = std::wait_task(task_id);
+                std::yield_task();
                 continue;
             }
 
