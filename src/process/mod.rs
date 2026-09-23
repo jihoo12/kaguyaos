@@ -33,8 +33,7 @@ pub struct Task {
 pub struct Scheduler {
     tasks: Vec<Box<Task>>,
     // One runnable queue per logical CPU. Running tasks are never present in a queue.
-    // For now new tasks stay on CPU 0; a follow-up change can enable AP scheduling
-    // and distribute/steal tasks without changing the task store.
+    // Idle CPUs may steal Ready work from another CPU while holding SCHEDULER_LOCK.
     run_queues: [VecDeque<usize>; crate::processor::MAX_AP_COUNT + 1],
 }
 
@@ -122,6 +121,34 @@ fn select_target_cpu(scheduler: &Scheduler) -> usize {
     }
 
     0
+}
+
+fn pop_ready_task(scheduler: &mut Scheduler, cpu_index: usize) -> Option<usize> {
+    while let Some(index) = scheduler.run_queues[cpu_index].pop_front() {
+        if scheduler.tasks[index].status == TaskStatus::Ready {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn steal_ready_task(scheduler: &mut Scheduler, thief_cpu: usize) -> Option<usize> {
+    let online_cpus = (crate::processor::online_ap_count() as usize + 1)
+        .min(crate::processor::MAX_AP_COUNT + 1);
+
+    // Steal only when the local queue is empty. Prefer the most loaded remote
+    // queue and take from its back, leaving its oldest runnable work local.
+    let victim_cpu = (0..online_cpus)
+        .filter(|&cpu| cpu != thief_cpu)
+        .max_by_key(|&cpu| scheduler.run_queues[cpu].len())?;
+
+    while let Some(index) = scheduler.run_queues[victim_cpu].pop_back() {
+        if scheduler.tasks[index].status == TaskStatus::Ready {
+            scheduler.tasks[index].cpu_affinity = thief_cpu;
+            return Some(index);
+        }
+    }
+    None
 }
 
 pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi: u64, rsi: u64) -> usize {
@@ -293,49 +320,40 @@ pub fn switch_task() {
             let current_index = (*percpu).current_task_index;
             let cpu_index = (*percpu).cpu_index as usize;
 
-            // Each CPU selects only from its own run queue. Keeping queue ownership
-            // local is the foundation for AP scheduling and later work stealing.
-            let next_index = loop {
-                match scheduler.run_queues[cpu_index].pop_front() {
-                    Some(index) if scheduler.tasks[index].status == TaskStatus::Ready => break index,
-                    Some(_) => continue, // Defensive: discard a stale queue entry.
-                    None => {
-                        if current_index != usize::MAX
-                            && matches!(
-                                scheduler.tasks[current_index].status,
-                                TaskStatus::Zombie | TaskStatus::Sleeping | TaskStatus::Waiting
-                            )
-                        {
-                            // Every CPU keeps a saved idle scheduler context. A sleeping
-                            // or zombie task must switch back to it when the local
-                            // run queue is empty; otherwise the BSP used to halt
-                            // permanently when its last task exited.
-                            if (*percpu).idle_stack != 0 {
-                                let old_stack_ref =
-                                    &mut scheduler.tasks[current_index].stack_top as *mut u64;
-                                let idle_stack = (*percpu).idle_stack;
-                                // Preserve the syscall-saved user RSP before
-                                // leaving this CPU. The syscall entry path stores it
-                                // in percpu.user_stack; clearing it here loses the
-                                // task's user stack when the task later migrates.
-                                scheduler.tasks[current_index].user_rsp = (*percpu).user_stack;
-                                (*percpu).current_task_index = usize::MAX;
-                                publish_current_task(cpu_index, usize::MAX);
-                                (*percpu).user_stack = 0;
-                                (*percpu).scheduler_ticks_left = 0;
-                                (*percpu).need_resched = false;
-                                crate::processor::wrmsr(
-                                    crate::processor::MSR_IA32_KERNEL_GS_BASE,
-                                    0,
-                                );
-                                core::mem::drop(guard);
-                                context_switch(old_stack_ref, idle_stack);
-                                return;
-                            }
-                        }
+            // Prefer local work. Only an otherwise-idle CPU steals one Ready
+            // task from the most loaded remote queue.
+            let Some(next_index) = pop_ready_task(scheduler, cpu_index)
+                .or_else(|| steal_ready_task(scheduler, cpu_index))
+            else {
+                if current_index != usize::MAX
+                    && matches!(
+                        scheduler.tasks[current_index].status,
+                        TaskStatus::Zombie | TaskStatus::Sleeping | TaskStatus::Waiting
+                    )
+                {
+                    // Every CPU keeps a saved idle scheduler context. A blocked
+                    // or zombie task must switch back to it when no runnable work
+                    // exists locally or remotely.
+                    if (*percpu).idle_stack != 0 {
+                        let old_stack_ref =
+                            &mut scheduler.tasks[current_index].stack_top as *mut u64;
+                        let idle_stack = (*percpu).idle_stack;
+                        scheduler.tasks[current_index].user_rsp = (*percpu).user_stack;
+                        (*percpu).current_task_index = usize::MAX;
+                        publish_current_task(cpu_index, usize::MAX);
+                        (*percpu).user_stack = 0;
+                        (*percpu).scheduler_ticks_left = 0;
+                        (*percpu).need_resched = false;
+                        crate::processor::wrmsr(
+                            crate::processor::MSR_IA32_KERNEL_GS_BASE,
+                            0,
+                        );
+                        core::mem::drop(guard);
+                        context_switch(old_stack_ref, idle_stack);
                         return;
                     }
                 }
+                return;
             };
 
             // A running task goes to the tail, giving round-robin fairness.
@@ -702,8 +720,8 @@ pub fn run_ap_scheduler() -> ! {
             crate::drivers::net::poll();
         }
 
-        // Keep polling the local run queue with a small backoff. Work stealing
-        // and an interrupt-driven idle wakeup are separate follow-up changes.
+        // Keep polling with a small backoff. An idle AP can now steal remote
+        // runnable work; interrupt-driven idle wakeup remains a follow-up.
         for _ in 0..10_000 {
             core::hint::spin_loop();
         }
