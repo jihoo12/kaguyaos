@@ -148,7 +148,14 @@ fn steal_ready_task(scheduler: &mut Scheduler, thief_cpu: usize) -> Option<usize
     while scheduler.run_queues[victim_cpu].len() > 1 {
         let index = scheduler.run_queues[victim_cpu].pop_back()?;
         if scheduler.tasks[index].status == TaskStatus::Ready {
+            let task_id = scheduler.tasks[index].id;
             scheduler.tasks[index].cpu_affinity = thief_cpu;
+            crate::println!(
+                "[sched] CPU{} stole task {} from CPU{}",
+                thief_cpu,
+                task_id,
+                victim_cpu
+            );
             return Some(index);
         }
     }
