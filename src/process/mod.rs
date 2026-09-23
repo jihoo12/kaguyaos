@@ -26,9 +26,10 @@ pub struct Task {
 
 pub struct Scheduler {
     tasks: Vec<Task>,
-    // Indices into `tasks`. Running tasks are never present in this queue.
-    // Task slots are stable because terminated tasks are retained for status/exit-code queries.
-    ready_queue: VecDeque<usize>,
+    // One runnable queue per logical CPU. Running tasks are never present in a queue.
+    // For now new tasks stay on CPU 0; a follow-up change can enable AP scheduling
+    // and distribute/steal tasks without changing the task store.
+    run_queues: Vec<VecDeque<usize>>,
 }
 
 static mut SCHEDULER: Option<Scheduler> = None;
@@ -46,7 +47,9 @@ pub unsafe fn init() {
     unsafe {
         SCHEDULER = Some(Scheduler {
             tasks: Vec::new(),
-            ready_queue: VecDeque::new(),
+            run_queues: (0..=crate::processor::MAX_AP_COUNT)
+                .map(|_| VecDeque::new())
+                .collect(),
         });
     }
 
@@ -126,7 +129,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
             };
 
             scheduler.tasks.push(task);
-            scheduler.ready_queue.push_back(scheduler.tasks.len() - 1);
+            scheduler.run_queues[0].push_back(scheduler.tasks.len() - 1);
             id
         } else {
             0
@@ -196,7 +199,7 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
             };
 
             scheduler.tasks.push(task);
-            scheduler.ready_queue.push_back(scheduler.tasks.len() - 1);
+            scheduler.run_queues[0].push_back(scheduler.tasks.len() - 1);
         }
     }
 }
@@ -210,11 +213,12 @@ pub fn switch_task() {
                 return;
             }
             let current_index = (*percpu).current_task_index;
+            let cpu_index = (*percpu).cpu_index as usize;
 
-            // The ready queue contains only runnable, non-running tasks, so
-            // selecting the next task is O(1) instead of scanning every PCB.
+            // Each CPU selects only from its own run queue. Keeping queue ownership
+            // local is the foundation for AP scheduling and later work stealing.
             let next_index = loop {
-                match scheduler.ready_queue.pop_front() {
+                match scheduler.run_queues[cpu_index].pop_front() {
                     Some(index) if scheduler.tasks[index].status == TaskStatus::Ready => break index,
                     Some(_) => continue, // Defensive: discard a stale queue entry.
                     None => {
@@ -238,7 +242,7 @@ pub fn switch_task() {
                 && scheduler.tasks[current_index].status == TaskStatus::Running
             {
                 scheduler.tasks[current_index].status = TaskStatus::Ready;
-                scheduler.ready_queue.push_back(current_index);
+                scheduler.run_queues[cpu_index].push_back(current_index);
             }
 
             scheduler.tasks[next_index].status = TaskStatus::Running;
@@ -257,7 +261,6 @@ pub fn switch_task() {
             let new_kernel_stack_top = scheduler.tasks[next_index].kernel_stack_top;
             if new_kernel_stack_top != 0 {
                 (*percpu).kernel_stack = new_kernel_stack_top;
-                let cpu_index = (*percpu).cpu_index as usize;
                 crate::gdt::set_tss_stack_cpu(cpu_index, new_kernel_stack_top);
             }
 
