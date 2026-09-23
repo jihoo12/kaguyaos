@@ -340,14 +340,6 @@ pub fn switch_task() {
                 return;
             }
 
-            if scheduler.tasks[next_index].wake_tick != 0 {
-                crate::println!(
-                    "[sched-affinity] dispatch task={} cpu={} wake_tick={}",
-                    scheduler.tasks[next_index].id,
-                    cpu_index,
-                    scheduler.tasks[next_index].wake_tick
-                );
-            }
             scheduler.tasks[next_index].wake_tick = 0;
             scheduler.tasks[next_index].status = TaskStatus::Running;
             scheduler.tasks[next_index].cpu_affinity = cpu_index;
@@ -440,13 +432,6 @@ fn wake_sleeping_tasks(now: u64) {
                     let cpu = scheduler.tasks[index]
                         .cpu_affinity
                         .min(crate::processor::MAX_AP_COUNT);
-                    crate::println!(
-                        "[sched-affinity] wake task={} target_cpu={} now={} deadline={}",
-                        scheduler.tasks[index].id,
-                        cpu,
-                        now,
-                        scheduler.tasks[index].wake_tick
-                    );
                     scheduler.run_queues[cpu].push_back(index);
                 }
             }
