@@ -85,17 +85,25 @@ static CPU_CURRENT_TASK: [AtomicUsize; crate::processor::MAX_AP_COUNT + 1] =
 
 /// Kernel stack base that this CPU has fully switched away from. Publishing it
 /// happens only after context_switch returns on the incoming/idle stack.
-static CPU_RETIRED_STACK: [AtomicUsize; crate::processor::MAX_AP_COUNT + 1] =
-    [const { AtomicUsize::new(0) }; crate::processor::MAX_AP_COUNT + 1];
+static RETIRED_STACKS: crate::sync::Spinlock<Vec<u64>> =
+    crate::sync::Spinlock::new(Vec::new());
 
 #[inline]
-fn publish_retired_stack(cpu: usize, stack_bottom: u64) {
-    CPU_RETIRED_STACK[cpu].store(stack_bottom as usize, Ordering::Release);
+fn publish_retired_stack(_cpu: usize, stack_bottom: u64) {
+    if stack_bottom != 0 {
+        RETIRED_STACKS.lock().push(stack_bottom);
+    }
 }
 
 #[inline]
-fn take_retired_stack(cpu: usize) -> u64 {
-    CPU_RETIRED_STACK[cpu].swap(0, Ordering::AcqRel) as u64
+fn take_retired_stack(stack_bottom: u64) -> bool {
+    let mut retired = RETIRED_STACKS.lock();
+    if let Some(pos) = retired.iter().position(|&stack| stack == stack_bottom) {
+        retired.swap_remove(pos);
+        true
+    } else {
+        false
+    }
 }
 
 #[inline]
@@ -844,14 +852,7 @@ fn reap_zombies(scheduler: &mut Scheduler) {
 
         // Reclaim only after the owning CPU has returned from context_switch
         // on a different stack and explicitly published this stack as retired.
-        let mut retired = false;
-        for cpu in 0..=crate::processor::MAX_AP_COUNT {
-            if take_retired_stack(cpu) == task.kernel_stack_bottom {
-                retired = true;
-                break;
-            }
-        }
-        if !retired {
+        if !take_retired_stack(task.kernel_stack_bottom) {
             continue;
         }
 
