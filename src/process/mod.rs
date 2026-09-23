@@ -527,10 +527,11 @@ pub fn run_ap_scheduler() -> ! {
         core::hint::spin_loop();
     }
 
-    crate::println!(
-        "[sched] AP cpu={} scheduler ready",
-        unsafe { (*crate::processor::get_percpu_data()).cpu_index }
-    );
+    // Do not use get_percpu_data() for this diagnostic: AP entry has already
+    // established the per-CPU GS base, but this helper may return null in the
+    // AP's current GS/swapgs state. switch_task() performs its own checked
+    // lookup and is the path we actually need to validate.
+    crate::println!("[sched] AP scheduler ready");
 
     loop {
         switch_task();
