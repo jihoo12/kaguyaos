@@ -306,7 +306,7 @@ pub unsafe fn poll() { unsafe {
             break;
         }
     }
-}
+}}
 
 /// Number of receive interrupts acknowledged by the e1000 IRQ path.
 pub fn rx_interrupt_count() -> usize {
