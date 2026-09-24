@@ -335,39 +335,32 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             let bsp_id = processor::current_apic_id();
 
             unsafe { processor::start_all_aps(&madt, bsp_id) };
-            // Route the e1000 legacy PCI INTx only after the I/O APIC MMIO
-            // mapping and IDT vector are live. Keep polling enabled as fallback.
-            if madt.io_apic_address != 0 {
-                if let Some(net_dev) = drivers::pci::get_ethernet_device() {
-                    if net_dev.interrupt_pin != 0 && net_dev.interrupt_line != 0xFF {
-                        let gsi = net_dev.interrupt_line as u32;
-                        let routed = unsafe {
-                            processor::ioapic_route_pci_intx(
-                                madt.io_apic_address as u64,
-                                madt.io_apic_gsi_base,
-                                gsi,
-                                interrupts::E1000_RX_VECTOR,
-                                bsp_id,
-                            )
-                        };
-                        println!(
-                            "e1000: INTx pin={} line/GSI={} -> vector {:#x} routed={}",
-                            net_dev.interrupt_pin,
-                            gsi,
-                            interrupts::E1000_RX_VECTOR,
-                            routed
-                        );
-                        if routed {
-                            let enabled = unsafe { drivers::net::e1000::enable_rx_interrupt() };
-                            println!("e1000: RX interrupt enabled={}", enabled);
-                        }
-                    } else {
-                        println!(
-                            "e1000: no usable legacy INTx route (pin={}, line={:#x})",
-                            net_dev.interrupt_pin,
-                            net_dev.interrupt_line
-                        );
+            // i440fx/PIIX3 routes PCI INTx through its PIRQ registers onto a
+            // legacy 8259 IRQ. The PCI Interrupt Line byte already contains
+            // the firmware-selected IRQ number; do not treat it as a direct
+            // I/O APIC redirection-table input on this machine.
+            if let Some(net_dev) = drivers::pci::get_ethernet_device() {
+                if net_dev.interrupt_pin != 0 && net_dev.interrupt_line < 16 {
+                    let irq = net_dev.interrupt_line;
+                    drivers::net::set_legacy_irq_line(irq);
+                    let unmasked = unsafe { pic::unmask_irq(irq) };
+                    println!(
+                        "e1000: INTx pin={} legacy IRQ={} -> vector {:#x} unmasked={}",
+                        net_dev.interrupt_pin,
+                        irq,
+                        0x20u8 + irq,
+                        unmasked
+                    );
+                    if unmasked {
+                        let enabled = unsafe { drivers::net::e1000::enable_rx_interrupt() };
+                        println!("e1000: RX interrupt enabled={}", enabled);
                     }
+                } else {
+                    println!(
+                        "e1000: no usable legacy INTx route (pin={}, line={:#x})",
+                        net_dev.interrupt_pin,
+                        net_dev.interrupt_line
+                    );
                 }
             }
 
