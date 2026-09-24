@@ -1,5 +1,5 @@
 mod driver;
-mod e1000;
+pub(crate) mod e1000;
 mod helper;
 pub mod ipv4;
 
