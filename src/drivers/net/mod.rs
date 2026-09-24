@@ -296,14 +296,16 @@ pub unsafe fn poll() { unsafe {
         None => return,
     };
 
-    // A single INTx notification may cover multiple packets. Drain a bounded
-    // burst when IRQ work is pending, but retain one-frame polling otherwise:
-    // with the current level-triggered INTx acknowledgement, consuming ICR in
-    // the hard-IRQ path can deassert the line before every RX descriptor has
-    // produced a fresh interrupt edge/level transition.
+    // Interrupts are work notifications only. With no pending IRQ work,
+    // leave the NIC alone instead of polling it on every scheduler pass.
+    if !irq_work {
+        return;
+    }
+
+    // Drain a bounded burst in normal context so RX processing cannot
+    // monopolize the scheduler even when packets arrive continuously.
     const RX_DRAIN_BUDGET: usize = 8;
-    let budget = if irq_work { RX_DRAIN_BUDGET } else { 1 };
-    for _ in 0..budget {
+    for _ in 0..RX_DRAIN_BUDGET {
         if !arp::handle_incoming_packets(my_ip, my_mac) {
             break;
         }
