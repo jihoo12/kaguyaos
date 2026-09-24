@@ -696,6 +696,65 @@ pub unsafe fn start_all_aps(madt: &MadtInfo, bsp_apic_id: u8) {
     );
 }
 
+
+// ─── I/O APIC routing ────────────────────────────────────────────────────────
+
+const IOAPIC_REGSEL: usize = 0x00;
+const IOAPIC_WINDOW: usize = 0x10;
+const IOAPIC_REG_VER: u8 = 0x01;
+const IOAPIC_REDIR_BASE: u8 = 0x10;
+
+unsafe fn ioapic_read(base: u64, reg: u8) -> u32 {
+    unsafe {
+        core::ptr::write_volatile((base as usize + IOAPIC_REGSEL) as *mut u32, reg as u32);
+        core::ptr::read_volatile((base as usize + IOAPIC_WINDOW) as *const u32)
+    }
+}
+
+unsafe fn ioapic_write(base: u64, reg: u8, value: u32) {
+    unsafe {
+        core::ptr::write_volatile((base as usize + IOAPIC_REGSEL) as *mut u32, reg as u32);
+        core::ptr::write_volatile((base as usize + IOAPIC_WINDOW) as *mut u32, value);
+    }
+}
+
+/// Return the number of redirection entries implemented by this I/O APIC.
+pub unsafe fn ioapic_redirection_count(base: u64) -> u32 {
+    ((unsafe { ioapic_read(base, IOAPIC_REG_VER) } >> 16) & 0xff) + 1
+}
+
+/// Route one GSI to a fixed Local APIC vector.
+///
+/// The entry is programmed masked first and unmasked only after both halves
+/// are installed, so a partially configured route cannot fire.
+pub unsafe fn ioapic_route_gsi(
+    base: u64,
+    gsi_base: u32,
+    gsi: u32,
+    vector: u8,
+    destination_apic_id: u8,
+) -> bool {
+    if gsi < gsi_base {
+        return false;
+    }
+    let index = gsi - gsi_base;
+    if index >= unsafe { ioapic_redirection_count(base) } {
+        return false;
+    }
+
+    let low_reg = IOAPIC_REDIR_BASE.wrapping_add((index * 2) as u8);
+    let high_reg = low_reg.wrapping_add(1);
+    let masked_low = (vector as u32) | (1 << 16);
+    let high = (destination_apic_id as u32) << 24;
+
+    unsafe {
+        ioapic_write(base, low_reg, masked_low);
+        ioapic_write(base, high_reg, high);
+        ioapic_write(base, low_reg, vector as u32);
+    }
+    true
+}
+
 // ─── Local APIC ID of the current CPU ────────────────────────────────────────
 
 /// Read the Local APIC ID of the currently executing CPU from CPUID leaf 1.
