@@ -247,6 +247,17 @@ pub unsafe fn send_icmp_echo_request(target_ip: [u8; 4]) -> u16 { unsafe {
 /// Packet parsing stays outside interrupt context.
 static RX_WORK_PENDING: AtomicBool = AtomicBool::new(false);
 static RX_IRQ_REPORTED: AtomicBool = AtomicBool::new(false);
+static LEGACY_IRQ_LINE: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(u8::MAX);
+
+pub fn set_legacy_irq_line(irq: u8) {
+    LEGACY_IRQ_LINE.store(irq, Ordering::Release);
+}
+
+pub fn legacy_irq_line() -> Option<u8> {
+    let irq = LEGACY_IRQ_LINE.load(Ordering::Acquire);
+    if irq < 16 { Some(irq) } else { None }
+}
 
 /// Publish receive work from a future NIC IRQ handler. This is intentionally
 /// lock-free so the IRQ path never waits on ACTIVE_NIC.
