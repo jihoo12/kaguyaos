@@ -11,6 +11,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 pub use driver::NetworkDriver;
 
 pub mod arp;
+pub mod dns;
 
 // ── ARP cache ─────────────────────────────────────────────────────────────
 
@@ -161,12 +162,15 @@ pub unsafe fn send_icmp_echo_request(target_ip: [u8; 4]) -> u16 { unsafe {
         None => return 0,
     };
 
-    // Resolve target MAC via ARP
-    let target_mac = match arp_resolve(target_ip) {
+    // Route off-subnet traffic through QEMU's user-network gateway.
+    const NETMASK: [u8; 4] = [255, 255, 255, 0];
+    const DEFAULT_GATEWAY: [u8; 4] = [10, 0, 2, 2];
+    let same_subnet = (0..4).all(|i| (my_ip[i] & NETMASK[i]) == (target_ip[i] & NETMASK[i]));
+    let next_hop_ip = if same_subnet { target_ip } else { DEFAULT_GATEWAY };
+
+    let target_mac = match arp_resolve(next_hop_ip) {
         Some(mac) => mac,
-        None => {
-            return 0;
-        }
+        None => return 0,
     };
 
     let seq = PING_SEQ.fetch_add(1, Ordering::Relaxed);

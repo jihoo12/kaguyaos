@@ -137,9 +137,15 @@ pub extern "C" fn _start(args_ptr: *const u8, args_len: usize) -> ! {
                 if let Some(ip) = parse_ip(arg_str) {
                     target_ip = ip;
                 } else if arg_str == "-h" || arg_str == "--help" {
-                    sbPrint(b"Usage: ping [ip-address]\n");
+                    sbPrint(b"Usage: ping [ip-address|hostname]\n");
                     sbPrint(b"  Default target: 10.0.2.2 (QEMU gateway)\n");
                     std::terminate_task(0);
+                } else {
+                    sbPrint(b"Resolving "); sbPrint(arg_str.as_bytes()); sbPrint(b"...\n");
+                    match std::dns_resolve(arg_str) {
+                        Some(ip) => target_ip = ip,
+                        None => { sbPrint(b"ping: DNS lookup failed\n"); std::terminate_task(1); }
+                    }
                 }
             }
         }
@@ -171,10 +177,12 @@ pub extern "C" fn _start(args_ptr: *const u8, args_len: usize) -> ! {
             continue;
         }
 
-        // Poll for reply, yield in between
+        // Wait up to one second for the reply. RX processing is IRQ-driven, so
+        // yielding in a tight iteration-count loop can expire before an
+        // external reply (typically tens of milliseconds) reaches the guest.
         let mut found = false;
-        let mut attempts = 0;
-        while attempts < 50 {
+        let deadline = send_time.wrapping_add(1000);
+        loop {
             std::yield_task();
 
             let mut reply_buf = [0u8; core::mem::size_of::<IcmpEchoReply>()];
@@ -209,7 +217,10 @@ pub extern "C" fn _start(args_ptr: *const u8, args_len: usize) -> ! {
                     break;
                 }
             }
-            attempts += 1;
+            let now = rdtsc_ms();
+            if now.wrapping_sub(deadline) < 0x8000_0000 {
+                break;
+            }
         }
 
         if !found {
