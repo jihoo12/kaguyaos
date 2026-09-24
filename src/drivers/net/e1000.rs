@@ -174,6 +174,14 @@ pub unsafe fn acknowledge_rx_interrupt() -> bool { unsafe {
     rx
 }}
 
+pub unsafe fn pending_interrupt_causes() -> Option<u32> { unsafe {
+    let mmio = E1000_IRQ_MMIO.load(Ordering::Acquire) as *mut u8;
+    if mmio.is_null() {
+        return None;
+    }
+    Some(read_reg(mmio, REG_ICR))
+}}
+
 pub unsafe fn interrupt_state() -> Option<(u32, u32)> { unsafe {
     let mmio = E1000_IRQ_MMIO.load(Ordering::Acquire) as *mut u8;
     if mmio.is_null() {
