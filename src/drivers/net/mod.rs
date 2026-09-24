@@ -7,7 +7,7 @@ use crate::memory::{FrameAllocator, PageTable, PAGE_CACHE_DISABLE, PAGE_PRESENT,
 use crate::drivers::pci::{self, PciDevice};
 use crate::println;
 use core::ptr::addr_of_mut;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 pub use driver::NetworkDriver;
 
 pub mod arp;
@@ -248,6 +248,26 @@ pub unsafe fn send_icmp_echo_request(target_ip: [u8; 4]) -> u16 { unsafe {
     transmit(&eth_buf);
     seq
 }}
+
+// ── RX work handoff ─────────────────────────────────────────────────────────
+
+/// Set by the NIC interrupt path once hardware has acknowledged an RX event.
+/// Packet parsing stays outside interrupt context.
+static RX_WORK_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Publish receive work from a future NIC IRQ handler. This is intentionally
+/// lock-free so the IRQ path never waits on ACTIVE_NIC.
+#[inline]
+pub fn mark_rx_work_pending() {
+    RX_WORK_PENDING.store(true, Ordering::Release);
+}
+
+/// Consume the pending indication. Polling remains as a fallback until the
+/// e1000 interrupt is wired and validated.
+#[inline]
+pub fn take_rx_work_pending() -> bool {
+    RX_WORK_PENDING.swap(false, Ordering::AcqRel)
+}
 
 // ── Network poll (called by AP) ─────────────────────────────────────────────
 
