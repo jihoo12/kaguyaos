@@ -5,6 +5,7 @@ use crate::drivers::net::NetworkDriver;
 use crate::drivers::pci::PciDevice;
 use crate::println;
 use core::ptr::{addr_of_mut, read_volatile, write_volatile};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 const MMIO_SIZE: u64 = 128 * 1024;
 const RING_SIZE: usize = 16;
@@ -99,6 +100,10 @@ struct E1000Context {
     tx_next: usize,
 }
 
+// IRQ-visible MMIO base is published separately so the handler never aliases
+// the mutable driver context used by normal TX/RX paths.
+static E1000_IRQ_MMIO: AtomicUsize = AtomicUsize::new(0);
+
 static mut E1000_CTX: E1000Context = E1000Context {
     pci_dev: None,
     mmio: core::ptr::null_mut(),
@@ -141,20 +146,20 @@ impl E1000 {
 
 /// Enable only the receive-timer interrupt after the platform route is live.
 pub unsafe fn enable_rx_interrupt() -> bool { unsafe {
-    let ctx = &*addr_of_mut!(E1000_CTX);
-    if ctx.mmio.is_null() { return false; }
-    write_reg(ctx.mmio, REG_IMC, u32::MAX);
-    let _ = read_reg(ctx.mmio, REG_ICR);
-    write_reg(ctx.mmio, REG_IMS, ICR_RXT0);
+    let mmio = E1000_IRQ_MMIO.load(Ordering::Acquire) as *mut u8;
+    if mmio.is_null() { return false; }
+    write_reg(mmio, REG_IMC, u32::MAX);
+    let _ = read_reg(mmio, REG_ICR);
+    write_reg(mmio, REG_IMS, ICR_RXT0);
     true
 }}
 
 /// Read ICR to acknowledge/deassert the e1000 INTx source.
 /// Returns true when the cause included a receive-timer event.
 pub unsafe fn acknowledge_rx_interrupt() -> bool { unsafe {
-    let ctx = &*addr_of_mut!(E1000_CTX);
-    if ctx.mmio.is_null() { return false; }
-    (read_reg(ctx.mmio, REG_ICR) & ICR_RXT0) != 0
+    let mmio = E1000_IRQ_MMIO.load(Ordering::Acquire) as *mut u8;
+    if mmio.is_null() { return false; }
+    (read_reg(mmio, REG_ICR) & ICR_RXT0) != 0
 }}
 
 impl NetworkDriver for E1000 {
@@ -207,6 +212,7 @@ impl NetworkDriver for E1000 {
 
         ctx.pci_dev = Some(device);
         ctx.mmio = bar as *mut u8;
+        E1000_IRQ_MMIO.store(bar as usize, Ordering::Release);
         ctx.rx_next = 0;
         ctx.tx_next = 0;
 
