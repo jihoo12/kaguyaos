@@ -4,6 +4,8 @@ const DNS_SERVER: [u8; 4] = [10, 0, 2, 3];
 const DNS_PORT: u16 = 53;
 const SRC_PORT: u16 = 49152;
 const TXID: u16 = 0x4b47;
+/// Reserved scheduler wait key for the single outstanding DNS request.
+pub const WAIT_KEY: usize = usize::MAX - 1;
 
 static DNS_RESULT: crate::sync::Spinlock<Option<[u8; 4]>> = crate::sync::Spinlock::new(None);
 
@@ -73,7 +75,11 @@ pub fn handle_udp(src_ip:[u8;4], data:&[u8]) {
         let typ=u16::from_be_bytes([d[p],d[p+1]]); let class=u16::from_be_bytes([d[p+2],d[p+3]]);
         let len=u16::from_be_bytes([d[p+8],d[p+9]]) as usize; p+=10;
         if p+len>d.len(){return}
-        if typ==1 && class==1 && len==4 { *DNS_RESULT.lock()=Some([d[p],d[p+1],d[p+2],d[p+3]]); return; }
+        if typ==1 && class==1 && len==4 {
+            *DNS_RESULT.lock()=Some([d[p],d[p+1],d[p+2],d[p+3]]);
+            crate::process::wake_waiters(WAIT_KEY);
+            return;
+        }
         p+=len;
     }
 }

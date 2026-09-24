@@ -676,10 +676,14 @@ pub fn scheduler_tick() {
 
 fn wake_sleeping_tasks_locked(scheduler: &mut Scheduler, now: u64) {
     for index in 0..scheduler.metadata.tasks.len() {
-        if scheduler.metadata.tasks[index].status == TaskStatus::Sleeping
+        if (scheduler.metadata.tasks[index].status == TaskStatus::Sleeping
+            || (scheduler.metadata.tasks[index].status == TaskStatus::Waiting
+                && scheduler.metadata.tasks[index].wake_tick != 0))
             && scheduler.metadata.tasks[index].wake_tick <= now
         {
             scheduler.metadata.tasks[index].status = TaskStatus::Ready;
+            scheduler.metadata.tasks[index].waiting_for = usize::MAX;
+            scheduler.metadata.tasks[index].wake_tick = 0;
             // Preserve the task's CPU affinity. The owning CPU will observe
             // the ready task from its local scheduler path.
             let cpu = if scheduler.metadata.tasks[index].pinned_cpu != usize::MAX {
@@ -734,6 +738,59 @@ pub fn wait_task(task_id: usize) -> usize {
     } else {
         result
     }
+}
+
+/// Block the current task until an external event wakes it or the deadline expires.
+///
+/// This uses the existing Waiting state with a reserved wait key. CPU0's normal
+/// scheduler maintenance turns an expired wait into Ready, so no busy-yield loop
+/// is needed while waiting for IRQ-driven I/O.
+pub fn wait_current_until(wait_key: usize, deadline: u64) {
+    let guard = SCHEDULER_LOCK.lock();
+    unsafe {
+        if let Some(scheduler) = SCHEDULER.as_mut() {
+            let percpu = crate::processor::get_percpu_data();
+            if !percpu.is_null() {
+                let current_index = (*percpu).current_task_index;
+                if current_index != usize::MAX {
+                    scheduler.metadata.tasks[current_index].waiting_for = wait_key;
+                    scheduler.metadata.tasks[current_index].wake_tick = deadline;
+                    scheduler.metadata.tasks[current_index].status = TaskStatus::Waiting;
+                }
+            }
+        }
+    }
+    core::mem::drop(guard);
+    switch_task();
+}
+
+/// Wake tasks waiting for an external event key.
+pub fn wake_waiters(wait_key: usize) {
+    let guard = SCHEDULER_LOCK.lock();
+    unsafe {
+        if let Some(scheduler) = SCHEDULER.as_mut() {
+            for index in 0..scheduler.metadata.tasks.len() {
+                if scheduler.metadata.tasks[index].status == TaskStatus::Waiting
+                    && scheduler.metadata.tasks[index].waiting_for == wait_key
+                {
+                    scheduler.metadata.tasks[index].status = TaskStatus::Ready;
+                    scheduler.metadata.tasks[index].waiting_for = usize::MAX;
+                    scheduler.metadata.tasks[index].wake_tick = 0;
+                    let cpu = scheduler.metadata.tasks[index]
+                        .cpu_affinity
+                        .min(crate::processor::MAX_AP_COUNT);
+                    scheduler.run_queues[cpu].lock().push_back(index);
+                    if cpu != 0 {
+                        crate::processor::send_ipi(
+                            cpu,
+                            crate::interrupts::SCHEDULER_WAKE_VECTOR,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    core::mem::drop(guard);
 }
 
 pub fn sleep_current(milliseconds: usize) {
