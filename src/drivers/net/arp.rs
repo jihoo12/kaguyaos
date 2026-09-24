@@ -119,6 +119,40 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) -> bool {
         let ip_header_ptr = rx_buffer.as_mut_ptr().add(ip_offset) as *mut Ipv4Header;
         let ip_header = &mut *ip_header_ptr;
 
+        // Temporary #55 diagnostic: show every IPv4 frame that actually reaches
+        // the guest so we can distinguish a SLIRP->e1000 delivery problem from
+        // an ICMP parsing/queueing problem.
+        crate::println!(
+            "net-rx: ipv4 src={}.{}.{}.{} dst={}.{}.{}.{} proto={} len={}",
+            ip_header.src_ip[0],
+            ip_header.src_ip[1],
+            ip_header.src_ip[2],
+            ip_header.src_ip[3],
+            ip_header.dst_ip[0],
+            ip_header.dst_ip[1],
+            ip_header.dst_ip[2],
+            ip_header.dst_ip[3],
+            ip_header.protocol,
+            u16::from_be(ip_header.total_length),
+        );
+
+        if ip_header.protocol == 1 {
+            let ihl = (ip_header.ver_ihl & 0x0F) as usize * 4;
+            let icmp_offset = ip_offset + ihl;
+            if bytes_received >= icmp_offset + core::mem::size_of::<IcmpPacket>() {
+                let diag = &*(rx_buffer.as_ptr().add(icmp_offset) as *const IcmpPacket);
+                crate::println!(
+                    "net-rx: icmp type={} code={} id={} seq={}",
+                    diag.icmp_type,
+                    diag.icmp_code,
+                    u16::from_be(diag.identifier),
+                    u16::from_be(diag.sequence_number),
+                );
+            } else {
+                crate::println!("net-rx: icmp truncated ihl={} bytes={}", ihl, bytes_received);
+            }
+        }
+
         // QEMU user networking may translate an off-subnet ICMP reply back
         // to the guest address. Keep accepting packets addressed to us and
         // surface non-echo ICMP diagnostics while validating external routing.
