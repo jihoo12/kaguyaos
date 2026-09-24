@@ -284,6 +284,10 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_wait_task(task_id) -> exit_code
             crate::process::wait_task(arg1)
         }
+        27 => {
+            // sys_dns_resolve(name_ptr, name_len) -> packed IPv4 or 0
+            sys_dns_resolve(arg1, arg2)
+        }
         _ => {
             // Unknown syscall
             let _ = crate::println!("Unknown syscall: {}", id);
@@ -739,4 +743,20 @@ fn sys_net_recv_ping(buf_ptr: usize, buf_len: usize) -> usize {
         let buf = core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len);
         crate::drivers::net::pop_icmp_reply_raw(buf)
     }
+}
+
+fn sys_dns_resolve(name_ptr: usize, name_len: usize) -> usize {
+    if name_len == 0 || name_len > 253 || !user_range_ok(name_ptr, name_len) { return 0; }
+    let bytes = unsafe { core::slice::from_raw_parts(name_ptr as *const u8, name_len) };
+    let Ok(name) = core::str::from_utf8(bytes) else { return 0; };
+    if !unsafe { crate::drivers::net::dns::send_query(name) } { return 0; }
+    let my_ip = match crate::drivers::net::get_ip_address() { Some(v) => v, None => return 0 };
+    let my_mac = match unsafe { crate::drivers::net::get_mac_address() } { Some(v) => v, None => return 0 };
+    for _ in 0..500_000 {
+        unsafe { crate::drivers::net::arp::handle_incoming_packets(my_ip, my_mac); }
+        if let Some(ip) = crate::drivers::net::dns::take_result() {
+            return (ip[0] as usize) | ((ip[1] as usize)<<8) | ((ip[2] as usize)<<16) | ((ip[3] as usize)<<24);
+        }
+    }
+    0
 }
