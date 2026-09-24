@@ -176,7 +176,7 @@ fn process_command(cmd_ptr: *const u8, cmd_len: usize) {
             let rest = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(rest_ptr, rest_len)) };
             exec_program(fname, rest);
         } else if bytes_eq(cmd_ptr, cmd_len, b"ping") {
-            exec_program("ping.kef", "");
+            exec_program("ping.kef", core::str::from_utf8_unchecked(core::slice::from_raw_parts(args_ptr, args_len)));
         } else if bytes_eq(cmd_ptr, cmd_len, b"shutdown") {
             println("Goodbye!");
             std::shutdown();
