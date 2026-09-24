@@ -24,6 +24,10 @@ pub struct PciDevice {
     pub device_id: u16,
     pub bar0: u32,
     pub bar1: u32,
+    /// Legacy PCI interrupt line (config offset 0x3c).
+    pub interrupt_line: u8,
+    /// PCI interrupt pin: 0 = none, 1..=4 = INTA#..INTD#.
+    pub interrupt_pin: u8,
 }
 
 static mut NVME_DEVICE: Option<PciDevice> = None;
@@ -120,6 +124,8 @@ unsafe fn check_function(bus: u8, dev: u8, func: u8) {
             device_id,
             bar0,
             bar1,
+            interrupt_line: unsafe { read_config_8(bus, dev, func, 0x3C) },
+            interrupt_pin: unsafe { read_config_8(bus, dev, func, 0x3D) },
         };
 
         unsafe {
@@ -152,6 +158,8 @@ unsafe fn check_function(bus: u8, dev: u8, func: u8) {
             device_id,
             bar0,
             bar1,
+            interrupt_line: unsafe { read_config_8(bus, dev, func, 0x3C) },
+            interrupt_pin: unsafe { read_config_8(bus, dev, func, 0x3D) },
         };
 
         unsafe {
@@ -181,6 +189,8 @@ unsafe fn check_function(bus: u8, dev: u8, func: u8) {
             device_id,
             bar0,
             bar1,
+            interrupt_line: unsafe { read_config_8(bus, dev, func, 0x3C) },
+            interrupt_pin: unsafe { read_config_8(bus, dev, func, 0x3D) },
         };
 
         unsafe {
