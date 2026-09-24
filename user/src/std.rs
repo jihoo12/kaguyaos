@@ -272,3 +272,10 @@ pub fn net_send_ping(dst_ip: [u8; 4]) -> u32 {
 pub fn net_recv_ping(buf: &mut [u8]) -> usize {
     unsafe { syscall2(24, buf.as_mut_ptr() as usize, buf.len()) }
 }
+
+
+/// Resolve an IPv4 A record through the kernel DNS client.
+pub fn dns_resolve(name: &str) -> Option<[u8; 4]> {
+    let v = unsafe { syscall2(27, name.as_ptr() as usize, name.len()) } as u32;
+    if v == 0 { None } else { Some([v as u8, (v>>8) as u8, (v>>16) as u8, (v>>24) as u8]) }
+}
