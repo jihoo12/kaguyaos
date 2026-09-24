@@ -23,40 +23,32 @@ struct ArpEntry {
     valid: bool,
 }
 
-static mut ARP_CACHE: [ArpEntry; ARP_CACHE_SIZE] = [ArpEntry {
-    ip: [0u8; 4],
-    mac: [0u8; 6],
-    valid: false,
-}; ARP_CACHE_SIZE];
+static ARP_CACHE: crate::sync::Spinlock<[ArpEntry; ARP_CACHE_SIZE]> =
+    crate::sync::Spinlock::new([ArpEntry {
+        ip: [0u8; 4],
+        mac: [0u8; 6],
+        valid: false,
+    }; ARP_CACHE_SIZE]);
 
 /// Record an ARP mapping from an incoming ARP reply or request.
-pub unsafe fn arp_cache_insert(ip: [u8; 4], mac: [u8; 6]) { unsafe {
-    // Update existing entry or fill an empty slot
-    for i in 0..ARP_CACHE_SIZE {
-        if ARP_CACHE[i].valid && ARP_CACHE[i].ip == ip {
-            ARP_CACHE[i].mac = mac;
-            return;
-        }
+pub fn arp_cache_insert(ip: [u8; 4], mac: [u8; 6]) {
+    let mut cache = ARP_CACHE.lock();
+    if let Some(entry) = cache.iter_mut().find(|entry| entry.valid && entry.ip == ip) {
+        entry.mac = mac;
+        return;
     }
-    for i in 0..ARP_CACHE_SIZE {
-        if !ARP_CACHE[i].valid {
-            ARP_CACHE[i].ip = ip;
-            ARP_CACHE[i].mac = mac;
-            ARP_CACHE[i].valid = true;
-            return;
-        }
+    if let Some(entry) = cache.iter_mut().find(|entry| !entry.valid) {
+        *entry = ArpEntry { ip, mac, valid: true };
     }
-}}
+}
 
 /// Look up a MAC in the ARP cache. Returns None if not found.
-pub unsafe fn arp_cache_lookup(ip: [u8; 4]) -> Option<[u8; 6]> { unsafe {
-    for i in 0..ARP_CACHE_SIZE {
-        if ARP_CACHE[i].valid && ARP_CACHE[i].ip == ip {
-            return Some(ARP_CACHE[i].mac);
-        }
-    }
-    None
-}}
+pub fn arp_cache_lookup(ip: [u8; 4]) -> Option<[u8; 6]> {
+    let cache = ARP_CACHE.lock();
+    cache.iter()
+        .find(|entry| entry.valid && entry.ip == ip)
+        .map(|entry| entry.mac)
+}
 
 /// Send an ARP request and spin-wait for the reply.
 /// Returns the resolved MAC, or None on timeout.
