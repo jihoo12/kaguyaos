@@ -137,9 +137,15 @@ pub extern "C" fn _start(args_ptr: *const u8, args_len: usize) -> ! {
                 if let Some(ip) = parse_ip(arg_str) {
                     target_ip = ip;
                 } else if arg_str == "-h" || arg_str == "--help" {
-                    sbPrint(b"Usage: ping [ip-address]\n");
+                    sbPrint(b"Usage: ping [ip-address|hostname]\n");
                     sbPrint(b"  Default target: 10.0.2.2 (QEMU gateway)\n");
                     std::terminate_task(0);
+                } else {
+                    sbPrint(b"Resolving "); sbPrint(arg_str.as_bytes()); sbPrint(b"...\n");
+                    match std::dns_resolve(arg_str) {
+                        Some(ip) => target_ip = ip,
+                        None => { sbPrint(b"ping: DNS lookup failed\n"); std::terminate_task(1); }
+                    }
                 }
             }
         }
