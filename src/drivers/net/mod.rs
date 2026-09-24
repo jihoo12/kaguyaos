@@ -165,26 +165,6 @@ static PING_SEQ: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::
 /// Build and send an ICMP Echo Request to `target_ip`.
 /// Returns the sequence number used, or 0 on failure.
 pub unsafe fn send_icmp_echo_request(target_ip: [u8; 4]) -> u16 { unsafe {
-    let my_ip = match get_ip_address() {
-        Some(ip) => ip,
-        None => return 0,
-    };
-    let my_mac = match get_mac_address() {
-        Some(mac) => mac,
-        None => return 0,
-    };
-
-    // Route off-subnet traffic through QEMU's user-network gateway.
-    const NETMASK: [u8; 4] = [255, 255, 255, 0];
-    const DEFAULT_GATEWAY: [u8; 4] = [10, 0, 2, 2];
-    let same_subnet = (0..4).all(|i| (my_ip[i] & NETMASK[i]) == (target_ip[i] & NETMASK[i]));
-    let next_hop_ip = if same_subnet { target_ip } else { DEFAULT_GATEWAY };
-
-    let target_mac = match arp_resolve(next_hop_ip) {
-        Some(mac) => mac,
-        None => return 0,
-    };
-
     let seq = PING_SEQ.fetch_add(1, Ordering::Relaxed);
     let ident: u16 = 0xBEEF;
 
@@ -221,39 +201,9 @@ pub unsafe fn send_icmp_echo_request(target_ip: [u8; 4]) -> u16 { unsafe {
     icmp_buf[2] = (cksum >> 8) as u8;
     icmp_buf[3] = cksum as u8;
 
-    // IP header
-    let total_len = 20 + icmp_buf.len();
-    let mut ip_buf = [0u8; 20];
-    ip_buf[0] = 0x45; // ver=4, ihl=5
-    ip_buf[1] = 0;    // tos
-    ip_buf[2] = (total_len >> 8) as u8;
-    ip_buf[3] = total_len as u8;
-    ip_buf[4] = 0; // id high
-    ip_buf[5] = 0; // id low
-    ip_buf[6] = 0x40; // flags: Don't Fragment
-    ip_buf[7] = 0x00;
-    ip_buf[8] = 64;  // TTL
-    ip_buf[9] = 1;   // protocol: ICMP
-    ip_buf[10] = 0;  // header checksum (filled later)
-    ip_buf[11] = 0;
-    ip_buf[12..16].copy_from_slice(&my_ip);
-    ip_buf[16..20].copy_from_slice(&target_ip);
-
-    let ip_cksum = helper::calculate_checksum(&ip_buf);
-    ip_buf[10] = (ip_cksum >> 8) as u8;
-    ip_buf[11] = ip_cksum as u8;
-
-    // Ethernet frame
-    let mut eth_buf = [0u8; 14 + 20 + 56];
-    // Use ARP-resolved target MAC
-    eth_buf[0..6].copy_from_slice(&target_mac);
-    eth_buf[6..12].copy_from_slice(&my_mac);
-    eth_buf[12] = 0x08; // ethertype: IPv4
-    eth_buf[13] = 0x00;
-    eth_buf[14..34].copy_from_slice(&ip_buf);
-    eth_buf[34..90].copy_from_slice(&icmp_buf);
-
-    transmit(&eth_buf);
+    if !ipv4::transmit_ipv4(target_ip, 1, &icmp_buf) {
+        return 0;
+    }
     seq
 }}
 
