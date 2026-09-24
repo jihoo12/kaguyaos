@@ -755,23 +755,28 @@ fn sys_dns_resolve(name_ptr: usize, name_len: usize) -> usize {
         return 0;
     }
 
-    // DNS replies are consumed only by the normal IRQ-driven network poll path.
-    // Use the scheduler's 100 Hz wall clock for the timeout so the wait duration
-    // does not depend on how quickly this task can cycle through switch_task().
-    // The current resolver supports one outstanding query, so take_result()
-    // unambiguously belongs to this request.
+    // Block until the IRQ-driven DNS receive path wakes this task, or until
+    // the scheduler-clock deadline expires. The resolver currently permits one
+    // outstanding query, so one shared wait key is sufficient.
     const DNS_TIMEOUT_TICKS: u64 = 100; // 1 second at the 100 Hz PIT rate.
     let deadline = crate::process::scheduler_clock_now().saturating_add(DNS_TIMEOUT_TICKS);
-    loop {
-        if let Some(ip) = crate::drivers::net::dns::take_result() {
-            return (ip[0] as usize)
-                | ((ip[1] as usize) << 8)
-                | ((ip[2] as usize) << 16)
-                | ((ip[3] as usize) << 24);
-        }
-        if crate::process::scheduler_clock_now() >= deadline {
-            return 0;
-        }
-        crate::process::switch_task();
+
+    // Close the send/wait race: a very fast reply may already be available.
+    if let Some(ip) = crate::drivers::net::dns::take_result() {
+        return (ip[0] as usize)
+            | ((ip[1] as usize) << 8)
+            | ((ip[2] as usize) << 16)
+            | ((ip[3] as usize) << 24);
+    }
+
+    crate::process::wait_current_until(crate::drivers::net::dns::WAIT_KEY, deadline);
+
+    if let Some(ip) = crate::drivers::net::dns::take_result() {
+        (ip[0] as usize)
+            | ((ip[1] as usize) << 8)
+            | ((ip[2] as usize) << 16)
+            | ((ip[3] as usize) << 24)
+    } else {
+        0
     }
 }
