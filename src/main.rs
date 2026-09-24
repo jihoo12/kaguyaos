@@ -335,16 +335,12 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             let bsp_id = processor::current_apic_id();
 
             unsafe { processor::start_all_aps(&madt, bsp_id) };
-            // i440fx/PIIX3 routes PCI INTx through its PIRQ registers onto a
-            // legacy 8259 IRQ. The PCI Interrupt Line byte already contains
-            // the firmware-selected IRQ number; do not treat it as a direct
-            // I/O APIC redirection-table input on this machine.
+            // On QEMU i440fx the PIIX3 PIRQ route identifies the legacy IRQ
+            // number, while interrupt delivery with the APIC enabled arrives
+            // through the I/O APIC redirection entry for that IRQ/GSI.
             if let Some(net_dev) = drivers::pci::get_ethernet_device() {
                 if net_dev.interrupt_pin != 0 && net_dev.interrupt_line < 16 {
                     let irq = net_dev.interrupt_line;
-                    // For bus 0, PCI INTx swizzling selects PIRQ[(device + pin - 1) % 4].
-                    // Log the chipset route as an independent check of the firmware's
-                    // Interrupt Line byte before unmasking the PIC input.
                     let pirq = (net_dev.device + net_dev.interrupt_pin - 1) & 3;
                     let piix_irq = unsafe { drivers::pci::piix3_pirq_route(pirq) };
                     println!(
@@ -354,17 +350,30 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
                         piix_irq,
                         irq
                     );
-                    drivers::net::set_legacy_irq_line(irq);
-                    let unmasked = unsafe { pic::unmask_irq(irq) };
-                    println!(
-                        "e1000: legacy IRQ={} -> vector {:#x} unmasked={}",
-                        irq,
-                        0x20u8 + irq,
-                        unmasked
-                    );
-                    if unmasked {
-                        let enabled = unsafe { drivers::net::e1000::enable_rx_interrupt() };
-                        println!("e1000: RX interrupt enabled={}", enabled);
+
+                    if piix_irq == Some(irq) {
+                        drivers::net::set_legacy_irq_line(irq);
+                        let routed = unsafe {
+                            processor::ioapic_route_pci_intx(
+                                madt.io_apic_address as u64,
+                                madt.io_apic_gsi_base,
+                                irq as u32,
+                                0x20u8 + irq,
+                                bsp_id,
+                            )
+                        };
+                        println!(
+                            "e1000: IOAPIC GSI={} -> legacy vector {:#x} routed={}",
+                            irq,
+                            0x20u8 + irq,
+                            routed
+                        );
+                        if routed {
+                            let enabled = unsafe { drivers::net::e1000::enable_rx_interrupt() };
+                            println!("e1000: RX interrupt enabled={}", enabled);
+                        }
+                    } else {
+                        println!("e1000: PIIX3 PIRQ route disagrees with PCI Interrupt Line");
                     }
                 } else {
                     println!(
