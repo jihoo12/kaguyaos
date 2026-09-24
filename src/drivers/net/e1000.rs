@@ -52,7 +52,10 @@ const TCTL_PSP: u32 = 1 << 3;
 const TCTL_CT: u32 = 0x0F << 4;
 const TCTL_COLD: u32 = 0x40 << 12;
 
+const ICR_RXDMT0: u32 = 1 << 4;
+const ICR_RXO: u32 = 1 << 6;
 const ICR_RXT0: u32 = 1 << 7;
+const ICR_RX_MASK: u32 = ICR_RXDMT0 | ICR_RXO | ICR_RXT0;
 const RX_STATUS_DD: u8 = 1 << 0;
 const TX_CMD_EOP: u8 = 1 << 0;
 const TX_CMD_IFCS: u8 = 1 << 1;
@@ -155,7 +158,7 @@ pub unsafe fn enable_rx_interrupt() -> bool { unsafe {
     // RDTR=0 disables receive interrupt delay and makes RXT0 fire whenever
     // a received packet has been stored in host memory.
     write_reg(mmio, REG_RDTR, 0);
-    write_reg(mmio, REG_IMS, ICR_RXT0);
+    write_reg(mmio, REG_IMS, ICR_RX_MASK);
     true
 }}
 
@@ -164,7 +167,7 @@ pub unsafe fn enable_rx_interrupt() -> bool { unsafe {
 pub unsafe fn acknowledge_rx_interrupt() -> bool { unsafe {
     let mmio = E1000_IRQ_MMIO.load(Ordering::Acquire) as *mut u8;
     if mmio.is_null() { return false; }
-    let rx = (read_reg(mmio, REG_ICR) & ICR_RXT0) != 0;
+    let rx = (read_reg(mmio, REG_ICR) & ICR_RX_MASK) != 0;
     if rx {
         E1000_RX_IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
     }
