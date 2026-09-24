@@ -11,6 +11,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 pub use driver::NetworkDriver;
 
 pub mod arp;
+pub mod dns;
 
 // ── ARP cache ─────────────────────────────────────────────────────────────
 
