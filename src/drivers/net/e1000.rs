@@ -103,6 +103,7 @@ struct E1000Context {
 // IRQ-visible MMIO base is published separately so the handler never aliases
 // the mutable driver context used by normal TX/RX paths.
 static E1000_IRQ_MMIO: AtomicUsize = AtomicUsize::new(0);
+static E1000_RX_IRQ_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 static mut E1000_CTX: E1000Context = E1000Context {
     pci_dev: None,
@@ -159,8 +160,16 @@ pub unsafe fn enable_rx_interrupt() -> bool { unsafe {
 pub unsafe fn acknowledge_rx_interrupt() -> bool { unsafe {
     let mmio = E1000_IRQ_MMIO.load(Ordering::Acquire) as *mut u8;
     if mmio.is_null() { return false; }
-    (read_reg(mmio, REG_ICR) & ICR_RXT0) != 0
+    let rx = (read_reg(mmio, REG_ICR) & ICR_RXT0) != 0;
+    if rx {
+        E1000_RX_IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+    rx
 }}
+
+pub fn rx_interrupt_count() -> usize {
+    E1000_RX_IRQ_COUNT.load(Ordering::Relaxed)
+}
 
 impl NetworkDriver for E1000 {
     fn name(&self) -> &'static str {
