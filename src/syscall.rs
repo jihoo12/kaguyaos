@@ -746,17 +746,28 @@ fn sys_net_recv_ping(buf_ptr: usize, buf_len: usize) -> usize {
 }
 
 fn sys_dns_resolve(name_ptr: usize, name_len: usize) -> usize {
-    if name_len == 0 || name_len > 253 || !user_range_ok(name_ptr, name_len) { return 0; }
+    if name_len == 0 || name_len > 253 || !user_range_ok(name_ptr, name_len) {
+        return 0;
+    }
     let bytes = unsafe { core::slice::from_raw_parts(name_ptr as *const u8, name_len) };
     let Ok(name) = core::str::from_utf8(bytes) else { return 0; };
-    if !unsafe { crate::drivers::net::dns::send_query(name) } { return 0; }
-    let my_ip = match crate::drivers::net::get_ip_address() { Some(v) => v, None => return 0 };
-    let my_mac = match unsafe { crate::drivers::net::get_mac_address() } { Some(v) => v, None => return 0 };
-    for _ in 0..500_000 {
-        unsafe { crate::drivers::net::arp::handle_incoming_packets(my_ip, my_mac); }
+    if !unsafe { crate::drivers::net::dns::send_query(name) } {
+        return 0;
+    }
+
+    // DNS replies are consumed only by the normal IRQ-driven network poll path.
+    // Yield here instead of directly polling RX descriptors from syscall context.
+    // The current resolver supports one outstanding query, so take_result()
+    // unambiguously belongs to this request.
+    const DNS_WAIT_YIELDS: usize = 10_000;
+    for _ in 0..DNS_WAIT_YIELDS {
         if let Some(ip) = crate::drivers::net::dns::take_result() {
-            return (ip[0] as usize) | ((ip[1] as usize)<<8) | ((ip[2] as usize)<<16) | ((ip[3] as usize)<<24);
+            return (ip[0] as usize)
+                | ((ip[1] as usize) << 8)
+                | ((ip[2] as usize) << 16)
+                | ((ip[3] as usize) << 24);
         }
+        crate::process::switch_task();
     }
     0
 }
