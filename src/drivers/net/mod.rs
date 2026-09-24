@@ -246,6 +246,7 @@ pub unsafe fn send_icmp_echo_request(target_ip: [u8; 4]) -> u16 { unsafe {
 /// Set by the NIC interrupt path once hardware has acknowledged an RX event.
 /// Packet parsing stays outside interrupt context.
 static RX_WORK_PENDING: AtomicBool = AtomicBool::new(false);
+static RX_IRQ_REPORTED: AtomicBool = AtomicBool::new(false);
 
 /// Publish receive work from a future NIC IRQ handler. This is intentionally
 /// lock-free so the IRQ path never waits on ACTIVE_NIC.
