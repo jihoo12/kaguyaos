@@ -280,6 +280,16 @@ pub fn take_rx_work_pending() -> bool {
 /// - ICMP Echo Request (type 8) -> auto-reply
 /// - ICMP Echo Reply (type 0) -> buffer for userland
 pub unsafe fn poll() { unsafe {
+    if !RX_IRQ_REPORTED.load(Ordering::Acquire) {
+        if let Some(icr) = e1000::pending_interrupt_causes() {
+            if icr != 0 {
+                println!("e1000: polled pending ICR={:#010x}", icr);
+            }
+        }
+    }
+    if take_rx_work_pending() && !RX_IRQ_REPORTED.swap(true, Ordering::AcqRel) {
+        println!("e1000: RX interrupt delivery confirmed (count={})", rx_interrupt_count());
+    }
     if !is_ready() {
         return;
     }
