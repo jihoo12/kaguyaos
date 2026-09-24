@@ -177,10 +177,12 @@ pub extern "C" fn _start(args_ptr: *const u8, args_len: usize) -> ! {
             continue;
         }
 
-        // Poll for reply, yield in between
+        // Wait up to one second for the reply. RX processing is IRQ-driven, so
+        // yielding in a tight iteration-count loop can expire before an
+        // external reply (typically tens of milliseconds) reaches the guest.
         let mut found = false;
-        let mut attempts = 0;
-        while attempts < 50 {
+        let deadline = send_time.wrapping_add(1000);
+        loop {
             std::yield_task();
 
             let mut reply_buf = [0u8; core::mem::size_of::<IcmpEchoReply>()];
@@ -215,7 +217,10 @@ pub extern "C" fn _start(args_ptr: *const u8, args_len: usize) -> ! {
                     break;
                 }
             }
-            attempts += 1;
+            let now = rdtsc_ms();
+            if now.wrapping_sub(deadline) < 0x8000_0000 {
+                break;
+            }
         }
 
         if !found {
