@@ -342,11 +342,22 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             if let Some(net_dev) = drivers::pci::get_ethernet_device() {
                 if net_dev.interrupt_pin != 0 && net_dev.interrupt_line < 16 {
                     let irq = net_dev.interrupt_line;
+                    // For bus 0, PCI INTx swizzling selects PIRQ[(device + pin - 1) % 4].
+                    // Log the chipset route as an independent check of the firmware's
+                    // Interrupt Line byte before unmasking the PIC input.
+                    let pirq = (net_dev.device + net_dev.interrupt_pin - 1) & 3;
+                    let piix_irq = unsafe { drivers::pci::piix3_pirq_route(pirq) };
+                    println!(
+                        "e1000: INTx pin={} PIRQ{} route={:?} PCI line={}",
+                        net_dev.interrupt_pin,
+                        (b'A' + pirq) as char,
+                        piix_irq,
+                        irq
+                    );
                     drivers::net::set_legacy_irq_line(irq);
                     let unmasked = unsafe { pic::unmask_irq(irq) };
                     println!(
-                        "e1000: INTx pin={} legacy IRQ={} -> vector {:#x} unmasked={}",
-                        net_dev.interrupt_pin,
+                        "e1000: legacy IRQ={} -> vector {:#x} unmasked={}",
                         irq,
                         0x20u8 + irq,
                         unmasked
