@@ -122,7 +122,17 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) -> bool {
         // QEMU user networking may translate an off-subnet ICMP reply back
         // to the guest address. Keep accepting packets addressed to us and
         // surface non-echo ICMP diagnostics while validating external routing.
-        if ip_header.dst_ip == my_ip && ip_header.protocol == 1 {
+        if ip_header.dst_ip == my_ip && ip_header.protocol == 17 {
+            let ihl = (ip_header.ver_ihl & 0x0F) as usize * 4;
+            let udp_offset = ip_offset + ihl;
+            let total_length = u16::from_be(ip_header.total_length) as usize;
+            if total_length >= ihl + 8 && bytes_received >= ip_offset + total_length {
+                crate::drivers::net::dns::handle_udp(
+                    ip_header.src_ip,
+                    &rx_buffer[udp_offset..ip_offset + total_length],
+                );
+            }
+        } else if ip_header.dst_ip == my_ip && ip_header.protocol == 1 {
             let ihl = (ip_header.ver_ihl & 0x0F) as usize * 4;
             let icmp_offset = ip_offset + ihl;
 
