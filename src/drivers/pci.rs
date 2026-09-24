@@ -235,6 +235,21 @@ pub unsafe fn read_config_8(bus: u8, dev: u8, func: u8, offset: u8) -> u8 {
     (val >> ((offset & 3) * 8)) as u8
 }
 
+/// Read one PIIX3 PCI interrupt-routing register (PIRQA..PIRQD).
+/// Values 0..=15 select a legacy PIC IRQ; bit 7 disables the route.
+pub unsafe fn piix3_pirq_route(pirq: u8) -> Option<u8> {
+    if pirq >= 4 {
+        return None;
+    }
+    // PIIX3 ISA bridge is 00:01.0 on the QEMU i440fx machine.
+    let value = unsafe { read_config_8(0, 1, 0, 0x60 + pirq) };
+    if (value & 0x80) != 0 || (value & 0x0f) >= 16 {
+        None
+    } else {
+        Some(value & 0x0f)
+    }
+}
+
 pub unsafe fn write_config_32(bus: u8, dev: u8, func: u8, offset: u8, val: u32) {
     let address = ((bus as u32) << 16)
         | ((dev as u32) << 11)
