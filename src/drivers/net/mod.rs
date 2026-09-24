@@ -282,6 +282,11 @@ pub unsafe fn poll() { unsafe {
     arp::handle_incoming_packets(my_ip, my_mac);
 }}
 
+/// Number of receive interrupts acknowledged by the e1000 IRQ path.
+pub fn rx_interrupt_count() -> usize {
+    e1000::rx_interrupt_count()
+}
+
 // ── Existing accessors ──────────────────────────────────────────────────────
 
 pub fn is_ready() -> bool {
