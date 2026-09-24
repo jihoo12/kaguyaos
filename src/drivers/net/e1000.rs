@@ -5,6 +5,7 @@ use crate::drivers::net::NetworkDriver;
 use crate::drivers::pci::PciDevice;
 use crate::println;
 use core::ptr::{addr_of_mut, read_volatile, write_volatile};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 const MMIO_SIZE: u64 = 128 * 1024;
 const RING_SIZE: usize = 16;
@@ -16,6 +17,10 @@ const E1000_DEVICE_82540EM: u16 = 0x100E;
 const REG_CTRL: u32 = 0x0000;
 const REG_STATUS: u32 = 0x0008;
 const REG_RCTL: u32 = 0x0100;
+const REG_ICR: u32 = 0x00C0;
+const REG_IMS: u32 = 0x00D0;
+const REG_IMC: u32 = 0x00D8;
+const REG_RDTR: u32 = 0x2820;
 const REG_TCTL: u32 = 0x0400;
 const REG_TIPG: u32 = 0x0410;
 const REG_RDBAL: u32 = 0x2800;
@@ -47,6 +52,10 @@ const TCTL_PSP: u32 = 1 << 3;
 const TCTL_CT: u32 = 0x0F << 4;
 const TCTL_COLD: u32 = 0x40 << 12;
 
+const ICR_RXDMT0: u32 = 1 << 4;
+const ICR_RXO: u32 = 1 << 6;
+const ICR_RXT0: u32 = 1 << 7;
+const ICR_RX_MASK: u32 = ICR_RXDMT0 | ICR_RXO | ICR_RXT0;
 const RX_STATUS_DD: u8 = 1 << 0;
 const TX_CMD_EOP: u8 = 1 << 0;
 const TX_CMD_IFCS: u8 = 1 << 1;
@@ -95,6 +104,11 @@ struct E1000Context {
     tx_next: usize,
 }
 
+// IRQ-visible MMIO base is published separately so the handler never aliases
+// the mutable driver context used by normal TX/RX paths.
+static E1000_IRQ_MMIO: AtomicUsize = AtomicUsize::new(0);
+static E1000_RX_IRQ_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 static mut E1000_CTX: E1000Context = E1000Context {
     pci_dev: None,
     mmio: core::ptr::null_mut(),
@@ -133,6 +147,53 @@ impl E1000 {
     pub fn matches(device: &PciDevice) -> bool {
         device.vendor_id == E1000_VENDOR && device.device_id == E1000_DEVICE_82540EM
     }
+}
+
+/// Enable only the receive-timer interrupt after the platform route is live.
+pub unsafe fn enable_rx_interrupt() -> bool { unsafe {
+    let mmio = E1000_IRQ_MMIO.load(Ordering::Acquire) as *mut u8;
+    if mmio.is_null() { return false; }
+    write_reg(mmio, REG_IMC, u32::MAX);
+    let _ = read_reg(mmio, REG_ICR);
+    // RDTR=0 disables receive interrupt delay and makes RXT0 fire whenever
+    // a received packet has been stored in host memory.
+    write_reg(mmio, REG_RDTR, 0);
+    write_reg(mmio, REG_IMS, ICR_RX_MASK);
+    true
+}}
+
+/// Read ICR to acknowledge/deassert the e1000 INTx source.
+/// Returns true when the cause included a receive-timer event.
+pub unsafe fn acknowledge_rx_interrupt() -> bool { unsafe {
+    let mmio = E1000_IRQ_MMIO.load(Ordering::Acquire) as *mut u8;
+    if mmio.is_null() { return false; }
+    let rx = (read_reg(mmio, REG_ICR) & ICR_RX_MASK) != 0;
+    if rx {
+        E1000_RX_IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+    rx
+}}
+
+pub unsafe fn pending_interrupt_causes() -> Option<u32> { unsafe {
+    let mmio = E1000_IRQ_MMIO.load(Ordering::Acquire) as *mut u8;
+    if mmio.is_null() {
+        return None;
+    }
+    Some(read_reg(mmio, REG_ICR))
+}}
+
+pub unsafe fn interrupt_state() -> Option<(u32, u32)> { unsafe {
+    let mmio = E1000_IRQ_MMIO.load(Ordering::Acquire) as *mut u8;
+    if mmio.is_null() {
+        return None;
+    }
+    // ICR is read-to-clear, so this diagnostic intentionally samples and
+    // clears any pending cause before the IRQ-delivery test begins.
+    Some((read_reg(mmio, REG_ICR), read_reg(mmio, REG_IMS)))
+}}
+
+pub fn rx_interrupt_count() -> usize {
+    E1000_RX_IRQ_COUNT.load(Ordering::Relaxed)
 }
 
 impl NetworkDriver for E1000 {
@@ -185,6 +246,7 @@ impl NetworkDriver for E1000 {
 
         ctx.pci_dev = Some(device);
         ctx.mmio = bar as *mut u8;
+        E1000_IRQ_MMIO.store(bar as usize, Ordering::Release);
         ctx.rx_next = 0;
         ctx.tx_next = 0;
 

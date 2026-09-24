@@ -1,5 +1,5 @@
 mod driver;
-mod e1000;
+pub(crate) mod e1000;
 mod helper;
 pub mod ipv4;
 
@@ -23,40 +23,32 @@ struct ArpEntry {
     valid: bool,
 }
 
-static mut ARP_CACHE: [ArpEntry; ARP_CACHE_SIZE] = [ArpEntry {
-    ip: [0u8; 4],
-    mac: [0u8; 6],
-    valid: false,
-}; ARP_CACHE_SIZE];
+static ARP_CACHE: crate::sync::Spinlock<[ArpEntry; ARP_CACHE_SIZE]> =
+    crate::sync::Spinlock::new([ArpEntry {
+        ip: [0u8; 4],
+        mac: [0u8; 6],
+        valid: false,
+    }; ARP_CACHE_SIZE]);
 
 /// Record an ARP mapping from an incoming ARP reply or request.
-pub unsafe fn arp_cache_insert(ip: [u8; 4], mac: [u8; 6]) { unsafe {
-    // Update existing entry or fill an empty slot
-    for i in 0..ARP_CACHE_SIZE {
-        if ARP_CACHE[i].valid && ARP_CACHE[i].ip == ip {
-            ARP_CACHE[i].mac = mac;
-            return;
-        }
+pub fn arp_cache_insert(ip: [u8; 4], mac: [u8; 6]) {
+    let mut cache = ARP_CACHE.lock();
+    if let Some(entry) = cache.iter_mut().find(|entry| entry.valid && entry.ip == ip) {
+        entry.mac = mac;
+        return;
     }
-    for i in 0..ARP_CACHE_SIZE {
-        if !ARP_CACHE[i].valid {
-            ARP_CACHE[i].ip = ip;
-            ARP_CACHE[i].mac = mac;
-            ARP_CACHE[i].valid = true;
-            return;
-        }
+    if let Some(entry) = cache.iter_mut().find(|entry| !entry.valid) {
+        *entry = ArpEntry { ip, mac, valid: true };
     }
-}}
+}
 
 /// Look up a MAC in the ARP cache. Returns None if not found.
-pub unsafe fn arp_cache_lookup(ip: [u8; 4]) -> Option<[u8; 6]> { unsafe {
-    for i in 0..ARP_CACHE_SIZE {
-        if ARP_CACHE[i].valid && ARP_CACHE[i].ip == ip {
-            return Some(ARP_CACHE[i].mac);
-        }
-    }
-    None
-}}
+pub fn arp_cache_lookup(ip: [u8; 4]) -> Option<[u8; 6]> {
+    let cache = ARP_CACHE.lock();
+    cache.iter()
+        .find(|entry| entry.valid && entry.ip == ip)
+        .map(|entry| entry.mac)
+}
 
 /// Send an ARP request and spin-wait for the reply.
 /// Returns the resolved MAC, or None on timeout.
@@ -254,6 +246,18 @@ pub unsafe fn send_icmp_echo_request(target_ip: [u8; 4]) -> u16 { unsafe {
 /// Set by the NIC interrupt path once hardware has acknowledged an RX event.
 /// Packet parsing stays outside interrupt context.
 static RX_WORK_PENDING: AtomicBool = AtomicBool::new(false);
+static RX_IRQ_REPORTED: AtomicBool = AtomicBool::new(false);
+static LEGACY_IRQ_LINE: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(u8::MAX);
+
+pub fn set_legacy_irq_line(irq: u8) {
+    LEGACY_IRQ_LINE.store(irq, Ordering::Release);
+}
+
+pub fn legacy_irq_line() -> Option<u8> {
+    let irq = LEGACY_IRQ_LINE.load(Ordering::Acquire);
+    if irq < 16 { Some(irq) } else { None }
+}
 
 /// Publish receive work from a future NIC IRQ handler. This is intentionally
 /// lock-free so the IRQ path never waits on ACTIVE_NIC.
@@ -276,6 +280,9 @@ pub fn take_rx_work_pending() -> bool {
 /// - ICMP Echo Request (type 8) -> auto-reply
 /// - ICMP Echo Reply (type 0) -> buffer for userland
 pub unsafe fn poll() { unsafe {
+    if take_rx_work_pending() && !RX_IRQ_REPORTED.swap(true, Ordering::AcqRel) {
+        println!("e1000: RX interrupt delivery confirmed (count={})", rx_interrupt_count());
+    }
     if !is_ready() {
         return;
     }
@@ -288,7 +295,12 @@ pub unsafe fn poll() { unsafe {
         None => return,
     };
     arp::handle_incoming_packets(my_ip, my_mac);
-}}
+}
+
+/// Number of receive interrupts acknowledged by the e1000 IRQ path.
+pub fn rx_interrupt_count() -> usize {
+    e1000::rx_interrupt_count()
+}
 
 // ── Existing accessors ──────────────────────────────────────────────────────
 

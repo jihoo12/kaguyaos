@@ -333,7 +333,87 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
                 }
             }
             let bsp_id = processor::current_apic_id();
+
             unsafe { processor::start_all_aps(&madt, bsp_id) };
+            // On QEMU i440fx the PIIX3 PIRQ route identifies the legacy IRQ
+            // number, while interrupt delivery with the APIC enabled arrives
+            // through the I/O APIC redirection entry for that IRQ/GSI.
+            if let Some(net_dev) = drivers::pci::get_ethernet_device() {
+                if net_dev.interrupt_pin != 0 && net_dev.interrupt_line < 16 {
+                    let irq = net_dev.interrupt_line;
+                    let pirq = (net_dev.device + net_dev.interrupt_pin - 1) & 3;
+                    let piix_irq = unsafe { drivers::pci::piix3_pirq_route(pirq) };
+                    println!(
+                        "e1000: INTx pin={} PIRQ{} route={:?} PCI line={}",
+                        net_dev.interrupt_pin,
+                        (b'A' + pirq) as char,
+                        piix_irq,
+                        irq
+                    );
+
+                    if piix_irq == Some(irq) {
+                        let (cmd_before, cmd_after) =
+                            unsafe { drivers::pci::enable_legacy_intx(&net_dev) };
+                        let (_, status) = unsafe { drivers::pci::command_status(&net_dev) };
+                        println!(
+                            "e1000: PCI command {:#06x}->{:#06x} status={:#06x} INTx-disable={}",
+                            cmd_before,
+                            cmd_after,
+                            status,
+                            (cmd_after & (1 << 10)) != 0
+                        );
+                        drivers::net::set_legacy_irq_line(irq);
+                        let routed = unsafe {
+                            processor::ioapic_route_pci_intx(
+                                madt.io_apic_address as u64,
+                                madt.io_apic_gsi_base,
+                                irq as u32,
+                                0x20u8 + irq,
+                                bsp_id,
+                            )
+                        };
+                        println!(
+                            "e1000: IOAPIC GSI={} -> legacy vector {:#x} routed={}",
+                            irq,
+                            0x20u8 + irq,
+                            routed
+                        );
+                        if routed {
+                            if let Some((low, high)) = unsafe {
+                                processor::ioapic_read_redirection(
+                                    madt.io_apic_address as u64,
+                                    madt.io_apic_gsi_base,
+                                    irq as u32,
+                                )
+                            } {
+                                println!(
+                                    "e1000: IOAPIC redir low={:#010x} high={:#010x}",
+                                    low, high
+                                );
+                            }
+                            let enabled = unsafe { drivers::net::e1000::enable_rx_interrupt() };
+                            println!("e1000: RX interrupt enabled={}", enabled);
+                            if let Some((icr, ims)) = unsafe {
+                                drivers::net::e1000::interrupt_state()
+                            } {
+                                println!(
+                                    "e1000: interrupt state ICR={:#010x} IMS={:#010x}",
+                                    icr, ims
+                                );
+                            }
+                        }
+                    } else {
+                        println!("e1000: PIIX3 PIRQ route disagrees with PCI Interrupt Line");
+                    }
+                } else {
+                    println!(
+                        "e1000: no usable legacy INTx route (pin={}, line={:#x})",
+                        net_dev.interrupt_pin,
+                        net_dev.interrupt_line
+                    );
+                }
+            }
+
             println!("Online APs: {}", processor::online_ap_count());
         } else {
             println!("ACPI: MADT table not found. Cannot start APs.");

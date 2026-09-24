@@ -84,3 +84,28 @@ pub unsafe fn notify_eoi(irq: u8) {
         outb(PIC1_COMMAND, PIC_EOI);
     }
 }
+
+
+/// Unmask one legacy 8259 PIC IRQ line.
+///
+/// PCI INTx on the i440fx/PIIX3 machine is routed through the PIIX PIRQ
+/// registers onto one of these legacy IRQ lines.
+pub unsafe fn unmask_irq(irq: u8) -> bool {
+    unsafe {
+        match irq {
+            0..=7 => {
+                let mask = inb(PIC1_DATA) & !(1 << irq);
+                outb(PIC1_DATA, mask);
+                true
+            }
+            8..=15 => {
+                // The slave also requires the master's cascade IRQ2.
+                let slave_bit = irq - 8;
+                outb(PIC2_DATA, inb(PIC2_DATA) & !(1 << slave_bit));
+                outb(PIC1_DATA, inb(PIC1_DATA) & !(1 << 2));
+                true
+            }
+            _ => false,
+        }
+    }
+}

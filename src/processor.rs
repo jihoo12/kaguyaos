@@ -755,6 +755,53 @@ pub unsafe fn ioapic_route_gsi(
     true
 }
 
+
+/// Read the raw low/high dwords of one I/O APIC redirection entry.
+pub unsafe fn ioapic_read_redirection(
+    base: u64,
+    gsi_base: u32,
+    gsi: u32,
+) -> Option<(u32, u32)> {
+    if gsi < gsi_base {
+        return None;
+    }
+    let index = gsi - gsi_base;
+    if index >= unsafe { ioapic_redirection_count(base) } {
+        return None;
+    }
+    let low_reg = IOAPIC_REDIR_BASE.wrapping_add((index * 2) as u8);
+    let high_reg = low_reg.wrapping_add(1);
+    Some(unsafe { (ioapic_read(base, low_reg), ioapic_read(base, high_reg)) })
+}
+
+/// Route a PCI-style legacy INTx GSI (active-low, level-triggered).
+pub unsafe fn ioapic_route_pci_intx(
+    base: u64,
+    gsi_base: u32,
+    gsi: u32,
+    vector: u8,
+    destination_apic_id: u8,
+) -> bool {
+    if gsi < gsi_base {
+        return false;
+    }
+    let index = gsi - gsi_base;
+    if index >= unsafe { ioapic_redirection_count(base) } {
+        return false;
+    }
+
+    let low_reg = IOAPIC_REDIR_BASE.wrapping_add((index * 2) as u8);
+    let high_reg = low_reg.wrapping_add(1);
+    // bit 13: active-low polarity, bit 15: level-triggered, bit 16: masked.
+    let route_low = (vector as u32) | (1 << 13) | (1 << 15);
+    unsafe {
+        ioapic_write(base, low_reg, route_low | (1 << 16));
+        ioapic_write(base, high_reg, (destination_apic_id as u32) << 24);
+        ioapic_write(base, low_reg, route_low);
+    }
+    true
+}
+
 // ─── Local APIC ID of the current CPU ────────────────────────────────────────
 
 /// Read the Local APIC ID of the currently executing CPU from CPUID leaf 1.
