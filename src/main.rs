@@ -369,8 +369,28 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
                             routed
                         );
                         if routed {
+                            if let Some((low, high)) = unsafe {
+                                processor::ioapic_read_redirection(
+                                    madt.io_apic_address as u64,
+                                    madt.io_apic_gsi_base,
+                                    irq as u32,
+                                )
+                            } {
+                                println!(
+                                    "e1000: IOAPIC redir low={:#010x} high={:#010x}",
+                                    low, high
+                                );
+                            }
                             let enabled = unsafe { drivers::net::e1000::enable_rx_interrupt() };
                             println!("e1000: RX interrupt enabled={}", enabled);
+                            if let Some((icr, ims)) = unsafe {
+                                drivers::net::e1000::interrupt_state()
+                            } {
+                                println!(
+                                    "e1000: interrupt state ICR={:#010x} IMS={:#010x}",
+                                    icr, ims
+                                );
+                            }
                         }
                     } else {
                         println!("e1000: PIIX3 PIRQ route disagrees with PCI Interrupt Line");
