@@ -334,6 +334,7 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             }
             let bsp_id = processor::current_apic_id();
 
+            unsafe { processor::start_all_aps(&madt, bsp_id) };
             // Route the e1000 legacy PCI INTx only after the I/O APIC MMIO
             // mapping and IDT vector are live. Keep polling enabled as fallback.
             if madt.io_apic_address != 0 {
@@ -370,7 +371,6 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
                 }
             }
 
-            unsafe { processor::start_all_aps(&madt, bsp_id) };
             println!("Online APs: {}", processor::online_ap_count());
         } else {
             println!("ACPI: MADT table not found. Cannot start APs.");
