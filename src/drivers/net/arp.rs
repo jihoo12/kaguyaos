@@ -119,6 +119,9 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) -> bool {
         let ip_header_ptr = rx_buffer.as_mut_ptr().add(ip_offset) as *mut Ipv4Header;
         let ip_header = &mut *ip_header_ptr;
 
+        // QEMU user networking may translate an off-subnet ICMP reply back
+        // to the guest address. Keep accepting packets addressed to us and
+        // surface non-echo ICMP diagnostics while validating external routing.
         if ip_header.dst_ip == my_ip && ip_header.protocol == 1 {
             let ihl = (ip_header.ver_ihl & 0x0F) as usize * 4;
             let icmp_offset = ip_offset + ihl;
@@ -156,6 +159,12 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) -> bool {
 
                 let send_data = &rx_buffer[0..ip_offset + total_length];
                 crate::drivers::net::transmit(send_data);
+            } else if icmp_packet.icmp_type == 3 {
+                let code = icmp_packet.icmp_code;
+                crate::println!("icmp: destination unreachable code={}", code);
+            } else if icmp_packet.icmp_type == 11 {
+                let code = icmp_packet.icmp_code;
+                crate::println!("icmp: time exceeded code={}", code);
             } else if icmp_packet.icmp_type == 0 {
                 // Echo Reply → buffer for userland
                 let total_length = u16::from_be(ip_header.total_length) as usize;
