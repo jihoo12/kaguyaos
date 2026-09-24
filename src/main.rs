@@ -352,6 +352,16 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
                     );
 
                     if piix_irq == Some(irq) {
+                        let (cmd_before, cmd_after) =
+                            unsafe { drivers::pci::enable_legacy_intx(&net_dev) };
+                        let (_, status) = unsafe { drivers::pci::command_status(&net_dev) };
+                        println!(
+                            "e1000: PCI command {:#06x}->{:#06x} status={:#06x} INTx-disable={}",
+                            cmd_before,
+                            cmd_after,
+                            status,
+                            (cmd_after & (1 << 10)) != 0
+                        );
                         drivers::net::set_legacy_irq_line(irq);
                         let routed = unsafe {
                             processor::ioapic_route_pci_intx(
