@@ -16,6 +16,9 @@ const E1000_DEVICE_82540EM: u16 = 0x100E;
 const REG_CTRL: u32 = 0x0000;
 const REG_STATUS: u32 = 0x0008;
 const REG_RCTL: u32 = 0x0100;
+const REG_ICR: u32 = 0x00C0;
+const REG_IMS: u32 = 0x00D0;
+const REG_IMC: u32 = 0x00D8;
 const REG_TCTL: u32 = 0x0400;
 const REG_TIPG: u32 = 0x0410;
 const REG_RDBAL: u32 = 0x2800;
@@ -47,6 +50,7 @@ const TCTL_PSP: u32 = 1 << 3;
 const TCTL_CT: u32 = 0x0F << 4;
 const TCTL_COLD: u32 = 0x40 << 12;
 
+const ICR_RXT0: u32 = 1 << 7;
 const RX_STATUS_DD: u8 = 1 << 0;
 const TX_CMD_EOP: u8 = 1 << 0;
 const TX_CMD_IFCS: u8 = 1 << 1;
@@ -134,6 +138,24 @@ impl E1000 {
         device.vendor_id == E1000_VENDOR && device.device_id == E1000_DEVICE_82540EM
     }
 }
+
+/// Enable only the receive-timer interrupt after the platform route is live.
+pub unsafe fn enable_rx_interrupt() -> bool { unsafe {
+    let ctx = &*addr_of_mut!(E1000_CTX);
+    if ctx.mmio.is_null() { return false; }
+    write_reg(ctx.mmio, REG_IMC, u32::MAX);
+    let _ = read_reg(ctx.mmio, REG_ICR);
+    write_reg(ctx.mmio, REG_IMS, ICR_RXT0);
+    true
+}}
+
+/// Read ICR to acknowledge/deassert the e1000 INTx source.
+/// Returns true when the cause included a receive-timer event.
+pub unsafe fn acknowledge_rx_interrupt() -> bool { unsafe {
+    let ctx = &*addr_of_mut!(E1000_CTX);
+    if ctx.mmio.is_null() { return false; }
+    (read_reg(ctx.mmio, REG_ICR) & ICR_RXT0) != 0
+}}
 
 impl NetworkDriver for E1000 {
     fn name(&self) -> &'static str {
