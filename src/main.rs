@@ -333,6 +333,43 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
                 }
             }
             let bsp_id = processor::current_apic_id();
+
+            // Route the e1000 legacy PCI INTx only after the I/O APIC MMIO
+            // mapping and IDT vector are live. Keep polling enabled as fallback.
+            if madt.io_apic_address != 0 {
+                if let Some(net_dev) = drivers::pci::get_ethernet_device() {
+                    if net_dev.interrupt_pin != 0 && net_dev.interrupt_line != 0xFF {
+                        let gsi = net_dev.interrupt_line as u32;
+                        let routed = unsafe {
+                            processor::ioapic_route_pci_intx(
+                                madt.io_apic_address as u64,
+                                madt.io_apic_gsi_base,
+                                gsi,
+                                interrupts::E1000_RX_VECTOR,
+                                bsp_id,
+                            )
+                        };
+                        println!(
+                            "e1000: INTx pin={} line/GSI={} -> vector {:#x} routed={}",
+                            net_dev.interrupt_pin,
+                            gsi,
+                            interrupts::E1000_RX_VECTOR,
+                            routed
+                        );
+                        if routed {
+                            let enabled = unsafe { drivers::net::e1000::enable_rx_interrupt() };
+                            println!("e1000: RX interrupt enabled={}", enabled);
+                        }
+                    } else {
+                        println!(
+                            "e1000: no usable legacy INTx route (pin={}, line={:#x})",
+                            net_dev.interrupt_pin,
+                            net_dev.interrupt_line
+                        );
+                    }
+                }
+            }
+
             unsafe { processor::start_all_aps(&madt, bsp_id) };
             println!("Online APs: {}", processor::online_ap_count());
         } else {
