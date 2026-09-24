@@ -292,6 +292,10 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) { unsafe {
             if crate::drivers::net::e1000::acknowledge_rx_interrupt() {
                 crate::drivers::net::mark_rx_work_pending();
             }
+            // This IRQ is routed through the level-triggered I/O APIC, not
+            // the legacy 8259 PIC. Complete the LAPIC in-service entry after
+            // the device ICR read has deasserted INTx.
+            crate::processor::lapic_eoi(crate::processor::lapic_base_from_msr());
         }
         _ =>
         {
@@ -302,7 +306,9 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) { unsafe {
         }
     }
 
-    unsafe { crate::pic::notify_eoi(irq as u8) };
+    if crate::drivers::net::legacy_irq_line() != Some(irq as u8) {
+        unsafe { crate::pic::notify_eoi(irq as u8) };
+    }
 
     if irq == 0 {
         crate::process::reschedule_if_needed();
