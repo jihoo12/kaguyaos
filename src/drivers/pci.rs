@@ -235,6 +235,23 @@ pub unsafe fn read_config_8(bus: u8, dev: u8, func: u8, offset: u8) -> u8 {
     (val >> ((offset & 3) * 8)) as u8
 }
 
+/// Read the PCI Command/Status dword for bring-up diagnostics.
+pub unsafe fn command_status(device: &PciDevice) -> (u16, u16) {
+    let value = unsafe { read_config_32(device.bus, device.device, device.function, 0x04) };
+    (value as u16, (value >> 16) as u16)
+}
+
+/// Ensure legacy INTx signaling is enabled in the PCI Command register.
+/// Command bit 10 is Interrupt Disable; writing it clear permits INTx.
+pub unsafe fn enable_legacy_intx(device: &PciDevice) -> (u16, u16) {
+    let value = unsafe { read_config_32(device.bus, device.device, device.function, 0x04) };
+    let old_cmd = value as u16;
+    let new_cmd = old_cmd & !(1 << 10);
+    let new_value = (value & 0xffff_0000) | new_cmd as u32;
+    unsafe { write_config_32(device.bus, device.device, device.function, 0x04, new_value) };
+    (old_cmd, unsafe { read_config_16(device.bus, device.device, device.function, 0x04) })
+}
+
 /// Read one PIIX3 PCI interrupt-routing register (PIRQA..PIRQD).
 /// Values 0..=15 select a legacy PIC IRQ; bit 7 disables the route.
 pub unsafe fn piix3_pirq_route(pirq: u8) -> Option<u8> {
