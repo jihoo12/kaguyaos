@@ -280,7 +280,8 @@ pub fn take_rx_work_pending() -> bool {
 /// - ICMP Echo Request (type 8) -> auto-reply
 /// - ICMP Echo Reply (type 0) -> buffer for userland
 pub unsafe fn poll() { unsafe {
-    if take_rx_work_pending() && !RX_IRQ_REPORTED.swap(true, Ordering::AcqRel) {
+    let irq_work = take_rx_work_pending();
+    if irq_work && !RX_IRQ_REPORTED.swap(true, Ordering::AcqRel) {
         println!("e1000: RX interrupt delivery confirmed (count={})", rx_interrupt_count());
     }
     if !is_ready() {
@@ -294,8 +295,18 @@ pub unsafe fn poll() { unsafe {
         Some(mac) => mac,
         None => return,
     };
-    arp::handle_incoming_packets(my_ip, my_mac);
-}
+
+    // Interrupts are work notifications only. Drain a bounded burst in
+    // normal context so RX processing cannot monopolize the scheduler.
+    // Retain one-frame polling as a temporary fallback for missed IRQs.
+    const RX_DRAIN_BUDGET: usize = 8;
+    let budget = if irq_work { RX_DRAIN_BUDGET } else { 1 };
+    for _ in 0..budget {
+        if !arp::handle_incoming_packets(my_ip, my_mac) {
+            break;
+        }
+    }
+}}
 
 /// Number of receive interrupts acknowledged by the e1000 IRQ path.
 pub fn rx_interrupt_count() -> usize {

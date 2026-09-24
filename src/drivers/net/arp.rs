@@ -59,12 +59,12 @@ pub unsafe fn send_arp_request(target_ip: [u8; 4], my_ip: [u8; 4], my_mac: [u8; 
     core::mem::forget(frame);
 }}
 
-pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) { unsafe {
+pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) -> bool { unsafe {
     let mut rx_buffer = [0u8; 1514];
     let bytes_received = crate::drivers::net::poll_rx(&mut rx_buffer);
 
     if bytes_received < core::mem::size_of::<EthernetHeader>() {
-        return;
+        return false;
     }
 
     let eth_header = &*(rx_buffer.as_ptr() as *const EthernetHeader);
@@ -113,7 +113,7 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) { unsafe 
     } else if ethertype == 0x0800_u16 {
         let ip_offset = core::mem::size_of::<EthernetHeader>();
         if bytes_received < ip_offset + core::mem::size_of::<Ipv4Header>() {
-            return;
+            return true;
         }
 
         let ip_header_ptr = rx_buffer.as_mut_ptr().add(ip_offset) as *mut Ipv4Header;
@@ -124,7 +124,7 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) { unsafe 
             let icmp_offset = ip_offset + ihl;
 
             if bytes_received < icmp_offset + core::mem::size_of::<IcmpPacket>() {
-                return;
+                return true;
             }
 
             let icmp_packet_ptr = rx_buffer.as_mut_ptr().add(icmp_offset) as *mut IcmpPacket;
@@ -182,4 +182,5 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) { unsafe 
             }
         }
     }
+    true
 }}
