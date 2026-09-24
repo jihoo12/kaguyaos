@@ -51,28 +51,40 @@ pub fn arp_cache_lookup(ip: [u8; 4]) -> Option<[u8; 6]> {
         .map(|entry| entry.mac)
 }
 
-/// Send an ARP request and spin-wait for the reply.
-/// Returns the resolved MAC, or None on timeout.
+fn arp_wait_key(ip: [u8; 4]) -> usize {
+    // Event keys share the scheduler's usize namespace. Keep ARP in a reserved
+    // high range and encode the IPv4 address so unrelated resolutions do not
+    // wake each other.
+    const ARP_WAIT_BASE: usize = usize::MAX - 0x1_0000_0000usize;
+    ARP_WAIT_BASE + u32::from_be_bytes(ip) as usize
+}
+
+/// Send an ARP request and block until the IRQ-driven RX path caches its reply.
+/// Returns the resolved MAC, or None after a one-second scheduler-clock timeout.
 pub unsafe fn arp_resolve(target_ip: [u8; 4]) -> Option<[u8; 6]> { unsafe {
-    // Check cache first
     if let Some(mac) = arp_cache_lookup(target_ip) {
         return Some(mac);
     }
 
     let my_ip = get_ip_address()?;
     let my_mac = get_mac_address()?;
-
     arp::send_arp_request(target_ip, my_ip, my_mac);
 
-    // Spin-wait: poll for ARP reply
-    for _ in 0..200_000 {
-        arp::handle_incoming_packets(my_ip, my_mac);
-        if let Some(mac) = arp_cache_lookup(target_ip) {
-            return Some(mac);
-        }
+    // Close the send/wait race: the reply may already have been consumed by
+    // the IRQ-driven RX path before this task enters Waiting.
+    if let Some(mac) = arp_cache_lookup(target_ip) {
+        return Some(mac);
     }
-    None
+
+    const ARP_TIMEOUT_TICKS: u64 = 100;
+    let deadline = crate::process::scheduler_clock_now().saturating_add(ARP_TIMEOUT_TICKS);
+    crate::process::wait_current_until(arp_wait_key(target_ip), deadline);
+    arp_cache_lookup(target_ip)
 }}
+
+pub fn wake_arp_waiters(ip: [u8; 4]) {
+    crate::process::wake_waiters(arp_wait_key(ip));
+}
 
 static ACTIVE_NIC: crate::sync::Spinlock<Option<driver::Nic>> =
     crate::sync::Spinlock::new(None);

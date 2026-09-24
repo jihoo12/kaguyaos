@@ -107,8 +107,10 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) -> bool {
 
             crate::drivers::net::transmit(reply_data);
         } else if opcode == 2 {
-            // ARP Reply → cache the sender's mapping
+            // ARP Reply → cache the sender's mapping, then wake only tasks
+            // waiting for this IPv4 address.
             crate::drivers::net::arp_cache_insert(arp_packet.sender_ip, arp_packet.sender_mac);
+            crate::drivers::net::wake_arp_waiters(arp_packet.sender_ip);
         }
     } else if ethertype == 0x0800_u16 {
         let ip_offset = core::mem::size_of::<EthernetHeader>();
