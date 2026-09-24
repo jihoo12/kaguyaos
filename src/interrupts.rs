@@ -288,6 +288,11 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) { unsafe {
         1 => {
             //
         }
+        irq if crate::drivers::net::legacy_irq_line() == Some(irq as u8) => {
+            if crate::drivers::net::e1000::acknowledge_rx_interrupt() {
+                crate::drivers::net::mark_rx_work_pending();
+            }
+        }
         _ =>
         {
             let mut writer_guard = GLOBAL_WRITER.lock();
