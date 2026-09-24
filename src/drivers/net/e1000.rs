@@ -20,6 +20,7 @@ const REG_RCTL: u32 = 0x0100;
 const REG_ICR: u32 = 0x00C0;
 const REG_IMS: u32 = 0x00D0;
 const REG_IMC: u32 = 0x00D8;
+const REG_RDTR: u32 = 0x2820;
 const REG_TCTL: u32 = 0x0400;
 const REG_TIPG: u32 = 0x0410;
 const REG_RDBAL: u32 = 0x2800;
@@ -151,6 +152,9 @@ pub unsafe fn enable_rx_interrupt() -> bool { unsafe {
     if mmio.is_null() { return false; }
     write_reg(mmio, REG_IMC, u32::MAX);
     let _ = read_reg(mmio, REG_ICR);
+    // RDTR=0 disables receive interrupt delay and makes RXT0 fire whenever
+    // a received packet has been stored in host memory.
+    write_reg(mmio, REG_RDTR, 0);
     write_reg(mmio, REG_IMS, ICR_RXT0);
     true
 }}
