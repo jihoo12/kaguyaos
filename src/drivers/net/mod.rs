@@ -81,7 +81,8 @@ pub unsafe fn arp_resolve(target_ip: [u8; 4]) -> Option<[u8; 6]> { unsafe {
     None
 }}
 
-static mut ACTIVE_NIC: Option<driver::Nic> = None;
+static ACTIVE_NIC: crate::sync::Spinlock<Option<driver::Nic>> =
+    crate::sync::Spinlock::new(None);
 
 /// Statically configured IPv4 address for this host (set via `set_ip_address`).
 static mut HOST_IP: [u8; 4] = [0u8; 4];
