@@ -81,7 +81,8 @@ pub unsafe fn arp_resolve(target_ip: [u8; 4]) -> Option<[u8; 6]> { unsafe {
     None
 }}
 
-static mut ACTIVE_NIC: Option<driver::Nic> = None;
+static ACTIVE_NIC: crate::sync::Spinlock<Option<driver::Nic>> =
+    crate::sync::Spinlock::new(None);
 
 /// Statically configured IPv4 address for this host (set via `set_ip_address`).
 static mut HOST_IP: [u8; 4] = [0u8; 4];
@@ -272,7 +273,7 @@ pub unsafe fn poll() { unsafe {
 // ── Existing accessors ──────────────────────────────────────────────────────
 
 pub fn is_ready() -> bool {
-    unsafe { (*addr_of_mut!(ACTIVE_NIC)).is_some() }
+    ACTIVE_NIC.lock().is_some()
 }
 
 pub unsafe fn set_ip_address(ip: [u8; 4]) { unsafe {
@@ -285,7 +286,8 @@ pub fn get_ip_address() -> Option<[u8; 4]> {
 }
 
 pub unsafe fn get_mac_address() -> Option<[u8; 6]> { unsafe {
-    match &*addr_of_mut!(ACTIVE_NIC) {
+    let guard = ACTIVE_NIC.lock();
+    match guard.as_ref() {
         Some(nic) => Some(nic.mac_address()),
         None => None,
     }
@@ -319,19 +321,21 @@ pub unsafe fn init(
     nic.init(device);
 
     let name = nic.name();
-    *addr_of_mut!(ACTIVE_NIC) = Some(nic);
+    *ACTIVE_NIC.lock() = Some(nic);
     println!("network: {} ready", name);
 }}
 
 pub unsafe fn transmit(data: &[u8]) -> bool { unsafe {
-    match &mut *addr_of_mut!(ACTIVE_NIC) {
+    let mut guard = ACTIVE_NIC.lock();
+    match guard.as_mut() {
         Some(nic) => nic.transmit(data),
         None => false,
     }
 }}
 
 pub unsafe fn poll_rx(out: &mut [u8]) -> usize { unsafe {
-    match &mut *addr_of_mut!(ACTIVE_NIC) {
+    let mut guard = ACTIVE_NIC.lock();
+    match guard.as_mut() {
         Some(nic) => nic.poll_rx(out),
         None => 0,
     }
