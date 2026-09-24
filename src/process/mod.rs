@@ -780,7 +780,12 @@ pub fn wake_waiters(wait_key: usize) {
                         .cpu_affinity
                         .min(crate::processor::MAX_AP_COUNT);
                     scheduler.run_queues[cpu].lock().push_back(index);
-                    crate::processor::wake_cpu(cpu);
+                    if cpu != 0 {
+                        crate::processor::send_ipi(
+                            cpu,
+                            crate::interrupts::SCHEDULER_WAKE_VECTOR,
+                        );
+                    }
                 }
             }
         }
