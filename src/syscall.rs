@@ -761,7 +761,10 @@ fn sys_dns_resolve(name_ptr: usize, name_len: usize) -> usize {
     const DNS_TIMEOUT_TICKS: u64 = 100; // 1 second at the 100 Hz PIT rate.
     let deadline = crate::process::scheduler_clock_now().saturating_add(DNS_TIMEOUT_TICKS);
 
-    // Close the send/wait race: a very fast reply may already be available.
+    // Snapshot before the final result check so a reply racing with sleep is visible.
+    let wait_key = crate::drivers::net::dns::WAIT_KEY;
+    let generation = crate::process::event_generation(wait_key);
+
     if let Some(ip) = crate::drivers::net::dns::take_result() {
         return (ip[0] as usize)
             | ((ip[1] as usize) << 8)
@@ -769,7 +772,7 @@ fn sys_dns_resolve(name_ptr: usize, name_len: usize) -> usize {
             | ((ip[3] as usize) << 24);
     }
 
-    crate::process::wait_current_until(crate::drivers::net::dns::WAIT_KEY, deadline);
+    crate::process::wait_current_until(wait_key, deadline, generation);
 
     if let Some(ip) = crate::drivers::net::dns::take_result() {
         (ip[0] as usize)
