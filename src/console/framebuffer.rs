@@ -60,7 +60,7 @@ impl Framebuffer {
     }
 }
 
-pub fn draw_window_demo(info: FramebufferInfo) {
+pub fn draw_window_demo(info: FramebufferInfo) -> (usize, usize, usize, usize) {
     let mut fb = Framebuffer::from_info(info);
     fb.clear(Color::DESKTOP);
 
@@ -80,8 +80,17 @@ pub fn draw_window_demo(info: FramebufferInfo) {
         fb.fill_rect(x + 2, y + 2, width - 4, 32, Color::TITLE_BAR);
     }
 
+    // The client area doubles as the first GUI terminal surface.
+    let client_x = x + 8;
+    let client_y = y + 42;
+    let client_w = width.saturating_sub(16);
+    let client_h = height.saturating_sub(50);
+    fb.fill_rect(client_x, client_y, client_w, client_h, Color::BLACK);
+
     // Simple close-button placeholder.
     if width >= 48 {
         fb.fill_rect(x + width - 30, y + 10, 14, 14, Color::WHITE);
     }
+
+    (client_x, client_y, client_w, client_h)
 }

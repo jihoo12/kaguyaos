@@ -428,7 +428,8 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     // before user-space startup. Serial logging remains available while this
     // intentionally replaces the framebuffer console contents.
     if let Some(info) = console::get_framebuffer_info() {
-        console::framebuffer::draw_window_demo(info);
+        let (x, y, width, height) = console::framebuffer::draw_window_demo(info);
+        console::set_text_viewport(x, y, width, height);
     }
 
     // ── User heap ─────────────────────────────────────────────────────────
