@@ -271,10 +271,20 @@ pub unsafe fn poll() { unsafe {
     // Drain a bounded burst in normal context so RX processing cannot
     // monopolize the scheduler even when packets arrive continuously.
     const RX_DRAIN_BUDGET: usize = 8;
+    let mut drained = 0usize;
     for _ in 0..RX_DRAIN_BUDGET {
         if !arp::handle_incoming_packets(my_ip, my_mac) {
             break;
         }
+        drained += 1;
+    }
+
+    // Re-arm software work after a full budget. The ring may still contain
+    // descriptors covered by the interrupt we already consumed, so waiting
+    // for a new hardware IRQ could otherwise leave that backlog stuck.
+    // A false positive is harmless: the next pass observes an empty ring.
+    if drained == RX_DRAIN_BUDGET {
+        mark_rx_work_pending();
     }
 }}
 
