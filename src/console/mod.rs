@@ -1,4 +1,5 @@
 pub mod term;
+pub mod framebuffer;
 
 use super::BootInfo;
 use core::fmt;
@@ -18,6 +19,7 @@ pub struct Writer {
     y_pos: usize,
 }
 
+#[derive(Clone, Copy)]
 pub struct FramebufferInfo {
     pub base: *mut u32,
     pub stride: usize,
@@ -89,28 +91,22 @@ impl Writer {
                 if match row {
                     &byte => byte >> x & 1 == 1,
                 } {
-                    self.write_pixel(self.x_pos + x, self.y_pos + y, 0xFFFFFFFF); // White
+                    self.write_pixel(self.x_pos + x, self.y_pos + y, framebuffer::Color::WHITE); // White
                 } else {
-                    self.write_pixel(self.x_pos + x, self.y_pos + y, 0x00000000); // Black background
+                    self.write_pixel(self.x_pos + x, self.y_pos + y, framebuffer::Color::BLACK); // Black background
                 }
             }
         }
     }
 
-    fn write_pixel(&mut self, x: usize, y: usize, color: u32) {
-        if x >= self.info.horizontal_resolution as usize
-            || y >= self.info.vertical_resolution as usize
-        {
-            return;
-        }
-
-        let pixel_offset = y * self.info.pixels_per_scanline as usize + x;
-        // Assume 4 bytes per pixel (BGR or RGB Reserved) for typical UEFI GOP 32ppp
-        // BootInfo.pixel_format should be checked, but we assume default for now.
-        let ptr = self.framebuffer as *mut u32;
-        unsafe {
-            *ptr.add(pixel_offset) = color;
-        }
+    fn write_pixel(&mut self, x: usize, y: usize, color: framebuffer::Color) {
+        let info = FramebufferInfo {
+            base: self.framebuffer as *mut u32,
+            stride: self.info.pixels_per_scanline as usize,
+            width: self.info.horizontal_resolution as usize,
+            height: self.info.vertical_resolution as usize,
+        };
+        framebuffer::Framebuffer::from_info(info).put_pixel(x, y, color);
     }
 
     fn new_line(&mut self) {
@@ -121,13 +117,13 @@ impl Writer {
     }
 
     pub fn clear_screen(&mut self) {
-        // Optimization: fill by 32 bits or 64 bits if possible, but per-pixel is fine for now
-        // Or simpler: memset
-        let size = self.info.framebuffer_size;
-        let ptr = self.framebuffer;
-        unsafe {
-            core::ptr::write_bytes(ptr, 0, size);
-        }
+        let info = FramebufferInfo {
+            base: self.framebuffer as *mut u32,
+            stride: self.info.pixels_per_scanline as usize,
+            width: self.info.horizontal_resolution as usize,
+            height: self.info.vertical_resolution as usize,
+        };
+        framebuffer::Framebuffer::from_info(info).clear(framebuffer::Color::BLACK);
         self.x_pos = 0;
         self.y_pos = 0;
     }

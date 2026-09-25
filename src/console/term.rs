@@ -1,6 +1,7 @@
 use font8x8::{BASIC_FONTS, UnicodeFonts};
 
 use crate::sync::Spinlock;
+use super::framebuffer::{Color, Framebuffer};
 
 const CELL_W: usize = 8;
 const CELL_H: usize = 16; // matches your new_line() stride
@@ -45,8 +46,13 @@ impl CellRenderer {
         for (dy, byte) in bitmap.iter().enumerate() {
             for dx in 0..CELL_W {
                 let color = if byte >> dx & 1 == 1 { fg } else { bg };
-                let offset = (y_base + dy) * self.stride + (x_base + dx);
-                unsafe { *self.framebuffer.add(offset) = color; }
+                let info = super::FramebufferInfo {
+                    base: self.framebuffer,
+                    stride: self.stride,
+                    width: self.cols * CELL_W,
+                    height: self.rows * CELL_H,
+                };
+                Framebuffer::from_info(info).put_pixel(x_base + dx, y_base + dy, Color(color));
             }
         }
     }
