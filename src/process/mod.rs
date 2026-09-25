@@ -46,6 +46,8 @@ pub struct Task {
 /// indices while later scheduler work narrows the metadata critical section.
 struct SchedulerMetadata {
     tasks: Vec<Box<Task>>,
+    // Monotonic sequence per external wait key.
+    event_generations: Vec<(usize, u64)>,
 }
 
 pub struct Scheduler {
@@ -128,7 +130,10 @@ pub unsafe fn init() {
     let _guard = SCHEDULER_LOCK.lock();
     unsafe {
         SCHEDULER = Some(Scheduler {
-            metadata: SchedulerMetadata { tasks: Vec::new() },
+            metadata: SchedulerMetadata {
+                tasks: Vec::new(),
+                event_generations: Vec::new(),
+            },
             // Keep the queue table inline. A Vec<VecDeque<_>> adds a heap
             // allocation during scheduler init and changes the kernel heap layout
             // before the first user task is created. The fixed-size table also
@@ -745,10 +750,33 @@ pub fn wait_task(task_id: usize) -> usize {
 /// This uses the existing Waiting state with a reserved wait key. CPU0's normal
 /// scheduler maintenance turns an expired wait into Ready, so no busy-yield loop
 /// is needed while waiting for IRQ-driven I/O.
-pub fn wait_current_until(wait_key: usize, deadline: u64) {
+fn event_generation_locked(scheduler: &Scheduler, wait_key: usize) -> u64 {
+    scheduler.metadata.event_generations.iter()
+        .find(|(key, _)| *key == wait_key)
+        .map(|(_, generation)| *generation)
+        .unwrap_or(0)
+}
+
+pub fn event_generation(wait_key: usize) -> u64 {
     let guard = SCHEDULER_LOCK.lock();
+    let generation = unsafe {
+        SCHEDULER.as_ref()
+            .map(|scheduler| event_generation_locked(scheduler, wait_key))
+            .unwrap_or(0)
+    };
+    core::mem::drop(guard);
+    generation
+}
+
+pub fn wait_current_until(wait_key: usize, deadline: u64, generation: u64) -> bool {
+    let guard = SCHEDULER_LOCK.lock();
+    let mut should_switch = false;
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_mut() {
+            if event_generation_locked(scheduler, wait_key) != generation {
+                core::mem::drop(guard);
+                return false;
+            }
             let percpu = crate::processor::get_percpu_data();
             if !percpu.is_null() {
                 let current_index = (*percpu).current_task_index;
@@ -756,35 +784,45 @@ pub fn wait_current_until(wait_key: usize, deadline: u64) {
                     scheduler.metadata.tasks[current_index].waiting_for = wait_key;
                     scheduler.metadata.tasks[current_index].wake_tick = deadline;
                     scheduler.metadata.tasks[current_index].status = TaskStatus::Waiting;
+                    should_switch = true;
                 }
             }
         }
     }
     core::mem::drop(guard);
-    switch_task();
+    if should_switch { switch_task(); }
+    should_switch
 }
 
-/// Wake tasks waiting for an external event key.
 pub fn wake_waiters(wait_key: usize) {
     let guard = SCHEDULER_LOCK.lock();
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_mut() {
+            if let Some((_, generation)) = scheduler.metadata.event_generations.iter_mut()
+                .find(|(key, _)| *key == wait_key)
+            {
+                *generation = generation.wrapping_add(1);
+            } else {
+                scheduler.metadata.event_generations.push((wait_key, 1));
+            }
+
             for index in 0..scheduler.metadata.tasks.len() {
                 if scheduler.metadata.tasks[index].status == TaskStatus::Waiting
                     && scheduler.metadata.tasks[index].waiting_for == wait_key
                 {
-                    scheduler.metadata.tasks[index].status = TaskStatus::Ready;
                     scheduler.metadata.tasks[index].waiting_for = usize::MAX;
                     scheduler.metadata.tasks[index].wake_tick = 0;
-                    let cpu = scheduler.metadata.tasks[index]
-                        .cpu_affinity
-                        .min(crate::processor::MAX_AP_COUNT);
+                    let still_current = (0..=crate::processor::MAX_AP_COUNT)
+                        .any(|cpu| published_current_task(cpu) == index);
+                    if still_current {
+                        scheduler.metadata.tasks[index].status = TaskStatus::Running;
+                        continue;
+                    }
+                    scheduler.metadata.tasks[index].status = TaskStatus::Ready;
+                    let cpu = scheduler.metadata.tasks[index].cpu_affinity.min(crate::processor::MAX_AP_COUNT);
                     scheduler.run_queues[cpu].lock().push_back(index);
                     if cpu != 0 {
-                        crate::processor::send_ipi(
-                            cpu,
-                            crate::interrupts::SCHEDULER_WAKE_VECTOR,
-                        );
+                        crate::processor::send_ipi(cpu, crate::interrupts::SCHEDULER_WAKE_VECTOR);
                     }
                 }
             }
@@ -792,7 +830,6 @@ pub fn wake_waiters(wait_key: usize) {
     }
     core::mem::drop(guard);
 }
-
 pub fn sleep_current(milliseconds: usize) {
     if milliseconds == 0 { switch_task(); return; }
     let ticks = ((milliseconds as u64).saturating_add(9) / 10).max(1);
