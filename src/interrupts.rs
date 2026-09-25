@@ -10,8 +10,6 @@ pub const KERNEL_CODE_SEL: u16 = 0x08;
 pub const LAPIC_TIMER_VECTOR: u8 = 0x30;
 /// Scheduler wakeup IPI used to kick an idle remote CPU.
 pub const SCHEDULER_WAKE_VECTOR: u8 = 0x31;
-/// Dedicated external vector for the e1000 legacy INTx route.
-pub const E1000_RX_VECTOR: u8 = 0x32;
 
 
 #[allow(dead_code)]
@@ -70,7 +68,6 @@ unsafe extern "C" {
     // Local APIC timer (per-CPU scheduler timer)
     fn lapic_timer_irq();
     fn scheduler_wake_irq();
-    fn e1000_rx_irq();
 }
 
 #[derive(Copy, Clone, Default)]
@@ -210,7 +207,6 @@ pub unsafe fn init_idt() {
         // legacy PIC range (0x20..=0x2f), so it uses LAPIC EOI rather than PIC EOI.
         set_gate(LAPIC_TIMER_VECTOR as usize, lapic_timer_irq, KERNEL_CODE_SEL, 0x8E);
         set_gate(SCHEDULER_WAKE_VECTOR as usize, scheduler_wake_irq, KERNEL_CODE_SEL, 0x8E);
-        set_gate(E1000_RX_VECTOR as usize, e1000_rx_irq, KERNEL_CODE_SEL, 0x8E);
 
         IDT_PTR.limit = (size_of::<[IdtEntry; 256]>() - 1) as u16;
         IDT_PTR.base = &raw const IDT as *const _ as u64;
@@ -348,18 +344,6 @@ pub unsafe extern "sysv64" fn scheduler_wake_handler() {
     }
 }
 
-
-#[unsafe(no_mangle)]
-pub unsafe extern "sysv64" fn e1000_rx_handler() {
-    unsafe {
-        // Reading ICR acknowledges/deasserts the device's legacy INTx source.
-        // Keep packet parsing and NIC locking out of interrupt context.
-        if crate::drivers::net::e1000::acknowledge_rx_interrupt() {
-            crate::drivers::net::mark_rx_work_pending();
-        }
-        crate::processor::lapic_eoi(crate::processor::lapic_base_from_msr());
-    }
-}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {
@@ -657,56 +641,6 @@ scheduler_wake_irq:
     popq %rax
     iretq
 
-
-.global e1000_rx_irq
-e1000_rx_irq:
-    # External IRQ may interrupt user mode; establish kernel GS before Rust.
-    testb $3, 8(%rsp)
-    jz 5f
-    swapgs
-5:
-    pushq %rax
-    pushq %rbx
-    pushq %rcx
-    pushq %rdx
-    pushq %rbp
-    pushq %rdi
-    pushq %rsi
-    pushq %r8
-    pushq %r9
-    pushq %r10
-    pushq %r11
-    pushq %r12
-    pushq %r13
-    pushq %r14
-    pushq %r15
-    cld
-    movq %rsp, %rax
-    andq $-16, %rsp
-    subq $16, %rsp
-    movq %rax, (%rsp)
-    call e1000_rx_handler
-    movq (%rsp), %rsp
-    popq %r15
-    popq %r14
-    popq %r13
-    popq %r12
-    popq %r11
-    popq %r10
-    popq %r9
-    popq %r8
-    popq %rsi
-    popq %rdi
-    popq %rbp
-    popq %rdx
-    popq %rcx
-    popq %rbx
-    popq %rax
-    testb $3, 8(%rsp)
-    jz 6f
-    swapgs
-6:
-    iretq
 
 .global irq_common
 irq_common:
