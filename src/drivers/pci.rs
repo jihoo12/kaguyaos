@@ -260,7 +260,7 @@ pub unsafe fn piix3_pirq_route(pirq: u8) -> Option<u8> {
     }
     // PIIX3 ISA bridge is 00:01.0 on the QEMU i440fx machine.
     let value = unsafe { read_config_8(0, 1, 0, 0x60 + pirq) };
-    if (value & 0x80) != 0 || (value & 0x0f) >= 16 {
+    if (value & 0x80) != 0 {
         None
     } else {
         Some(value & 0x0f)
