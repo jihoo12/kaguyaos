@@ -6,6 +6,10 @@ pub struct Color(pub u32);
 impl Color {
     pub const BLACK: Self = Self(0x00000000);
     pub const WHITE: Self = Self(0xFFFFFFFF);
+    pub const DESKTOP: Self = Self(0x002B2F36);
+    pub const WINDOW: Self = Self(0x00E8E8E8);
+    pub const TITLE_BAR: Self = Self(0x004B6EAF);
+    pub const BORDER: Self = Self(0x001A1A1A);
 }
 
 pub struct Framebuffer {
@@ -53,5 +57,31 @@ impl Framebuffer {
 
     pub fn clear(&mut self, color: Color) {
         self.fill_rect(0, 0, self.width, self.height, color);
+    }
+}
+
+pub fn draw_window_demo(info: FramebufferInfo) {
+    let mut fb = Framebuffer::from_info(info);
+    fb.clear(Color::DESKTOP);
+
+    let margin = 64usize;
+    let width = fb.width().saturating_sub(margin * 2).min(720);
+    let height = fb.height().saturating_sub(margin * 2).min(440);
+    let x = (fb.width().saturating_sub(width)) / 2;
+    let y = (fb.height().saturating_sub(height)) / 2;
+
+    // Border, client area, and title bar. Keeping this primitive-only makes
+    // the first visual milestone independent of font/window-manager policy.
+    fb.fill_rect(x, y, width, height, Color::BORDER);
+    if width > 4 && height > 4 {
+        fb.fill_rect(x + 2, y + 2, width - 4, height - 4, Color::WINDOW);
+    }
+    if width > 4 && height > 34 {
+        fb.fill_rect(x + 2, y + 2, width - 4, 32, Color::TITLE_BAR);
+    }
+
+    // Simple close-button placeholder.
+    if width >= 48 {
+        fb.fill_rect(x + width - 30, y + 10, 14, 14, Color::WHITE);
     }
 }
