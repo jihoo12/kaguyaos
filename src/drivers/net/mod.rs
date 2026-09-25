@@ -69,6 +69,8 @@ pub unsafe fn arp_resolve(target_ip: [u8; 4]) -> Option<[u8; 6]> { unsafe {
     let my_ip = get_ip_address()?;
     let my_mac = get_mac_address()?;
     arp::send_arp_request(target_ip, my_ip, my_mac);
+    let wait_key = arp_wait_key(target_ip);
+    let generation = crate::process::event_generation(wait_key);
 
     // Close the send/wait race: the reply may already have been consumed by
     // the IRQ-driven RX path before this task enters Waiting.
@@ -78,7 +80,7 @@ pub unsafe fn arp_resolve(target_ip: [u8; 4]) -> Option<[u8; 6]> { unsafe {
 
     const ARP_TIMEOUT_TICKS: u64 = 100;
     let deadline = crate::process::scheduler_clock_now().saturating_add(ARP_TIMEOUT_TICKS);
-    crate::process::wait_current_until(arp_wait_key(target_ip), deadline);
+    crate::process::wait_current_until(wait_key, deadline, generation);
     arp_cache_lookup(target_ip)
 }}
 
