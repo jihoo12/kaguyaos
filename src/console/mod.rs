@@ -17,6 +17,7 @@ pub struct Writer {
     info: BootInfo,
     x_pos: usize,
     y_pos: usize,
+    viewport: Option<(usize, usize, usize, usize)>,
 }
 
 #[derive(Clone, Copy)]
@@ -46,6 +47,7 @@ impl Writer {
             info,
             x_pos: 0,
             y_pos: 0,
+            viewport: None,
         }
     }
 
@@ -66,10 +68,11 @@ impl Writer {
                 }
             }
             c => {
-                if self.x_pos >= self.info.horizontal_resolution as usize {
+                let (_, _, view_w, view_h) = self.viewport.unwrap_or((0, 0, self.info.horizontal_resolution as usize, self.info.vertical_resolution as usize));
+                if self.x_pos + 8 > view_w {
                     self.new_line();
                 }
-                if self.y_pos >= self.info.vertical_resolution as usize {
+                if self.y_pos + 8 > view_h {
                     self.clear_screen(); // Simple scrolling: clear and reset. Better: scroll up.
                     self.y_pos = 0;
                 }
@@ -106,7 +109,8 @@ impl Writer {
             width: self.info.horizontal_resolution as usize,
             height: self.info.vertical_resolution as usize,
         };
-        framebuffer::Framebuffer::from_info(info).put_pixel(x, y, color);
+        let (origin_x, origin_y, _, _) = self.viewport.unwrap_or((0, 0, info.width, info.height));
+        framebuffer::Framebuffer::from_info(info).put_pixel(origin_x + x, origin_y + y, color);
     }
 
     fn new_line(&mut self) {
@@ -123,9 +127,32 @@ impl Writer {
             width: self.info.horizontal_resolution as usize,
             height: self.info.vertical_resolution as usize,
         };
-        framebuffer::Framebuffer::from_info(info).clear(framebuffer::Color::BLACK);
+        if let Some((x, y, width, height)) = self.viewport {
+            framebuffer::Framebuffer::from_info(info).fill_rect(x, y, width, height, framebuffer::Color::BLACK);
+        } else {
+            framebuffer::Framebuffer::from_info(info).clear(framebuffer::Color::BLACK);
+        }
         self.x_pos = 0;
         self.y_pos = 0;
+    }
+}
+
+
+pub fn set_text_viewport(x: usize, y: usize, width: usize, height: usize) {
+    let mut writer = GLOBAL_WRITER.lock();
+    if let Some(w) = writer.as_mut() {
+        let screen_w = w.info.horizontal_resolution as usize;
+        let screen_h = w.info.vertical_resolution as usize;
+        if x < screen_w && y < screen_h {
+            w.viewport = Some((
+                x,
+                y,
+                width.min(screen_w - x),
+                height.min(screen_h - y),
+            ));
+            w.x_pos = 0;
+            w.y_pos = 0;
+        }
     }
 }
 
