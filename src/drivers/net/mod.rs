@@ -225,15 +225,14 @@ pub fn legacy_irq_line() -> Option<u8> {
     if irq < 16 { Some(irq) } else { None }
 }
 
-/// Publish receive work from a future NIC IRQ handler. This is intentionally
+/// Publish receive work from the NIC IRQ handler. This is intentionally
 /// lock-free so the IRQ path never waits on ACTIVE_NIC.
 #[inline]
 pub fn mark_rx_work_pending() {
     RX_WORK_PENDING.store(true, Ordering::Release);
 }
 
-/// Consume the pending indication. Polling remains as a fallback until the
-/// e1000 interrupt is wired and validated.
+/// Consume one pending RX-work indication published by the IRQ path.
 #[inline]
 pub fn take_rx_work_pending() -> bool {
     RX_WORK_PENDING.swap(false, Ordering::AcqRel)
