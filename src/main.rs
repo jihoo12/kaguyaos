@@ -424,6 +424,13 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
 
     console::term::init();
 
+    // First graphics milestone: briefly render a primitive desktop/window
+    // before user-space startup. Serial logging remains available while this
+    // intentionally replaces the framebuffer console contents.
+    if let Some(info) = console::get_framebuffer_info() {
+        console::framebuffer::draw_window_demo(info);
+    }
+
     // ── User heap ─────────────────────────────────────────────────────────
     // A heap separate from the kernel heap, with pages mapped PAGE_USER so
     // that sys_alloc / sys_free / sys_realloc can hand out pointers that
