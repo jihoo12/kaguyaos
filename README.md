@@ -45,7 +45,9 @@ kaguyaOS currently boots into userspace on an SMP system, runs a preemptive sche
 ### Graphics and console
 
 - UEFI GOP framebuffer, currently exercised at 1280×800
-- Shared framebuffer abstraction with clipped pixel/rectangle drawing
+- Shared software framebuffer with clipped pixel/rectangle drawing and explicit presentation
+- Modern PCI virtio-gpu 2D driver: resource backing, scanout, transfer and flush
+- GOP output backend when no virtio-gpu is present
 - 8×8 text rendering
 - Primitive desktop/window frame
 - Shell output rendered inside the window client area
@@ -118,7 +120,7 @@ Or run each step separately:
 ./run.sh
 ```
 
-The default QEMU configuration uses 2 virtual CPUs, NVMe storage, an xHCI USB keyboard, and an E1000 NIC with QEMU user-mode networking.
+The default QEMU configuration uses virtio-vga with a 2D virtio-gpu driver, 2 virtual CPUs, NVMe storage, an xHCI USB keyboard, and an E1000 NIC with QEMU user-mode networking.
 
 ---
 
@@ -254,7 +256,9 @@ Networking remains an active subsystem. A later milestone is to add TCP and HTTP
 
 ## Known Limitations
 
-- Graphics currently draw directly to the GOP framebuffer; there is no compositor/backbuffer yet.
+- Graphics use a fixed software backbuffer (up to 1920×1080 pixels); there is no compositor.
+- virtio-gpu currently uses one scanout and synchronous polling with full-frame transfers. No 3D acceleration, hotplug, mode switching, or AMD hardware support.
+- The GOP backend supports RGB/BGR 32-bit modes. GPU runtime failures stop presentation and report through serial; live recovery is not implemented.
 - The window is static and there is no mouse support yet.
 - The E1000 path targets the QEMU 82540EM device.
 - IPv4 configuration currently assumes the QEMU user-networking environment.
@@ -267,3 +271,31 @@ Networking remains an active subsystem. A later milestone is to add TCP and HTTP
 ## License
 
 [Apache License 2.0](LICENSE)
+
+## Graphics development
+
+The renderer writes `0x00RRGGBB` pixels into a shared backbuffer. `console::display::present()`
+then copies changed regions to GOP (including RGB/BGR conversion) or submits virtio-gpu transfer/flush
+commands. The console and cell syscalls present after each output batch. Serial diagnostics
+have an independent path, including kernel panic and CPU exception output.
+
+The driver follows the [VIRTIO 1.2 specification](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html),
+using modern PCI capabilities, VERSION_1 negotiation, a split control queue and fenced
+2D commands. The backbuffer and queue storage live in the identity-mapped kernel image;
+they are reserved for the kernel lifetime, including after device timeouts.
+
+```bash
+nix develop
+./run.sh                       # virtio-vga (default)
+GPU=gop ./run.sh               # standard VGA + GOP output
+
+# After building the kernel and preparing nvme.img:
+python3 tools/gpu-smoke.py
+python3 tools/gpu-smoke.py --backend gop --output /tmp/kaguya-gop-smoke
+```
+
+The smoke runner uses a headless QEMU with disposable disk snapshots, waits for the shell,
+sends `clear` and `help` through the virtual USB keyboard, and saves serial logs and
+`desktop.ppm` / `help.ppm` screenshots. It checks GPU activation (virtio mode), command
+completion and changing screen contents. Output defaults to `/tmp/kaguya-gpu-smoke`.
+Mouse input and window movement are outside this milestone.

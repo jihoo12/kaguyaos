@@ -38,7 +38,15 @@ cargo build --target x86_64-unknown-uefi
 
 ## Testing
 
-No automated test suite. Verification is manual:
+Graphics smoke checks (inside `nix develop`, after building the kernel and preparing `nvme.img`):
+
+```bash
+python3 tools/gpu-smoke.py
+python3 tools/gpu-smoke.py --backend gop --output /tmp/kaguya-gop-smoke
+```
+
+These boot disposable QEMU snapshots, exercise shell input and capture screenshots/serial logs.
+Other verification is manual:
 
 1. Run `./build_insert_run.sh`
 2. In QEMU shell, test commands: `ls`, `cat`, `write`, `rm`, `exec`, `ping`, `shutdown`

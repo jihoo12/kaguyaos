@@ -1,13 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
 cargo build --target x86_64-unknown-uefi
-set -e
 mkdir -p esp/EFI/BOOT
 cp target/x86_64-unknown-uefi/debug/os.efi esp/EFI/BOOT/BOOTX64.EFI
 if [ ! -f nvme.img ]; then
     qemu-img create -f raw nvme.img 1G
 fi
 
+gpu_args=(-vga none -device virtio-vga)
+if [[ "${GPU:-virtio}" == gop ]]; then
+    gpu_args=(-vga std)
+fi
 qemu-system-x86_64 \
     -smp 2 \
+    -m 256 \
+    "${gpu_args[@]}" \
     -bios "${OVMF_BIOS}" \
     -drive format=raw,file=fat:rw:esp \
     -drive file=nvme.img,if=none,id=nvm,format=raw \
@@ -19,4 +27,5 @@ qemu-system-x86_64 \
     -serial stdio \
     -d int,cpu_reset \
     -no-reboot \
-    -D qemu.log
+    -D qemu.log \
+    "$@"

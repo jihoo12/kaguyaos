@@ -1,6 +1,6 @@
 #![allow(bad_asm_style)]
 
-use crate::console::GLOBAL_WRITER;
+use crate::console::SerialWriter;
 use core::arch::asm;
 use core::fmt::Write;
 use core::mem::size_of;
@@ -258,10 +258,7 @@ const EXCEPTION_MESSAGES: [&str; 32] = [
 pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) { unsafe {
     let int_no = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).int_no)) };
     if !(32..48).contains(&int_no) {
-        let mut writer_guard = GLOBAL_WRITER.lock();
-        if let Some(writer) = writer_guard.as_mut() {
-            let _ = writeln!(writer, "Invalid IRQ vector: {:#x}", int_no);
-        }
+        let _ = writeln!(&mut SerialWriter, "Invalid IRQ vector: {:#x}", int_no);
         return;
     }
 
@@ -295,10 +292,7 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) { unsafe {
         }
         _ =>
         {
-            let mut writer_guard = GLOBAL_WRITER.lock();
-            if let Some(writer) = writer_guard.as_mut() {
-                let _ = writeln!(writer, "Unknown IRQ: {}", irq);
-            }
+            let _ = writeln!(&mut SerialWriter, "Unknown IRQ: {}", irq);
         }
     }
 
@@ -368,16 +362,8 @@ pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {
     let r14 = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).r14)) };
     let r15 = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).r15)) };
 
-    let mut writer_guard = if let Some(guard) = GLOBAL_WRITER.try_lock() {
-        guard
-    } else {
-        unsafe {
-            GLOBAL_WRITER.force_unlock();
-        }
-        GLOBAL_WRITER.lock()
-    };
-
-    if let Some(writer) = writer_guard.as_mut() {
+    {
+        let writer = &mut SerialWriter;
         let _ = writeln!(writer, "\nEXCEPTION OCCURRED!");
         let _ = write!(writer, "INTERRUPT: {:#x} ", int_no);
         if (int_no as usize) < EXCEPTION_MESSAGES.len() {
@@ -422,10 +408,7 @@ pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {
     // of halting the entire system.
     let cpl = cs & 0x3;
     if cpl == 3 {
-        if let Some(writer) = writer_guard.as_mut() {
-            let _ = writeln!(writer, "Killing user process due to exception.");
-        }
-        core::mem::drop(writer_guard);
+        let _ = writeln!(&mut SerialWriter, "Killing user process due to exception.");
 
         // Swap GS base to access kernel-space per-CPU data (since CPU doesn't do it automatically on exception)
         unsafe {
@@ -448,8 +431,8 @@ pub unsafe extern "sysv64" fn exception_handler(frame: *mut InterruptFrame) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn debug_print_int_no(frame: *mut u8, val: u64) {
-    let mut writer_guard = GLOBAL_WRITER.lock();
-    if let Some(writer) = writer_guard.as_mut() {
+    {
+        let writer = &mut SerialWriter;
         let _ = writeln!(
             writer,
             "DEBUG: RSP={:#x}, offset120={:#x}",

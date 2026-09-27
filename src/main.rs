@@ -35,7 +35,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
         }
     } else {
         // Kernel Mode Panic
-        println!("{}", _info);
+        console::serial(format_args!("{}\n", _info));
     }
     loop {}
 }
@@ -314,6 +314,10 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
         memory::heap::init(heap_start as usize, (heap_pages * 4096) as usize);
     }
 
+    if let Some(surface) = console::display::init(boot_info, &mut allocator) {
+        console::use_surface(surface);
+    }
+
     unsafe {
         process::init();
     }
@@ -430,6 +434,7 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     if let Some(info) = console::get_framebuffer_info() {
         let (x, y, width, height) = console::framebuffer::draw_window_demo(info);
         console::set_text_viewport(x, y, width, height);
+        console::display::present();
     }
 
     // ── User heap ─────────────────────────────────────────────────────────

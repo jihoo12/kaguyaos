@@ -41,18 +41,22 @@ impl Framebuffer {
         if x >= self.width || y >= self.height {
             return;
         }
-        unsafe { *self.base.add(y * self.stride + x) = color.0; }
+        let mut display = super::display::DISPLAY.lock();
+        unsafe { core::ptr::write_volatile(self.base.add(y * self.stride + x), color.0); }
+        if let Some(d) = display.as_mut() { d.mark(x, y, 1, 1); }
     }
 
     pub fn fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: Color) {
+        let mut display = super::display::DISPLAY.lock();
         let x_end = x.saturating_add(width).min(self.width);
         let y_end = y.saturating_add(height).min(self.height);
         for py in y..y_end {
             let row = unsafe { self.base.add(py * self.stride) };
             for px in x..x_end {
-                unsafe { *row.add(px) = color.0; }
+                unsafe { core::ptr::write_volatile(row.add(px), color.0); }
             }
         }
+        if let Some(d) = display.as_mut() { d.mark(x, y, width, height); }
     }
 
     pub fn clear(&mut self, color: Color) {

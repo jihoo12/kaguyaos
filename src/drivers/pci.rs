@@ -30,6 +30,10 @@ pub struct PciDevice {
     pub interrupt_pin: u8,
 }
 
+static mut GPU_DEVICE: Option<PciDevice> = None;
+
+pub fn get_gpu_device() -> Option<PciDevice> { unsafe { GPU_DEVICE } }
+
 static mut NVME_DEVICE: Option<PciDevice> = None;
 static mut XHCI_DEVICE: Option<PciDevice> = None;
 static mut ETHERNET_DEVICE: Option<PciDevice> = None;
@@ -109,6 +113,15 @@ unsafe fn check_function(bus: u8, dev: u8, func: u8) {
         bus, dev, func, vendor_id, device_id, class_code, sub_class, prog_if
     );
 
+    if vendor_id == 0x1af4 && device_id == 0x1050 {
+        unsafe { GPU_DEVICE = Some(PciDevice {
+            bus, device: dev, function: func, vendor_id, device_id,
+            bar0: read_config_32(bus, dev, func, 0x10),
+            bar1: read_config_32(bus, dev, func, 0x14),
+            interrupt_line: read_config_8(bus, dev, func, 0x3c),
+            interrupt_pin: read_config_8(bus, dev, func, 0x3d),
+        }); }
+    }
     if class_code == PCI_CLASS_STORAGE
         && sub_class == PCI_SUBCLASS_NVME
         && prog_if == PCI_PROG_IF_NVME

@@ -653,6 +653,8 @@ fn sys_write_cell(row: usize, col: usize, char_code: usize, fg: usize, bg: usize
     if let Some(r) = renderer.as_mut() {
         r.write_cell(row, col, ch, fg as u32, bg as u32);
     }
+    drop(renderer);
+    crate::console::display::present();
 }
 
 fn sys_write_region(
@@ -662,6 +664,7 @@ fn sys_write_region(
     len: usize,
     width: usize,
 ) {
+    if width == 0 { return; }
     // Validate pointer is non-null and in user address space
     // x86-64 user space ends at 0x0000_7FFF_FFFF_FFFF
     if ptr == 0 || ptr > 0x0000_7FFF_FFFF_FFFF {
@@ -714,6 +717,8 @@ fn sys_write_region(
         let cell_col = col + i % width;
         r.write_cell(cell_row, cell_col, ch, fg, bg);
     }
+    drop(renderer);
+    crate::console::display::present();
 }
 
 // ── Network syscalls ────────────────────────────────────────────────────────

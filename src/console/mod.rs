@@ -1,3 +1,4 @@
+pub mod display;
 pub mod term;
 pub mod framebuffer;
 
@@ -52,14 +53,6 @@ impl Writer {
     }
 
     pub fn write_char(&mut self, c: char) {
-        // Echo to serial port (COM1 0x3F8)
-        unsafe {
-            crate::io::outb(0x3F8, c as u8);
-            if c == '\n' {
-                crate::io::outb(0x3F8, b'\r');
-            }
-        }
-
         match c {
             '\n' => self.new_line(),
             '\x08' => {
@@ -161,6 +154,8 @@ pub fn clear() {
     if let Some(w) = writer.as_mut() {
         w.clear_screen();
     }
+    drop(writer);
+    display::present();
 }
 
 impl fmt::Write for Writer {
@@ -172,11 +167,43 @@ impl fmt::Write for Writer {
     }
 }
 
+/// Lock-free emergency output; concurrent diagnostics may interleave.
+pub struct SerialWriter;
+impl fmt::Write for SerialWriter {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for byte in s.bytes() { unsafe {
+            for _ in 0..100_000 {
+                if crate::io::inb(0x3fd) & 0x20 != 0 { break; }
+                core::hint::spin_loop();
+            }
+            crate::io::outb(0x3f8, byte);
+        }}
+        Ok(())
+    }
+}
+
+pub fn serial(args: fmt::Arguments) {
+    let _ = SerialWriter.write_fmt(args);
+}
+
+pub fn use_surface(info: FramebufferInfo) {
+    let mut writer = GLOBAL_WRITER.lock();
+    if let Some(w) = writer.as_mut() {
+        w.framebuffer = info.base as *mut u8;
+        w.info.pixels_per_scanline = info.stride as u32;
+        w.info.horizontal_resolution = info.width as u32;
+        w.info.vertical_resolution = info.height as u32;
+    }
+}
+
 pub fn _print(args: fmt::Arguments) {
+    serial(args);
     let mut writer = GLOBAL_WRITER.lock();
     if let Some(w) = writer.as_mut() {
         w.write_fmt(args).unwrap();
     }
+    drop(writer);
+    display::present();
 }
 
 #[macro_export]
