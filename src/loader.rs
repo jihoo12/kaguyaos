@@ -32,16 +32,13 @@ pub fn load_kef(
         return Err("KEF code size is 0");
     }
 
-    // Allocate contiguous frames for code
-    let code_start_phys = allocator.allocate_frame().ok_or("OOM allocating code frame")?;
-    for i in 1..code_pages {
-        let frame = allocator.allocate_frame().ok_or("OOM allocating code frame")?;
-        assert_eq!(
-            frame,
-            code_start_phys + i as u64 * 4096,
-            "Allocated code frames are not contiguous"
-        );
+    let file_code_start = header.code_offset as usize;
+    let file_code_end = file_code_start.checked_add(code_size).ok_or("KEF code size overflow")?;
+    if file_code_end > file_data.len() || header.entry_offset as usize >= code_size {
+        return Err("Invalid KEF code range or entry point");
     }
+    let code_start_phys = allocator.allocate_contiguous(code_pages)
+        .ok_or("OOM allocating contiguous code frames")?;
 
     // Map code pages as user-accessible
     let flags = PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
@@ -53,12 +50,6 @@ pub fn load_kef(
     }
 
     // Copy code into the allocated frames
-    let file_code_start = header.code_offset as usize;
-    let file_code_end = file_code_start + code_size;
-    if file_code_end > file_data.len() {
-        return Err("KEF code segment extends past end of file");
-    }
-
     unsafe {
         core::ptr::copy_nonoverlapping(
             file_data.as_ptr().add(file_code_start),
@@ -70,16 +61,9 @@ pub fn load_kef(
     // Allocate stack frames (16KB / 4 pages) + 1 guard page
     let stack_pages = 4;
     let total_stack_frames = stack_pages + 1; // extra guard page at the bottom
-    let guard_frame = allocator.allocate_frame().ok_or("OOM allocating stack guard")?;
-    let stack_start_phys = guard_frame + PAGE_SIZE; // actual stack starts one page above guard
-    for i in 1..total_stack_frames {
-        let frame = allocator.allocate_frame().ok_or("OOM allocating stack frame")?;
-        assert_eq!(
-            frame,
-            guard_frame + i as u64 * 4096,
-            "Allocated stack frames are not contiguous"
-        );
-    }
+    let guard_frame = allocator.allocate_contiguous(total_stack_frames)
+        .ok_or("OOM allocating contiguous stack frames")?;
+    let stack_start_phys = guard_frame + PAGE_SIZE;
 
     // Map only the usable stack pages (skip the guard frame — it stays unmapped)
     for i in 0..stack_pages {

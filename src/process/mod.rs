@@ -279,7 +279,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
             sp = sp.sub(1);
             *sp = user_rsp; // RSP
             sp = sp.sub(1);
-            *sp = 0x202; // RFLAGS
+            *sp = if cfg!(feature = "hardware-shell") { 0x2 } else { 0x202 }; // RFLAGS
             sp = sp.sub(1);
             *sp = crate::gdt::USER_CODE_SEL as u64; // CS
             sp = sp.sub(1);

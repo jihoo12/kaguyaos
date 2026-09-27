@@ -14,6 +14,7 @@ static mut PIXELS: Pixels = Pixels([0; MAX_PIXELS]);
 pub(super) static DISPLAY: Spinlock<Option<Display>> = Spinlock::new(None);
 
 pub(super) struct Display {
+    buffer: usize,
     gop: usize,
     gop_stride: usize,
     pixel_format: u32,
@@ -40,6 +41,7 @@ pub fn init(info: &BootInfo, allocator: &mut memory::FrameAllocator) -> Option<F
     }
     let base = addr_of_mut!(PIXELS) as *mut u32;
     let mut display = Display {
+        buffer: base as usize,
         gop: info.framebuffer_base as usize,
         gop_stride: info.pixels_per_scanline as usize,
         pixel_format: info.pixel_format,
@@ -107,7 +109,7 @@ pub fn present() {
         }
     } else {
         unsafe {
-            let base = addr_of_mut!(PIXELS) as *const u32;
+            let base = display.buffer as *const u32;
             for y in y0..y1 {
                 for x in x0..x1 {
                     write_volatile(
@@ -132,4 +134,59 @@ impl Display {
             None => (x, y, right, bottom),
         });
     }
+}
+
+/// Dedicated GOP surface with individually allocated frames; no PCI probing.
+/// Reserved for the kernel lifetime, at a kernel-only virtual address.
+pub fn init_gop(
+    info: &BootInfo,
+    allocator: &mut memory::FrameAllocator,
+) -> Option<FramebufferInfo> {
+    let width = info.horizontal_resolution as usize;
+    let height = info.vertical_resolution as usize;
+    let bytes = width.checked_mul(height)?.checked_mul(4)?;
+    if bytes == 0 || bytes > 128 * 1024 * 1024 || info.pixel_format > 1 {
+        return None;
+    }
+    const BASE: u64 = 0xffff_a000_0000_0000;
+    let pages = bytes.div_ceil(4096);
+    unsafe {
+        for i in 0..pages {
+            let frame = allocator.allocate_frame()?;
+            memory::map_page(
+                memory::get_table_mut(memory::current_pml4_phys()),
+                BASE + i as u64 * 4096,
+                frame,
+                memory::PAGE_WRITABLE | memory::PAGE_NO_EXECUTE,
+                allocator,
+            );
+        }
+        let buffer = BASE as *mut u32;
+        for y in 0..height {
+            for x in 0..width {
+                let pixel = read_volatile(
+                    (info.framebuffer_base as *const u32)
+                        .add(y * info.pixels_per_scanline as usize + x),
+                );
+                *buffer.add(y * width + x) = convert(pixel, info.pixel_format);
+            }
+        }
+    }
+    *DISPLAY.lock() = Some(Display {
+        buffer: BASE as usize,
+        gop: info.framebuffer_base as usize,
+        gop_stride: info.pixels_per_scanline as usize,
+        pixel_format: info.pixel_format,
+        width,
+        height,
+        gpu: None,
+        dirty: Some((0, 0, width, height)),
+        failed: false,
+    });
+    Some(FramebufferInfo {
+        base: BASE as *mut u32,
+        stride: width,
+        width,
+        height,
+    })
 }

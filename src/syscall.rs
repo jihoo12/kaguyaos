@@ -195,9 +195,9 @@ extern "sysv64" fn syscall_dispatcher_impl(
         }
         6 => {
             // sys_xhci_poll()
-            let _guard = XHCI_LOCK.lock();
-            unsafe {
-                crate::drivers::xhci::process_events();
+            if !cfg!(feature = "hardware-shell") {
+                let _guard = XHCI_LOCK.lock();
+                unsafe { crate::drivers::xhci::process_events(); }
             }
             0
         }
@@ -379,6 +379,10 @@ fn sys_shutdown() {
 }
 
 fn sys_read_key() -> usize {
+    if cfg!(feature = "hardware-shell") {
+        crate::console::serial(format_args!("HARDWARE SHELL READY: ring-3 shell reached input syscall\n"));
+        loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
+    }
     let _guard = XHCI_LOCK.lock();
     if let Some(key) = crate::drivers::xhci::get_key() {
         key as usize

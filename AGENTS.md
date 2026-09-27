@@ -61,6 +61,17 @@ python3 tools/gpu-smoke.py --hardware-test --output /tmp/kaguya-hardware-test
 
 Use only `target/hardware-test/esp/EFI/BOOT/BOOTX64.EFI` for this milestone.
 It displays GOP/memory-map diagnostics and halts before device initialization.
+The next milestone is a diskless ring-3 shell preview (no keyboard input yet):
+
+```bash
+./tools/build-hardware-shell.sh
+python3 tools/gpu-smoke.py --hardware-shell --resolution 2560x1440 --output /tmp/kaguya-hardware-shell-1440p
+```
+
+Its separate artifact is `target/hardware-shell/esp/EFI/BOOT/BOOTX64.EFI`.
+The build script supplies `KAGUYA_INIT_KEF`; do not combine the two hardware features.
+The preview halts in the first input syscall after printing the real userspace prompt.
+
 Never restore automatic formatting of unrecognized disks during boot.
 
 ## Code Style

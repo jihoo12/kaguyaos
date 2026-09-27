@@ -5,6 +5,7 @@ Run inside nix develop after building the kernel and preparing nvme.img.
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import socket
@@ -13,10 +14,15 @@ import tempfile
 import time
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--resolution', help='Preferred GOP resolution, e.g. 2560x1440 (GOP only)')
+parser.add_argument('--hardware-shell', action='store_true', help='Test embedded ring-3 shell without devices')
 parser.add_argument('--hardware-test', action='store_true', help='Test the isolated diagnostic EFI without NVMe, USB or network devices')
 parser.add_argument('--backend', choices=['virtio', 'gop'], default='virtio')
 parser.add_argument('--output', type=Path, default=Path('/tmp/kaguya-gpu-smoke'))
 args = parser.parse_args()
+if args.hardware_test and args.hardware_shell:
+    parser.error('choose hardware-test or hardware-shell')
+isolated = args.hardware_test or args.hardware_shell
 root = Path(__file__).resolve().parent.parent
 out = args.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
@@ -25,16 +31,23 @@ with tempfile.TemporaryDirectory(prefix='kaguya-qmp-') as tmp:
     boot = tmp / 'esp/EFI/BOOT'
     boot.mkdir(parents=True)
     kernel = 'target/hardware-test/build/x86_64-unknown-uefi/debug/os.efi' if args.hardware_test else 'target/x86_64-unknown-uefi/debug/os.efi'
+    if args.hardware_shell:
+        kernel = 'target/hardware-shell/build/x86_64-unknown-uefi/debug/os.efi'
     shutil.copyfile(root / kernel, boot / 'BOOTX64.EFI')
     qmp = tmp / 'qmp.sock'
-    if args.hardware_test:
+    if isolated:
         args.backend = 'gop'
     gpu = ['-vga', 'none', '-device', 'virtio-vga'] if args.backend == 'virtio' else ['-vga', 'std']
+    if args.resolution:
+        if args.backend != 'gop' or not re.fullmatch(r'[1-9][0-9]{2,4}x[1-9][0-9]{2,4}', args.resolution):
+            parser.error('--resolution requires GOP and WIDTHxHEIGHT')
+        width, height = map(int, args.resolution.split('x'))
+        gpu = ['-vga', 'none', '-device', f'VGA,xres={width},yres={height},vgamem_mb=64']
     command = ['qemu-system-x86_64', '-smp', '2', '-m', '256', '-bios', os.environ['OVMF_BIOS'],
                '-drive', f'format=raw,file=fat:ro:{tmp / "esp"}',
                '-snapshot', '-display', 'none', '-serial', f'file:{out / "serial.log"}',
                '-qmp', f'unix:{qmp},server=on,wait=off', '-no-reboot', *gpu]
-    if not args.hardware_test:
+    if not isolated:
         command += [
                '-drive', f'file={root / "nvme.img"},if=none,id=nvm,format=raw',
                '-device', 'nvme,serial=deadbeef,drive=nvm',
@@ -67,7 +80,8 @@ with tempfile.TemporaryDirectory(prefix='kaguya-qmp-') as tmp:
                 execute('qmp_capabilities')
                 while True:
                     serial = (out / 'serial.log').read_text(errors='replace') if (out / 'serial.log').exists() else ''
-                    if ('HARDWARE TEST READY' if args.hardware_test else 'kaguya>') in serial:
+                    marker = 'HARDWARE SHELL READY' if args.hardware_shell else ('HARDWARE TEST READY' if args.hardware_test else 'kaguya>')
+                    if marker in serial:
                         break
                     if time.monotonic() > deadline or process.poll() is not None:
                         raise RuntimeError('Shell did not start; see serial.log')
@@ -76,7 +90,13 @@ with tempfile.TemporaryDirectory(prefix='kaguya-qmp-') as tmp:
                     raise RuntimeError('Shell booted without virtio-gpu')
                 time.sleep(1)
                 execute('screendump', {'filename': str(out / 'desktop.ppm')})
-                if not args.hardware_test:
+                if args.resolution:
+                    with (out / 'desktop.ppm').open('rb') as capture:
+                        capture.readline()
+                        actual = tuple(map(int, capture.readline().split()))
+                    if actual != (width, height):
+                        raise RuntimeError(f'Firmware selected {actual}, wanted {(width, height)}')
+                if not isolated:
                     # Exercise USB keyboard -> userspace shell -> display update.
                     for key in ['c', 'l', 'e', 'a', 'r', 'ret', 'h', 'e', 'l', 'p', 'ret']:
                         execute('human-monitor-command', {'command-line': f'sendkey {key}'})
@@ -102,10 +122,15 @@ with tempfile.TemporaryDirectory(prefix='kaguya-qmp-') as tmp:
                     forbidden = ['PCI: Checking', 'NVMe: Init', 'xHCI:', 'Starting scheduler', 'Formatting...']
                     if any(marker in serial for marker in forbidden):
                         raise RuntimeError('Hardware-test unexpectedly initialized a subsystem')
-                    execute('screendump', {'filename': str(out / 'hardware-test.png'), 'format': 'png'})
+                    name = 'hardware-shell.png' if args.hardware_shell else 'hardware-test.png'
+                    execute('screendump', {'filename': str(out / name), 'format': 'png'})
+                    if args.hardware_shell and 'kaguya>' not in serial:
+                        raise RuntimeError('Missing userspace prompt')
                 execute('quit')
                 process.wait(timeout=10)
                 label = 'hardware-test: diagnostic boot passed' if args.hardware_test else f'{args.backend}: boot, GPU/console and shell help passed'
+                if args.hardware_shell:
+                    label = 'hardware-shell: embedded ring-3 prompt and input syscall passed'
                 print(f'{label}; artifacts: {out}')
         finally:
             if process.poll() is None:

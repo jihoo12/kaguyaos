@@ -6,6 +6,10 @@ extern crate alloc;
 
 #[cfg(feature = "hardware-test")]
 mod hardware_test;
+#[cfg(all(feature = "hardware-test", feature = "hardware-shell"))]
+compile_error!("Choose either hardware-test or hardware-shell, not both");
+#[cfg(feature = "hardware-shell")]
+mod hardware_shell;
 mod uefi;
 use core::ffi::c_void;
 use uefi::*;
@@ -89,11 +93,13 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
 
     #[cfg(feature = "hardware-test")]
     hardware_test::run(boot_info);
-    #[cfg(not(feature = "hardware-test"))]
+    #[cfg(all(feature = "hardware-shell", not(feature = "hardware-test")))]
+    hardware_shell::run(boot_info);
+    #[cfg(not(any(feature = "hardware-test", feature = "hardware-shell")))]
     kernel_normal(boot_info);
 }
 
-#[cfg(not(feature = "hardware-test"))]
+#[cfg(not(any(feature = "hardware-test", feature = "hardware-shell")))]
 fn kernel_normal(boot_info: &BootInfo) -> ! {
     // We can now use println!
     println!("Hello World from Kernel!");

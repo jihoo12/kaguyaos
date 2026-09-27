@@ -37,6 +37,19 @@ impl FrameAllocator {
         }
     }
 
+    /// Boot-time allocation; skipped fragments remain reserved (no frame free list).
+    pub fn allocate_contiguous(&mut self, count: usize) -> Option<u64> {
+        if count == 0 { return None; }
+        let mut start = self.allocate_frame()?;
+        let mut found = 1;
+        while found < count {
+            let next = self.allocate_frame()?;
+            if next == start + found as u64 * PAGE_SIZE { found += 1; }
+            else { start = next; found = 1; }
+        }
+        Some(start)
+    }
+
     pub fn allocate_frame(&mut self) -> Option<u64> {
         let num_descriptors = self.memory_map_size / self.descriptor_size;
 

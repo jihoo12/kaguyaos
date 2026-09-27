@@ -317,3 +317,45 @@ is now aligned static storage with a 256 KiB capacity; larger maps still fail bo
 Normal boots no longer automatically format an unrecognized NVMe volume or create
 a placeholder `init.kef`. Prepare the QEMU image with the host tools. Normal builds
 still support disk writes and are not the physical-hardware diagnostic mode.
+
+## Diskless physical-hardware shell preview
+
+After the diagnostic screen works, build the next, separate artifact:
+
+```bash
+nix develop
+# Install once if this target is missing:
+rustup target add x86_64-unknown-none
+./tools/build-hardware-shell.sh
+python3 tools/gpu-smoke.py --hardware-shell --output /tmp/kaguya-hardware-shell
+python3 tools/gpu-smoke.py --hardware-shell --resolution 2560x1440 --output /tmp/kaguya-hardware-shell-1440p
+```
+
+Copy `target/hardware-shell/esp/EFI/BOOT/BOOTX64.EFI` to the USB's
+`EFI/BOOT/BOOTX64.EFI`. Keep the previous hardware-test artifact available as a fallback.
+The script builds `user/src/init.rs` into an isolated KEF file and embeds it in the
+kernel; it neither reads nor modifies `nvme.img` or the normal userspace binaries.
+Use the script to build this feature: it supplies the `KAGUYA_INIT_KEF` build path.
+`hardware-shell` and `hardware-test` are mutually exclusive features.
+
+Expected screen: six numbered initialization stages, followed by the userspace shell
+banner and `kaguya>`. This is the real ring-3 shell executing its print system calls.
+**Input is not enabled yet:** the first read-key syscall deliberately halts the CPU
+with interrupts disabled. Reset or power off to exit. The shell's existing help hint
+does not mean that keyboard input is available in this preview.
+
+This mode installs GDT/IDT, replacement page tables, syscalls, kernel/user heaps and
+the BSP scheduler, then loads the embedded KEF. Kernel/user heaps and the GOP
+backbuffer use separate physical frames mapped into contiguous virtual ranges.
+The GOP buffer follows the firmware resolution (up to 128 MiB), including 2560×1440.
+It retains the boot log on screen rather than drawing the window demo.
+
+PCI, NVMe, USB, network, AP startup and timer setup remain disabled. User entry keeps
+IF clear, USB poll calls do nothing, and NVMe writes remain blocked. No disk or
+external user commands are available. This preview tests the userspace transition;
+it is not an interactive shell or a hardware-driver compatibility test.
+If boot stops before the prompt, photograph the last numbered stage and all visible
+messages. QEMU tests cover 1280×800 and 2560×1440. On 2026-09-27, a physical
+hardware test at 2560×1440 reached all six initialization stages and displayed the
+ring-3 shell banner and `kaguya>` prompt. Keyboard input and device drivers remain
+unvalidated by this test.
