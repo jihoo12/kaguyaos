@@ -52,6 +52,17 @@ Other verification is manual:
 2. In QEMU shell, test commands: `ls`, `cat`, `write`, `rm`, `exec`, `ping`, `shutdown`
 3. Check serial output for kernel panics or errors
 
+First physical-hardware milestone uses a separate diagnostic build:
+
+```bash
+./tools/build-hardware-test.sh
+python3 tools/gpu-smoke.py --hardware-test --output /tmp/kaguya-hardware-test
+```
+
+Use only `target/hardware-test/esp/EFI/BOOT/BOOTX64.EFI` for this milestone.
+It displays GOP/memory-map diagnostics and halts before device initialization.
+Never restore automatic formatting of unrecognized disks during boot.
+
 ## Code Style
 
 - **Rust edition 2024**, `#![no_std]`, `#![no_main]`

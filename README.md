@@ -9,25 +9,6 @@ kaguyaOS currently boots into userspace on an SMP system, runs a preemptive sche
 
 ---
 
-## Current Milestones
-
-- [x] Boot a Rust kernel through x86_64 UEFI
-- [x] Ring 3 userspace and KEF executable loading
-- [x] SMP startup and preemptive per-CPU scheduling
-- [x] NVMe + FAT16 filesystem
-- [x] xHCI USB keyboard input
-- [x] E1000 interrupt-driven networking
-- [x] ARP, IPv4, ICMP, UDP, and DNS A-record resolution
-- [x] `ping 8.8.8.8`
-- [x] `ping google.com`
-- [x] Framebuffer drawing primitives and first window
-- [x] Shell console constrained to the window client area
-- [ ] Mouse input and cursor
-- [ ] Movable windows / compositor
-- [ ] TCP and HTTP (`curl`-style milestone)
-
----
-
 ## Features
 
 ### Kernel and scheduling
@@ -299,3 +280,40 @@ sends `clear` and `help` through the virtual USB keyboard, and saves serial logs
 `desktop.ppm` / `help.ppm` screenshots. It checks GPU activation (virtio mode), command
 completion and changing screen contents. Output defaults to `/tmp/kaguya-gpu-smoke`.
 Mouse input and window movement are outside this milestone.
+
+## First physical hardware test
+
+Build the dedicated diagnostic EFI, **not the normal kernel**, for the first hardware boot:
+
+```bash
+nix develop
+./tools/build-hardware-test.sh
+python3 tools/gpu-smoke.py --hardware-test --output /tmp/kaguya-hardware-test
+```
+
+The artifact is `target/hardware-test/esp/EFI/BOOT/BOOTX64.EFI`. The build uses an
+isolated target directory so it does not replace the normal QEMU kernel. The script
+only creates files inside the repository; it does not format or install onto a USB drive.
+
+Copy this artifact to `EFI/BOOT/BOOTX64.EFI` on a prepared FAT32 UEFI boot USB.
+Use the firmware boot menu to select that USB. This EFI is unsigned; firmware
+Secure Boot must permit it (for example, Secure Boot disabled for the test).
+Do not use the normal `esp/EFI/BOOT/BOOTX64.EFI` for this milestone.
+
+Expected result: a black screen with white diagnostic text, ending in
+`HARDWARE TEST READY`. Take a photo of the screen, including the resolution and
+memory-map entries. The kernel intentionally halts there; keyboard input and the
+shell are not started. Reset or power off to leave the test.
+
+This mode uses the firmware's existing page tables and GOP framebuffer after
+ExitBootServices. It does not enumerate PCI or start NVMe, USB, network, virtio-gpu,
+interrupt timers, application processors, a heap, or userspace. NVMe writes are
+also rejected at the driver entry point in this build. It therefore validates only
+UEFI handoff, kernel entry, firmware memory-map access and basic GOP output.
+It does not establish that the normal kernel or any hardware drivers work on the PC.
+Only linear 32-bit RGB/BGR GOP modes are accepted. The firmware memory-map buffer
+is now aligned static storage with a 256 KiB capacity; larger maps still fail boot.
+
+Normal boots no longer automatically format an unrecognized NVMe volume or create
+a placeholder `init.kef`. Prepare the QEMU image with the host tools. Normal builds
+still support disk writes and are not the physical-hardware diagnostic mode.

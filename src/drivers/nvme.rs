@@ -444,6 +444,8 @@ pub unsafe fn nvme_read(nsid: u32, lba: u64, buffer: *mut u8, count: u32) -> i32
 }
 
 pub unsafe fn nvme_write(nsid: u32, lba: u64, buffer: *mut u8, count: u32) -> i32 {
+    // Defense in depth if hardware-test gains storage probing later.
+    if cfg!(feature = "hardware-test") { return -1; }
     let mut cmd = NvmeSQEntry::default();
 
     cmd.opcode = NVME_OP_WRITE;

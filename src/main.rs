@@ -4,6 +4,8 @@
 
 extern crate alloc;
 
+#[cfg(feature = "hardware-test")]
+mod hardware_test;
 mod uefi;
 use core::ffi::c_void;
 use uefi::*;
@@ -85,6 +87,14 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
         console::init_global_writer(*boot_info);
     }
 
+    #[cfg(feature = "hardware-test")]
+    hardware_test::run(boot_info);
+    #[cfg(not(feature = "hardware-test"))]
+    kernel_normal(boot_info);
+}
+
+#[cfg(not(feature = "hardware-test"))]
+fn kernel_normal(boot_info: &BootInfo) -> ! {
     // We can now use println!
     println!("Hello World from Kernel!");
     println!(
@@ -487,31 +497,9 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     }
 
     // Initialize FAT filesystem & load init.kef
-    let mut fs_ready = false;
-    unsafe {
-        if fs::is_ready() {
-            if fs::read_boot_sector().is_err() {
-                println!("FS: FAT volume not formatted. Formatting...");
-                if fs::format().is_ok() {
-                    fs_ready = true;
-                }
-            } else {
-                fs_ready = true;
-            }
-        }
-    }
-
-    if fs_ready {
-        let exists = fs::find_file("init.kef").ok().flatten().is_some();
-        if !exists {
-            println!("FS: init.kef not found. Assembling and creating default init.kef...");
-            let default_kef = [0]; //todo need add 
-            if let Err(e) = fs::create_file("init.kef", &default_kef) {
-                println!("FS: Failed to create init.kef: {:?}", e);
-            } else {
-                println!("FS: Successfully created init.kef");
-            }
-        }
+    let fs_ready = fs::is_ready() && fs::read_boot_sector().is_ok();
+    if !fs_ready {
+        println!("FS: no recognized volume; leaving disk unchanged.");
     }
 
     let mut loaded = false;
@@ -641,18 +629,32 @@ pub extern "efiapi" fn efi_main(
     let pixels_per_scanline = info.PixelsPerScanLine;
     let pixel_format = info.PixelFormat as u32;
 
-    // 4. Get Memory Map
-    // We need a larger buffer for real hardware.
-    // Using static buffer to avoid stack overflow or allocation issues.
-    // But since no global allocator, we put it on stack or use raw bytes.
-    // 16KB should be enough.
-    let mut memory_map_buffer = [0u8; 16384];
-    let mut memory_map_size = memory_map_buffer.len();
+    // Reject layouts that cannot be safely accessed as a linear 32-bit buffer.
+    let required = (pixels_per_scanline as usize)
+        .checked_mul(vertical_resolution as usize).and_then(|n| n.checked_mul(4));
+    if framebuffer_base == 0 || framebuffer_base & 3 != 0
+        || horizontal_resolution < 8 || vertical_resolution < 16
+        || pixels_per_scanline < horizontal_resolution || pixel_format > 1
+        || required.is_none_or(|n| n > framebuffer_size)
+        || framebuffer_base.checked_add(framebuffer_size as u64).is_none()
+    {
+        return (1usize << 63) | 3; // EFI_UNSUPPORTED
+    }
+
+    // Capture firmware-owned configuration data before ExitBootServices.
+    let acpi_rsdp_phys = unsafe { uefi::find_rsdp_in_system_table(system_table) };
+
+    // Firmware maps can be larger than the old 16 KiB stack buffer.
+    #[repr(C, align(8))]
+    struct MemoryMapBuffer([u8; 256 * 1024]);
+    static mut MEMORY_MAP: MemoryMapBuffer = MemoryMapBuffer([0; 256 * 1024]);
+    const MEMORY_MAP_CAPACITY: usize = 256 * 1024;
+    let mut memory_map_size = MEMORY_MAP_CAPACITY;
     let mut map_key: usize = 0;
     let mut descriptor_size: usize = 0;
     let mut descriptor_version: u32 = 0;
 
-    let memory_map_ptr = memory_map_buffer.as_mut_ptr() as *mut EFI_MEMORY_DESCRIPTOR;
+    let memory_map_ptr = core::ptr::addr_of_mut!(MEMORY_MAP) as *mut EFI_MEMORY_DESCRIPTOR;
 
     let status = unsafe {
         ((*boot_services).GetMemoryMap)(
@@ -674,7 +676,7 @@ pub extern "efiapi" fn efi_main(
     if status != 0 {
         // The memory map changed between GetMemoryMap and ExitBootServices.
         // We must get the memory map again and retry once.
-        memory_map_size = memory_map_buffer.len();
+        memory_map_size = MEMORY_MAP_CAPACITY;
         status = unsafe {
             ((*boot_services).GetMemoryMap)(
                 &mut memory_map_size,
@@ -696,9 +698,10 @@ pub extern "efiapi" fn efi_main(
         }
     }
 
-    // 5b. Locate the ACPI RSDP from EFI Configuration Table
-    //     (must be done BEFORE ExitBootServices, while config table is valid).
-    let acpi_rsdp_phys = unsafe { uefi::find_rsdp_in_system_table(system_table) };
+    if descriptor_size < core::mem::size_of::<EFI_MEMORY_DESCRIPTOR>()
+        || memory_map_size % descriptor_size != 0 {
+        loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
+    }
 
     // 6. Jump to Kernel
     let boot_info = BootInfo {

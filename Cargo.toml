@@ -3,6 +3,9 @@ name = "os"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+hardware-test = []
+
 [dependencies]
 font8x8 = { version = "0.3", default-features = false, features = ["unicode"] }
 
