@@ -8,7 +8,7 @@ kaguyaOS is a hobby x86_64 UEFI operating system kernel written in Rust (`#![no_
 
 ```bash
 # Option 1: Nix (recommended)
-nix-shell
+nix develop
 
 # Option 2: Manual
 export OVMF_BIOS="/usr/share/ovmf/OVMF.fd"

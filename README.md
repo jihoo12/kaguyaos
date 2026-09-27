@@ -94,7 +94,7 @@ The networking milestone currently resolves and pings hostnames such as `google.
 With Nix:
 
 ```bash
-nix-shell
+nix develop
 ```
 
 Or configure the UEFI target/firmware manually:
