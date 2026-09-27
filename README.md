@@ -318,44 +318,101 @@ Normal boots no longer automatically format an unrecognized NVMe volume or creat
 a placeholder `init.kef`. Prepare the QEMU image with the host tools. Normal builds
 still support disk writes and are not the physical-hardware diagnostic mode.
 
-## Diskless physical-hardware shell preview
+## Diskless physical-hardware shell with USB keyboard
 
-After the diagnostic screen works, build the next, separate artifact:
+After the diagnostic screen works, build the separate diskless shell:
 
 ```bash
 nix develop
 # Install once if this target is missing:
 rustup target add x86_64-unknown-none
 ./tools/build-hardware-shell.sh
-python3 tools/gpu-smoke.py --hardware-shell --output /tmp/kaguya-hardware-shell
-python3 tools/gpu-smoke.py --hardware-shell --resolution 2560x1440 --output /tmp/kaguya-hardware-shell-1440p
+python3 tools/gpu-smoke.py --hardware-shell --resolution 2560x1440 --output /tmp/kaguya-usb-shell
 ```
 
 Copy `target/hardware-shell/esp/EFI/BOOT/BOOTX64.EFI` to the USB's
-`EFI/BOOT/BOOTX64.EFI`. Keep the previous hardware-test artifact available as a fallback.
+`EFI/BOOT/BOOTX64.EFI`. Keep the hardware-test artifact as a fallback. Connect a
+wired USB keyboard directly to a motherboard port **before boot**, preferably a
+USB 2 port for the first test. Hubs, hotplug/reconnect, NKRO-only report protocols,
+key repeat and recovery from stalled endpoints are not implemented.
+
 The script builds `user/src/init.rs` into an isolated KEF file and embeds it in the
-kernel; it neither reads nor modifies `nvme.img` or the normal userspace binaries.
-Use the script to build this feature: it supplies the `KAGUYA_INIT_KEF` build path.
-`hardware-shell` and `hardware-test` are mutually exclusive features.
+kernel, supplying `KAGUYA_INIT_KEF`. It does not modify `nvme.img`, normal userspace
+binaries or physical disks. `hardware-shell` and `hardware-test` are mutually exclusive.
 
-Expected screen: six numbered initialization stages, followed by the userspace shell
-banner and `kaguya>`. This is the real ring-3 shell executing its print system calls.
-**Input is not enabled yet:** the first read-key syscall deliberately halts the CPU
-with interrupts disabled. Reset or power off to exit. The shell's existing help hint
-does not mean that keyboard input is available in this preview.
+Expected screen: numbered initialization stages, `xHCI: boot keyboard ready`, a USB
+controller summary, then the real ring-3 shell's `kaguya>` prompt. Try `help`, `clear`,
+Shift and Backspace. External programs (`ls`, `cat`, `write`, etc.) are not embedded
+and cannot run without a filesystem. `shutdown` uses the UEFI runtime service;
+reset or power off manually if the firmware does not shut down.
 
-This mode installs GDT/IDT, replacement page tables, syscalls, kernel/user heaps and
-the BSP scheduler, then loads the embedded KEF. Kernel/user heaps and the GOP
-backbuffer use separate physical frames mapped into contiguous virtual ranges.
-The GOP buffer follows the firmware resolution (up to 128 MiB), including 2560×1440.
-It retains the boot log on screen rather than drawing the window demo.
+The driver selects one xHCI controller, defaulting to index 0 in PCI scan order.
+Only that controller is enabled; other PCI devices are not initialized. If the
+keyboard is attached to another controller, build with a different index:
 
-PCI, NVMe, USB, network, AP startup and timer setup remain disabled. User entry keeps
-IF clear, USB poll calls do nothing, and NVMe writes remain blocked. No disk or
-external user commands are available. This preview tests the userspace transition;
-it is not an interactive shell or a hardware-driver compatibility test.
-If boot stops before the prompt, photograph the last numbered stage and all visible
-messages. QEMU tests cover 1280×800 and 2560×1440. On 2026-09-27, a physical
-hardware test at 2560×1440 reached all six initialization stages and displayed the
-ring-3 shell banner and `kaguya>` prompt. Keyboard input and device drivers remain
-unvalidated by this test.
+```bash
+KAGUYA_XHCI_INDEX=1 ./tools/build-hardware-shell.sh
+```
+
+The selected PCI address and keyboard count are logged. If there are zero keyboards,
+try another direct motherboard port or another controller index, then reboot. A
+USB 3-labelled port may work with a USB 2 keyboard through its USB 2 root port, but
+an intermediate hub is currently unsupported. Photograph any timeout/error and the
+controller summary when reporting hardware failures.
+
+In hardware-shell mode, port enumeration stops after the first boot keyboard is
+ready. This avoids a later unrelated USB device timing out and stopping the shared
+controller. Devices encountered before the keyboard can still cause a timeout.
+
+This mode installs GDT/IDT, page tables, syscalls, heaps and the BSP scheduler. The
+GOP backbuffer follows the firmware resolution (up to 128 MiB), including 2560×1440.
+USB events are polled from the shell, with IF kept clear; timer/AP startup, network
+and NVMe initialization remain disabled, and NVMe writes are rejected. Polling may
+keep one CPU core busy while waiting for input. Boot logs remain on screen.
+
+xHCI bring-up includes firmware ownership handoff, stop/reset waits, 32/64-byte
+contexts, up to 256 scratchpad pages, bounded polling, USB 2 port reset and boot-HID
+interface selection. Configuration/interface numbers come from descriptors. Controller
+registers must fit the mapped 64 KiB window. Port reset uses the controller microframe
+counter for a one-second deadline and a 10 ms recovery delay, with an iteration cap
+if the counter stops. Other poll limits are iteration budgets. Controllers requiring additional quirks may fail
+with diagnostics. See the [Linux xHCI register definitions](https://github.com/torvalds/linux/blob/master/drivers/usb/host/xhci.h)
+and [endpoint setup](https://github.com/torvalds/linux/blob/master/drivers/usb/host/xhci-mem.c)
+for reference on context fields and polling intervals.
+
+Additional QEMU checks:
+
+```bash
+python3 tools/gpu-smoke.py --hardware-shell --usb-mouse --keyboard-stress --output /tmp/kaguya-usb-stress
+python3 tools/gpu-smoke.py --hardware-shell --no-keyboard --output /tmp/kaguya-usb-empty
+python3 tools/gpu-smoke.py --hardware-shell --shutdown --output /tmp/kaguya-shutdown
+```
+
+The stress check exercises Shift/Backspace and 30 `help` commands to wrap the transfer
+and event rings. A mouse preceding the keyboard tests HID filtering; an additional
+mouse after the keyboard checks that enumeration stops. The empty-controller
+check verifies that a missing keyboard does not prevent the shell from appearing.
+The shutdown check types the shell command and requires QEMU's guest-shutdown event
+and a clean process exit. Shutdown logs device stopping and the UEFI power-off request;
+if physical power-off stalls, photograph the last message.
+
+On 2026-09-27, the earlier diskless preview reached the ring-3 prompt on physical
+hardware at 2560×1440. USB keyboard input, `clear` and `help` were subsequently confirmed
+on the same physical machine. UEFI shutdown passes QEMU testing and still needs physical
+validation. QEMU does not exercise every real controller's ownership,
+scratchpad or 64-byte-context behavior.
+
+The first physical USB test reached controller startup but all connected ports timed
+out during reset, leaving zero keyboards. The reset write mask was found to omit
+PORTSC's port-power bit; reset and acknowledgement writes now preserve it. Reset
+completion checks current connection/enable/reset state instead of requiring the PRC
+change notification. Failed resets log raw PORTSC and decoded state for the next
+physical test. Stopping enumeration after the first keyboard also avoids a later
+device's timeout disabling the controller; physical keyboard input then succeeded.
+
+The PORTSC write regression checks can be run inside `nix develop`:
+
+```bash
+rustc --test src/drivers/xhci_port.rs -o /tmp/kaguya-xhci-port-test
+/tmp/kaguya-xhci-port-test
+```

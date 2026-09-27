@@ -195,10 +195,8 @@ extern "sysv64" fn syscall_dispatcher_impl(
         }
         6 => {
             // sys_xhci_poll()
-            if !cfg!(feature = "hardware-shell") {
-                let _guard = XHCI_LOCK.lock();
-                unsafe { crate::drivers::xhci::process_events(); }
-            }
+            let _guard = XHCI_LOCK.lock();
+            unsafe { crate::drivers::xhci::process_events(); }
             0
         }
         7 => {
@@ -372,17 +370,16 @@ fn sys_terminate_task(exit_code: usize) {
 
 fn sys_shutdown() {
     unsafe {
+        core::arch::asm!("cli");
+        crate::println!("Shutdown: stopping devices");
         crate::drivers::xhci::shutdown();
         crate::drivers::nvme::shutdown();
+        crate::println!("Shutdown: requesting UEFI power off");
         crate::uefi::system_reset(crate::uefi::EFI_RESET_TYPE::EfiResetShutdown, 0);
     }
 }
 
 fn sys_read_key() -> usize {
-    if cfg!(feature = "hardware-shell") {
-        crate::console::serial(format_args!("HARDWARE SHELL READY: ring-3 shell reached input syscall\n"));
-        loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
-    }
     let _guard = XHCI_LOCK.lock();
     if let Some(key) = crate::drivers::xhci::get_key() {
         key as usize

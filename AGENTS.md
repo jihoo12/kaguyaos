@@ -61,7 +61,7 @@ python3 tools/gpu-smoke.py --hardware-test --output /tmp/kaguya-hardware-test
 
 Use only `target/hardware-test/esp/EFI/BOOT/BOOTX64.EFI` for this milestone.
 It displays GOP/memory-map diagnostics and halts before device initialization.
-The next milestone is a diskless ring-3 shell preview (no keyboard input yet):
+The next milestone is a diskless ring-3 shell with a polled USB boot keyboard:
 
 ```bash
 ./tools/build-hardware-shell.sh
@@ -70,7 +70,12 @@ python3 tools/gpu-smoke.py --hardware-shell --resolution 2560x1440 --output /tmp
 
 Its separate artifact is `target/hardware-shell/esp/EFI/BOOT/BOOTX64.EFI`.
 The build script supplies `KAGUYA_INIT_KEF`; do not combine the two hardware features.
-The preview halts in the first input syscall after printing the real userspace prompt.
+Connect a boot-protocol USB keyboard directly before boot; hubs/hotplug are unsupported.
+Only the selected xHCI controller is enabled; storage, network, timers and APs remain off.
+Select another controller with `KAGUYA_XHCI_INDEX=1 ./tools/build-hardware-shell.sh`.
+Additional checks: `tools/gpu-smoke.py --hardware-shell --usb-mouse --keyboard-stress`
+and `tools/gpu-smoke.py --hardware-shell --no-keyboard` (run with python3).
+Use `python3 tools/gpu-smoke.py --hardware-shell --shutdown` to verify guest power-off.
 
 Never restore automatic formatting of unrecognized disks during boot.
 

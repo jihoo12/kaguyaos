@@ -1,4 +1,4 @@
-//! Diskless, single-CPU ring-3 shell bring-up. No device or timer initialization.
+//! Diskless, single-CPU ring-3 shell bring-up. Polled USB keyboard; no storage or timer initialization.
 use crate::{BootInfo, console, gdt, interrupts, loader, memory, process, syscall};
 
 static INIT: &[u8] = include_bytes!(env!("KAGUYA_INIT_KEF"));
@@ -21,6 +21,9 @@ pub fn run(info: &BootInfo) -> ! {
         crate::println!("[2/6] Building page tables");
         let pml4 = memory::init_paging(info, &mut allocator);
         syscall::init();
+        crate::uefi::init_runtime_services(
+            info.runtime_services as *mut crate::uefi::EFI_RUNTIME_SERVICES,
+        );
         crate::println!("[3/6] Allocating kernel and user heaps");
         const KERNEL_HEAP: u64 = 0xffff_9000_0000_0000;
         const USER_HEAP: u64 = 0x0000_7000_0000_0000;
@@ -49,6 +52,8 @@ pub fn run(info: &BootInfo) -> ! {
             .expect("GOP surface allocation failed");
         console::use_surface(surface);
         console::term::init();
+        crate::println!("[USB] Initializing selected xHCI controller (polling)");
+        crate::drivers::xhci::init_keyboard(&mut allocator);
         crate::println!("[5/6] Loading embedded init.kef ({} bytes)", INIT.len());
         process::init();
         let (entry, stack) = loader::load_kef(INIT, &mut allocator, memory::get_table_mut(pml4))
@@ -56,8 +61,10 @@ pub fn run(info: &BootInfo) -> ! {
         process::add_new_user_task(entry, stack, 16384, 0, 0);
         memory::commit_frame_allocator(&allocator);
         crate::println!("[6/6] Entering ring 3 on BSP");
-        crate::println!("HARDWARE SHELL: no PCI, disks, USB, network, APs or timer interrupts");
-        crate::println!("Keyboard input is not enabled in this milestone. Reset to exit.");
+        crate::println!(
+            "HARDWARE SHELL: USB polling enabled; no disks, network, APs or timer interrupts"
+        );
+        crate::println!("Try help and clear. External programs are not included.");
         process::enter_bsp_scheduler_idle();
         process::switch_task();
         loop {

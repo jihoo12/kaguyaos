@@ -291,3 +291,30 @@ pub unsafe fn write_config_32(bus: u8, dev: u8, func: u8, offset: u8, val: u32) 
         outl(PCI_CONFIG_DATA, val);
     }
 }
+
+/// Read-only xHCI discovery for diskless hardware bring-up. Other PCI devices
+/// are never enabled or registered with their drivers by this path.
+pub fn find_xhci(index: usize) -> Option<PciDevice> {
+    let mut found = 0;
+    for bus in 0..=255u8 {
+        for dev in 0..32u8 {
+            for func in 0..8u8 { unsafe {
+                let vendor_id = read_config_16(bus, dev, func, 0);
+                if vendor_id == 0xffff { continue; }
+                if read_config_8(bus, dev, func, 0x0b) != PCI_CLASS_SERIAL_BUS
+                    || read_config_8(bus, dev, func, 0x0a) != PCI_SUBCLASS_USB
+                    || read_config_8(bus, dev, func, 9) != PCI_PROG_IF_XHCI { continue; }
+                if found == index {
+                    return Some(PciDevice { bus, device: dev, function: func, vendor_id,
+                        device_id: read_config_16(bus, dev, func, 2),
+                        bar0: read_config_32(bus, dev, func, 0x10),
+                        bar1: read_config_32(bus, dev, func, 0x14),
+                        interrupt_line: read_config_8(bus, dev, func, 0x3c),
+                        interrupt_pin: read_config_8(bus, dev, func, 0x3d) });
+                }
+                found += 1;
+            }}
+        }
+    }
+    None
+}
