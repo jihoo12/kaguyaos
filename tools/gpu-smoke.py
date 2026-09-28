@@ -141,6 +141,41 @@ with tempfile.TemporaryDirectory(prefix='kaguya-qmp-') as tmp:
                     execute('screendump', {'filename': str(out / name), 'format': 'png'})
                     if args.hardware_shell and 'kaguya>' not in serial:
                         raise RuntimeError('Missing userspace prompt')
+                if args.hardware_shell and not args.no_keyboard:
+                    def shell_command(command):
+                        baseline = (out / 'serial.log').read_text(errors='replace')
+                        for char in command:
+                            key = {' ': 'spc', '.': 'dot'}.get(char, char)
+                            execute('human-monitor-command', {'command-line': f'sendkey {key}'})
+                            time.sleep(.1)
+                        execute('human-monitor-command', {'command-line': 'sendkey ret'})
+                        deadline = time.monotonic() + 15
+                        while time.monotonic() < deadline:
+                            added = (out / 'serial.log').read_text(errors='replace')[len(baseline):]
+                            if added.rstrip().endswith('kaguya>'):
+                                return added
+                            time.sleep(.1)
+                        raise RuntimeError(f'RAM filesystem command timed out: {command}')
+                    listing = shell_command('ls')
+                    if 'session' in listing:
+                        raise RuntimeError('Previous session file survived reboot')
+                    if 'welcome.txt' not in listing:
+                        raise RuntimeError('RAM filesystem seed missing')
+                    if 'Changes disappear on reboot.' not in shell_command('cat welcome.txt'):
+                        raise RuntimeError('RAM filesystem seed read failed')
+                    if 'Wrote 5 bytes' not in shell_command('write note hello'):
+                        raise RuntimeError('RAM filesystem write failed')
+                    if 'hello' not in shell_command('cat note').split('\n', 1)[-1]:
+                        raise RuntimeError('RAM filesystem readback failed')
+                    if 'Wrote 3 bytes' not in shell_command('write note bye'):
+                        raise RuntimeError('RAM filesystem overwrite failed')
+                    if 'bye' not in shell_command('cat note').split('\n', 1)[-1]:
+                        raise RuntimeError('RAM filesystem overwrite readback failed')
+                    if 'Deleted note' not in shell_command('rm note') or 'note' in shell_command('ls'):
+                        raise RuntimeError('RAM filesystem deletion failed')
+                    if 'Wrote 4 bytes' not in shell_command('write session temp'):
+                        raise RuntimeError('Temporary session file creation failed')
+                    print('RAM filesystem: seed, list, write, read, overwrite and delete passed')
                 if args.keyboard_stress:
                     baseline = (out / 'serial.log').read_text(errors='replace')
                     for key in ['shift-a', 'b', 'backspace', 'ret'] + ['h', 'e', 'l', 'p', 'ret'] * 30:

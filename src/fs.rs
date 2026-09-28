@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+#[cfg(not(feature = "hardware-shell"))]
 use crate::drivers::nvme;
 
 // ============================================================================
@@ -37,7 +38,47 @@ pub const ROOT_DIR_START_LBA: u64 = FAT_START_LBA + FAT_SECTORS as u64;
 pub const DATA_START_LBA: u64 = ROOT_DIR_START_LBA + ROOT_DIR_SECTORS as u64;
 
 /// Total NVMe capacity: 1 GB = 2 097 152 × 512-byte sectors.
+#[cfg(not(feature = "hardware-shell"))]
 pub const TOTAL_SECTORS: u64 = 2_097_152;
+#[cfg(feature = "hardware-shell")]
+pub const TOTAL_SECTORS: u64 = 8 * 1024 * 1024 / BLOCK_SIZE as u64;
+
+#[cfg(feature = "hardware-shell")]
+static mut RAM_DISK: *mut u8 = core::ptr::null_mut();
+
+/// The caller supplies a zeroed, permanently mapped 8 MiB region.
+#[cfg(feature = "hardware-shell")]
+pub unsafe fn init_ram_disk(base: *mut u8) -> FsResult<()> {
+    let _guard = FS_LOCK.lock();
+    unsafe {
+        RAM_DISK = base;
+    }
+    format_unlocked()
+}
+
+#[cfg(feature = "hardware-shell")]
+fn ram_transfer(lba: u64, count: u32, buffer: *mut u8, write: bool) -> FsResult<()> {
+    let disk = unsafe { RAM_DISK };
+    if disk.is_null() {
+        return Err(FsError::NotReady);
+    }
+    if lba
+        .checked_add(count as u64)
+        .is_none_or(|end| end > TOTAL_SECTORS)
+    {
+        return Err(FsError::InvalidArgument);
+    }
+    unsafe {
+        let address = disk.add(lba as usize * BLOCK_SIZE);
+        let length = count as usize * BLOCK_SIZE;
+        if write {
+            core::ptr::copy(buffer, address, length);
+        } else {
+            core::ptr::copy(address, buffer, length);
+        }
+    }
+    Ok(())
+}
 
 /// Number of available data clusters.
 pub const TOTAL_CLUSTERS: u32 =
@@ -85,7 +126,14 @@ pub type FsResult<T> = Result<T, FsError>;
 // ============================================================================
 
 pub fn is_ready() -> bool {
-    unsafe { nvme::default_nsid().is_some() }
+    #[cfg(feature = "hardware-shell")]
+    {
+        return unsafe { !RAM_DISK.is_null() };
+    }
+    #[cfg(not(feature = "hardware-shell"))]
+    unsafe {
+        nvme::default_nsid().is_some()
+    }
 }
 
 pub fn block_size() -> usize {
@@ -187,12 +235,19 @@ fn read_blocks_unlocked(lba: u64, count: u32, buffer: *mut u8) -> FsResult<()> {
     if count == 0 || buffer.is_null() {
         return Err(FsError::InvalidArgument);
     }
-    let nsid = unsafe { nvme::default_nsid().ok_or(FsError::NotReady)? };
-    let status = unsafe { nvme::nvme_read(nsid, lba, buffer, count) };
-    if status == 0 {
-        Ok(())
-    } else {
-        Err(FsError::DeviceError)
+    #[cfg(feature = "hardware-shell")]
+    {
+        return ram_transfer(lba, count, buffer as *mut u8, false);
+    }
+    #[cfg(not(feature = "hardware-shell"))]
+    {
+        let nsid = unsafe { nvme::default_nsid().ok_or(FsError::NotReady)? };
+        let status = unsafe { nvme::nvme_read(nsid, lba, buffer, count) };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(FsError::DeviceError)
+        }
     }
 }
 
@@ -200,12 +255,19 @@ fn write_blocks_unlocked(lba: u64, count: u32, buffer: *const u8) -> FsResult<()
     if count == 0 || buffer.is_null() {
         return Err(FsError::InvalidArgument);
     }
-    let nsid = unsafe { nvme::default_nsid().ok_or(FsError::NotReady)? };
-    let status = unsafe { nvme::nvme_write(nsid, lba, buffer as *mut u8, count) };
-    if status == 0 {
-        Ok(())
-    } else {
-        Err(FsError::DeviceError)
+    #[cfg(feature = "hardware-shell")]
+    {
+        return ram_transfer(lba, count, buffer as *mut u8, true);
+    }
+    #[cfg(not(feature = "hardware-shell"))]
+    {
+        let nsid = unsafe { nvme::default_nsid().ok_or(FsError::NotReady)? };
+        let status = unsafe { nvme::nvme_write(nsid, lba, buffer as *mut u8, count) };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(FsError::DeviceError)
+        }
     }
 }
 
@@ -355,8 +417,7 @@ fn read_dir_entry_unlocked(index: usize) -> FsResult<FatDirEntry> {
     read_block_unlocked(lba, &mut buf)?;
 
     let offset = slot * 32;
-    let entry =
-        unsafe { core::ptr::read_unaligned(buf[offset..].as_ptr() as *const FatDirEntry) };
+    let entry = unsafe { core::ptr::read_unaligned(buf[offset..].as_ptr() as *const FatDirEntry) };
     Ok(entry)
 }
 
@@ -600,8 +661,7 @@ fn list_files_unlocked() -> FsResult<alloc::vec::Vec<PublicFileEntry>> {
             while len < 22 && entry.name[len] != 0 {
                 len += 1;
             }
-            let name =
-                alloc::string::String::from_utf8_lossy(&entry.name[..len]).into_owned();
+            let name = alloc::string::String::from_utf8_lossy(&entry.name[..len]).into_owned();
             list.push(PublicFileEntry {
                 name,
                 size: entry.size as u64,

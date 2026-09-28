@@ -336,14 +336,16 @@ wired USB keyboard directly to a motherboard port **before boot**, preferably a
 USB 2 port for the first test. Hubs, hotplug/reconnect, NKRO-only report protocols,
 key repeat and recovery from stalled endpoints are not implemented.
 
-The script builds `user/src/init.rs` into an isolated KEF file and embeds it in the
-kernel, supplying `KAGUYA_INIT_KEF`. It does not modify `nvme.img`, normal userspace
+The script builds the shell and file utilities into isolated KEF files and embeds
+them in the kernel, supplying `KAGUYA_INIT_KEF` and `KAGUYA_PROGRAM_DIR`. It does not modify `nvme.img`, normal userspace
 binaries or physical disks. `hardware-shell` and `hardware-test` are mutually exclusive.
 
 Expected screen: numbered initialization stages, `xHCI: boot keyboard ready`, a USB
 controller summary, then the real ring-3 shell's `kaguya>` prompt. Try `help`, `clear`,
-Shift and Backspace. External programs (`ls`, `cat`, `write`, etc.) are not embedded
-and cannot run without a filesystem. `shutdown` uses the UEFI runtime service;
+Shift and Backspace. `ls`, `cat`, `write` and `rm` are embedded and run against an 8 MiB RAM
+filesystem. Files are temporary: shutdown or reboot discards all changes.
+Try `ls`, `cat welcome.txt`, `write note hello`, `cat note`, and `rm note`.
+The USB boot partition and internal drives are never written by this mode. `shutdown` uses the UEFI runtime service;
 reset or power off manually if the firmware does not shut down.
 
 The driver selects one xHCI controller, defaulting to index 0 in PCI scan order.
@@ -398,8 +400,7 @@ if physical power-off stalls, photograph the last message.
 
 On 2026-09-27, the earlier diskless preview reached the ring-3 prompt on physical
 hardware at 2560×1440. USB keyboard input, `clear` and `help` were subsequently confirmed
-on the same physical machine. UEFI shutdown passes QEMU testing and still needs physical
-validation. QEMU does not exercise every real controller's ownership,
+on the same physical machine. UEFI shutdown was also confirmed on physical hardware. QEMU does not exercise every real controller's ownership,
 scratchpad or 64-byte-context behavior.
 
 The first physical USB test reached controller startup but all connected ports timed
@@ -416,3 +417,21 @@ The PORTSC write regression checks can be run inside `nix develop`:
 rustc --test src/drivers/xhci_port.rs -o /tmp/kaguya-xhci-port-test
 /tmp/kaguya-xhci-port-test
 ```
+
+The hardware shell initializes a fresh RAM-only KAGFAT filesystem at each boot.
+It uses the project’s custom on-disk layout, not a standard FAT16 USB volume.
+The hardware-shell smoke test also checks seeded files, creation, readback,
+overwrite and deletion through the userspace utilities.
+
+On 2026-09-28, physical hardware testing confirmed `ls`, `write note hello`,
+`cat note`, and `cat welcome.txt`, with each utility exiting successfully.
+
+Host-side RAM filesystem checks (inside `nix develop`):
+
+```bash
+rustc --edition 2024 --test --cfg 'feature="hardware-shell"' tools/ramfs-test.rs -o /tmp/kaguya-ramfs-test
+/tmp/kaguya-ramfs-test
+```
+
+These cover multi-cluster data, overwrite, deletion, end-of-disk and integer-overflow
+bounds, and rebuilding an empty filesystem for a new session.

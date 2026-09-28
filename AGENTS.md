@@ -69,8 +69,10 @@ python3 tools/gpu-smoke.py --hardware-shell --resolution 2560x1440 --output /tmp
 ```
 
 Its separate artifact is `target/hardware-shell/esp/EFI/BOOT/BOOTX64.EFI`.
-The build script supplies `KAGUYA_INIT_KEF`; do not combine the two hardware features.
+The build script supplies `KAGUYA_INIT_KEF` and `KAGUYA_PROGRAM_DIR`; do not combine the two hardware features.
 Connect a boot-protocol USB keyboard directly before boot; hubs/hotplug are unsupported.
+The shell has an 8 MiB temporary RAM filesystem with embedded ls/cat/write/rm.
+Only this new RAM filesystem is initialized automatically; no physical disk is formatted.
 Only the selected xHCI controller is enabled; storage, network, timers and APs remain off.
 Select another controller with `KAGUYA_XHCI_INDEX=1 ./tools/build-hardware-shell.sh`.
 Additional checks: `tools/gpu-smoke.py --hardware-shell --usb-mouse --keyboard-stress`

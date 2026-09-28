@@ -1,4 +1,4 @@
-//! Diskless, single-CPU ring-3 shell bring-up. Polled USB keyboard; no storage or timer initialization.
+//! Single-CPU live shell with a RAM filesystem and polled USB keyboard.
 use crate::{BootInfo, console, gdt, interrupts, loader, memory, process, syscall};
 
 static INIT: &[u8] = include_bytes!(env!("KAGUYA_INIT_KEF"));
@@ -7,7 +7,9 @@ pub fn run(info: &BootInfo) -> ! {
     unsafe {
         core::arch::asm!("cli", options(nomem, nostack));
         console::clear();
-        crate::println!("kaguyaOS - HARDWARE SHELL (diskless, storage writes disabled)");
+        crate::println!(
+            "kaguyaOS - HARDWARE SHELL (RAM filesystem, physical storage writes disabled)"
+        );
         crate::println!("[1/6] Installing GDT and IDT");
         gdt::init();
         interrupts::init_idt();
@@ -54,6 +56,42 @@ pub fn run(info: &BootInfo) -> ! {
         console::term::init();
         crate::println!("[USB] Initializing selected xHCI controller (polling)");
         crate::drivers::xhci::init_keyboard(&mut allocator);
+        const RAM_DISK: u64 = 0xffff_b000_0000_0000;
+        map_buffer(
+            pml4,
+            &mut allocator,
+            RAM_DISK,
+            2048,
+            memory::PAGE_NO_EXECUTE,
+        );
+        core::ptr::write_bytes(RAM_DISK as *mut u8, 0, 8 * 1024 * 1024);
+        crate::fs::init_ram_disk(RAM_DISK as *mut u8)
+            .expect("RAM filesystem initialization failed");
+        for (name, data) in [
+            (
+                "ls.kef",
+                include_bytes!(concat!(env!("KAGUYA_PROGRAM_DIR"), "/ls.kef")).as_slice(),
+            ),
+            (
+                "cat.kef",
+                include_bytes!(concat!(env!("KAGUYA_PROGRAM_DIR"), "/cat.kef")).as_slice(),
+            ),
+            (
+                "write.kef",
+                include_bytes!(concat!(env!("KAGUYA_PROGRAM_DIR"), "/write.kef")).as_slice(),
+            ),
+            (
+                "rm.kef",
+                include_bytes!(concat!(env!("KAGUYA_PROGRAM_DIR"), "/rm.kef")).as_slice(),
+            ),
+            (
+                "welcome.txt",
+                b"kaguyaOS live RAM filesystem. Changes disappear on reboot.\n".as_slice(),
+            ),
+        ] {
+            crate::fs::create_file(name, data).expect("RAM filesystem seed failed");
+        }
+        crate::println!("RAM filesystem: 8 MiB, changes disappear on reboot");
         crate::println!("[5/6] Loading embedded init.kef ({} bytes)", INIT.len());
         process::init();
         let (entry, stack) = loader::load_kef(INIT, &mut allocator, memory::get_table_mut(pml4))
@@ -64,7 +102,7 @@ pub fn run(info: &BootInfo) -> ! {
         crate::println!(
             "HARDWARE SHELL: USB polling enabled; no disks, network, APs or timer interrupts"
         );
-        crate::println!("Try help and clear. External programs are not included.");
+        crate::println!("Try ls, cat welcome.txt, write note hello, cat note and rm note.");
         process::enter_bsp_scheduler_idle();
         process::switch_task();
         loop {

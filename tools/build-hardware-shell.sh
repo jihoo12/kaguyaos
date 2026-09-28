@@ -2,9 +2,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p target/hardware-shell/esp/EFI/BOOT
-rustc --target x86_64-unknown-none -C linker-flavor=ld.lld -C linker=rust-lld \
-    -C link-arg=-Tuser/linker.ld -C link-arg=--oformat=binary -O \
-    -o target/hardware-shell/init.kef user/src/init.rs
+for program in init ls cat write rm; do
+    rustc --target x86_64-unknown-none -C linker-flavor=ld.lld -C linker=rust-lld \
+        -C link-arg=-Tuser/linker.ld -C link-arg=--oformat=binary -O \
+        -o "target/hardware-shell/$program.kef" "user/src/$program.rs"
+done
+export KAGUYA_PROGRAM_DIR="$PWD/target/hardware-shell"
 export KAGUYA_XHCI_INDEX="${KAGUYA_XHCI_INDEX:-0}"
 if [[ ! "$KAGUYA_XHCI_INDEX" =~ ^[0-9]+$ ]]; then
     echo 'KAGUYA_XHCI_INDEX must be a nonnegative integer' >&2
