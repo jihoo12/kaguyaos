@@ -37,7 +37,7 @@ Every process has its own address space. All pointer arguments must be mapped us
 
 ## File descriptors
 
-Each process has up to 32 descriptors. fds 0, 1 and 2 start as the console; `exec` gives the child a fresh table and `add_task` threads share their creator's. Errors are negative codes: `-2` invalid argument, `-5` disk or 4 GiB size limit reached, `-6` file not found (including a descriptor whose file was deleted or replaced), `-7` bad descriptor or wrong access mode, `-8` table full.
+Each process has up to 32 descriptors. fds 0, 1 and 2 start as the console; `exec`/`exec2` give the child a fresh table, `spawn` copies three chosen descriptors into the child's fds 0–2, and `add_task` threads share their creator's table. A process's descriptors are closed as soon as it terminates. `print` in `user/src/std.rs` writes to fd 1, so program output follows redirection. Errors are negative codes: `-2` invalid argument, `-5` disk or 4 GiB size limit reached, `-6` file not found (including a descriptor whose file was deleted or replaced), `-7` bad descriptor or wrong access mode, `-8` table full, `-9` broken pipe.
 
 | # | Name | Arguments | Return | Description |
 |---|------|-----------|--------|-------------|
@@ -45,7 +45,10 @@ Each process has up to 32 descriptors. fds 0, 1 and 2 start as the console; `exe
 | 30 | `read` | `RDI=fd, RSI=buf_ptr, RDX=len` | `bytes` | Read from the current offset; 0 at end of file. On the console it returns buffered keys without blocking (0 if none) |
 | 31 | `write` | `RDI=fd, RSI=buf_ptr, RDX=len` | `bytes` | Write at the current offset (end of file with APPEND); goes straight to disk. Writing past the end zero-fills the gap. Short only when the disk fills up |
 | 32 | `close` | `RDI=fd` | `0` | Release a descriptor |
-| 33 | `seek` | `RDI=fd, RSI=offset (signed), RDX=whence` | `offset` | Set the offset relative to `0`=start, `1`=current, `2`=end. Not valid on the console |
+| 33 | `seek` | `RDI=fd, RSI=offset (signed), RDX=whence` | `offset` | Set the offset relative to `0`=start, `1`=current, `2`=end. Only valid on files |
+| 34 | `pipe` | `RDI=fds_ptr` (`[usize; 2]`, 8-byte aligned) | `0` | Create a 4 KiB pipe; stores the read end, then the write end. Reads block while it is empty and return 0 once every write end is closed; writes block while it is full and return `-9` once every read end is closed |
+| 35 | `spawn` | `RDI=name_ptr, RSI=name_len, RDX=args_ptr, R10=args_len, R8=stdio_ptr` (`[usize; 3]`, 8-byte aligned) | `task_id` | Like `exec2`, but the child's fds 0, 1 and 2 copy the caller's descriptors listed at `stdio_ptr`. Returns `usize::MAX` on failure. A copied file keeps its own offset |
+| 36 | `fd_kind` | `RDI=fd` | `kind` | `0` console, `1` file, `2` pipe, or `-7` if unused |
 
 ## Filesystem (FAT16 on NVMe)
 

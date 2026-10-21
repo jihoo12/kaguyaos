@@ -103,12 +103,31 @@ unsafe fn syscall4(id: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize
     ret
 }
 
+#[inline(always)]
+unsafe fn syscall5(id: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "syscall",
+        in("rax") id,
+        inout("rdi") arg1 => _,
+        inout("rsi") arg2 => _,
+        inout("rdx") arg3 => _,
+        inout("r10") arg4 => _,
+        inout("r8") arg5 => _,
+        lateout("rax") ret,
+        out("rcx") _,
+        out("r11") _,
+        out("r9") _,
+        options(nostack, preserves_flags)
+    );
+    ret
+}
+
 // ── Basic I/O ────────────────────────────────────────────────────────────────
 
+/// Write to STDOUT, which may be redirected to a file or pipe.
 pub fn print(s: &str) {
-    unsafe {
-        syscall2(0, s.as_ptr() as usize, s.len());
-    }
+    write(STDOUT, s.as_bytes());
 }
 
 pub fn read_key() -> usize {
@@ -374,6 +393,24 @@ pub fn seek(fd: usize, offset: isize, whence: usize) -> isize {
     unsafe { syscall3(33, fd, offset as usize, whence) as isize }
 }
 
+/// Create a pipe and return `(read_fd, write_fd)`. Reads block until data
+/// arrives and return 0 once every write end is closed; writes block while
+/// the pipe is full and fail with -9 once every read end is closed.
+pub fn pipe() -> Option<(usize, usize)> {
+    let mut fds = [0usize; 2];
+    let ret = unsafe { syscall1(34, fds.as_mut_ptr() as usize) as isize };
+    if ret == 0 { Some((fds[0], fds[1])) } else { None }
+}
+
+pub const FD_CONSOLE: isize = 0;
+pub const FD_FILE: isize = 1;
+pub const FD_PIPE: isize = 2;
+
+/// What `fd` refers to: FD_CONSOLE, FD_FILE or FD_PIPE, or negative if unused.
+pub fn fd_kind(fd: usize) -> isize {
+    unsafe { syscall1(36, fd) as isize }
+}
+
 // ── Filesystem ───────────────────────────────────────────────────────────────
 
 /// Matches the kernel's `SyscallFileEntry` repr.
@@ -445,6 +482,21 @@ pub fn exec(filename: &str) -> usize {
 /// or usize::MAX on error.
 pub fn exec2(filename: &str, args: &str) -> usize {
     unsafe { syscall4(22, filename.as_ptr() as usize, filename.len(), args.as_ptr() as usize, args.len()) }
+}
+
+/// Execute a KEF binary whose STDIN, STDOUT and STDERR are copies of this
+/// process's descriptors in `stdio`. Returns the new task ID, or usize::MAX.
+pub fn spawn(filename: &str, args: &str, stdio: [usize; 3]) -> usize {
+    unsafe {
+        syscall5(
+            35,
+            filename.as_ptr() as usize,
+            filename.len(),
+            args.as_ptr() as usize,
+            args.len(),
+            stdio.as_ptr() as usize,
+        )
+    }
 }
 
 // ── Network ─────────────────────────────────────────────────────────────────

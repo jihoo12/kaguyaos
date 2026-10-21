@@ -74,6 +74,7 @@ mod io;
 mod memory;
 mod drivers;
 mod pic;
+mod pipe;
 mod processor;
 mod process;
 mod syscall;
