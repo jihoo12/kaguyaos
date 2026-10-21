@@ -89,7 +89,15 @@ pub fn run(info: &BootInfo) -> ! {
         let space = memory::AddressSpace::new().expect("out of memory for init address space");
         let (entry, stack, args) =
             loader::load_kef(INIT, &space, &[]).expect("embedded init.kef is invalid");
-        process::add_new_user_task(entry, stack, 16384, args, 0, Some(alloc::sync::Arc::new(space)));
+        process::add_new_user_task(
+            entry,
+            stack,
+            16384,
+            args,
+            0,
+            Some(alloc::sync::Arc::new(space)),
+            Some(crate::file::FileTable::with_console()),
+        );
         crate::println!("[6/6] Entering ring 3 on BSP");
         crate::println!(
             "HARDWARE SHELL: USB polling enabled; no disks, network, APs or timer interrupts"

@@ -35,6 +35,18 @@ Every process has its own address space. All pointer arguments must be mapped us
 | 22 | `exec2` | `RDI=name_ptr, RSI=name_len, RDX=args_ptr, R10=args_len` | `task_id` | Execute a KEF binary with arguments (≤ 2 KiB, copied to the top of the child's stack) |
 | 26 | `wait_task` | `RDI=task_id` | `exit_code` | Block current task until the target task exits |
 
+## File descriptors
+
+Each process has up to 32 descriptors. fds 0, 1 and 2 start as the console; `exec` gives the child a fresh table and `add_task` threads share their creator's. Errors are negative codes: `-2` invalid argument, `-5` disk or 4 GiB size limit reached, `-6` file not found (including a descriptor whose file was deleted or replaced), `-7` bad descriptor or wrong access mode, `-8` table full.
+
+| # | Name | Arguments | Return | Description |
+|---|------|-----------|--------|-------------|
+| 29 | `open` | `RDI=name_ptr, RSI=name_len, RDX=flags` | `fd` | Open a file. Flags: `READ=1`, `WRITE=2`, `CREATE=4`, `TRUNC=8`, `APPEND=16`; at least one of READ/WRITE, and CREATE/TRUNC/APPEND need WRITE |
+| 30 | `read` | `RDI=fd, RSI=buf_ptr, RDX=len` | `bytes` | Read from the current offset; 0 at end of file. On the console it returns buffered keys without blocking (0 if none) |
+| 31 | `write` | `RDI=fd, RSI=buf_ptr, RDX=len` | `bytes` | Write at the current offset (end of file with APPEND); goes straight to disk. Writing past the end zero-fills the gap. Short only when the disk fills up |
+| 32 | `close` | `RDI=fd` | `0` | Release a descriptor |
+| 33 | `seek` | `RDI=fd, RSI=offset (signed), RDX=whence` | `offset` | Set the offset relative to `0`=start, `1`=current, `2`=end. Not valid on the console |
+
 ## Filesystem (FAT16 on NVMe)
 
 | # | Name | Arguments | Return | Description |

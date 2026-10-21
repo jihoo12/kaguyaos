@@ -39,6 +39,16 @@ fn print_u64(mut val: u64) {
     }
 }
 
+fn write_file(fname: &str, content: &[u8]) -> bool {
+    let fd = std::open(fname, std::O_WRITE | std::O_CREATE | std::O_TRUNC);
+    if fd < 0 {
+        return false;
+    }
+    let written = std::write(fd as usize, content);
+    std::close(fd as usize);
+    written == content.len() as isize
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(args_ptr: *const u8, args_len: usize) -> ! {
     if args_len == 0 {
@@ -94,8 +104,7 @@ pub extern "C" fn _start(args_ptr: *const u8, args_len: usize) -> ! {
 
                 if content_len > 0 {
                     let content = core::slice::from_raw_parts(content_ptr, content_len);
-                    let ret = std::fs_write(fname, content);
-                    if ret != 0 {
+                    if !write_file(fname, content) {
                         println("Error: write failed");
                         std::terminate_task(1);
                     } else {
@@ -104,8 +113,7 @@ pub extern "C" fn _start(args_ptr: *const u8, args_len: usize) -> ! {
                         println(" bytes");
                     }
                 } else {
-                    let ret = std::fs_write(fname, &[]);
-                    if ret != 0 {
+                    if !write_file(fname, &[]) {
                         println("Error: write failed");
                         std::terminate_task(1);
                     } else {
@@ -121,8 +129,7 @@ pub extern "C" fn _start(args_ptr: *const u8, args_len: usize) -> ! {
                 let fname = core::str::from_utf8_unchecked(
                     core::slice::from_raw_parts(trimmed_ptr, trimmed_len),
                 );
-                let ret = std::fs_write(fname, &[]);
-                if ret != 0 {
+                if !write_file(fname, &[]) {
                     println("Error: write failed");
                     std::terminate_task(1);
                 } else {

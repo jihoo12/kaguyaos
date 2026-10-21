@@ -104,6 +104,8 @@ pub enum FsError {
     NotFormatted,
     NoSpace,
     FileNotFound,
+    BadDescriptor,
+    TooManyOpenFiles,
 }
 
 impl FsError {
@@ -115,6 +117,8 @@ impl FsError {
             FsError::NotFormatted => -4,
             FsError::NoSpace => -5,
             FsError::FileNotFound => -6,
+            FsError::BadDescriptor => -7,
+            FsError::TooManyOpenFiles => -8,
         }
     }
 }
@@ -649,6 +653,193 @@ fn delete_file_unlocked(name: &str) -> FsResult<()> {
     Ok(())
 }
 
+// ============================================================================
+// Offset-based file access (unlocked)
+//
+// Open files are identified by their directory slot plus name. Every access
+// re-reads the entry, so a handle whose file was deleted or replaced reports
+// FileNotFound instead of touching another file's clusters.
+// ============================================================================
+
+const CLUSTER_BYTES: usize = SECTORS_PER_CLUSTER as usize * BLOCK_SIZE;
+
+#[inline]
+fn is_data_cluster(cluster: u16) -> bool {
+    cluster >= 2 && cluster < FAT_ENTRY_RESERVED
+}
+
+fn entry_name(entry: &FatDirEntry) -> &[u8] {
+    let len = entry.name.iter().position(|&b| b == 0).unwrap_or(entry.name.len());
+    &entry.name[..len]
+}
+
+fn open_entry_unlocked(slot: usize, name: &str) -> FsResult<FatDirEntry> {
+    let entry = read_dir_entry_unlocked(slot)?;
+    if entry.in_use != 1 || entry_name(&entry) != name.as_bytes() {
+        return Err(FsError::FileNotFound);
+    }
+    Ok(entry)
+}
+
+/// Follow the chain `steps` clusters from `first`. Returns the cluster before
+/// the result (0 if none) and the result, which is not a data cluster when the
+/// chain ends first.
+fn walk_chain_unlocked(first: u16, steps: u64) -> FsResult<(u16, u16)> {
+    let mut prev = 0;
+    let mut cluster = first;
+    for _ in 0..steps {
+        if !is_data_cluster(cluster) {
+            return Err(FsError::DeviceError);
+        }
+        prev = cluster;
+        cluster = read_fat_entry_unlocked(cluster)?;
+    }
+    Ok((prev, cluster))
+}
+
+fn open_file_unlocked(name: &str, create: bool, truncate: bool) -> FsResult<usize> {
+    read_boot_sector_unlocked()?;
+    match find_file_unlocked(name)? {
+        Some((slot, mut entry)) => {
+            if truncate && (entry.size != 0 || entry.first_cluster != 0) {
+                let old_chain = entry.first_cluster;
+                entry.first_cluster = 0;
+                entry.size = 0;
+                write_dir_entry_unlocked(slot, &entry)?;
+                if is_data_cluster(old_chain) {
+                    free_cluster_chain_unlocked(old_chain)?;
+                }
+            }
+            Ok(slot)
+        }
+        None if create => {
+            let slot = find_free_dir_slot_unlocked()?.ok_or(FsError::NoSpace)?;
+            let mut entry = FatDirEntry {
+                name: [0; 22],
+                first_cluster: 0,
+                size: 0,
+                in_use: 1,
+                reserved: [0; 3],
+            };
+            entry.name[..name.len()].copy_from_slice(name.as_bytes());
+            write_dir_entry_unlocked(slot, &entry)?;
+            Ok(slot)
+        }
+        None => Err(FsError::FileNotFound),
+    }
+}
+
+fn read_at_unlocked(slot: usize, name: &str, offset: u64, buf: &mut [u8]) -> FsResult<usize> {
+    let entry = open_entry_unlocked(slot, name)?;
+    let size = entry.size as u64;
+    if offset >= size || buf.is_empty() {
+        return Ok(0);
+    }
+    let len = buf.len().min((size - offset) as usize);
+    let cluster_bytes = CLUSTER_BYTES as u64;
+    let (_, mut cluster) = walk_chain_unlocked(entry.first_cluster, offset / cluster_bytes)?;
+    let mut within = (offset % cluster_bytes) as usize;
+    let mut cluster_buf = alloc::vec![0u8; CLUSTER_BYTES];
+    let mut done = 0;
+    while done < len {
+        if !is_data_cluster(cluster) {
+            return Err(FsError::DeviceError);
+        }
+        read_blocks_unlocked(cluster_to_lba(cluster), SECTORS_PER_CLUSTER, cluster_buf.as_mut_ptr())?;
+        let n = (CLUSTER_BYTES - within).min(len - done);
+        buf[done..done + n].copy_from_slice(&cluster_buf[within..within + n]);
+        done += n;
+        within = 0;
+        if done < len {
+            cluster = read_fat_entry_unlocked(cluster)?;
+        }
+    }
+    Ok(done)
+}
+
+/// Write `data` at `offset`, or at the end of the file when `offset` is None.
+/// Bytes between the old end and `offset` read back as zero. Returns the
+/// offset actually used and the number of bytes written; a write cut short by
+/// a full disk keeps the bytes that reached it.
+fn write_at_unlocked(
+    slot: usize,
+    name: &str,
+    offset: Option<u64>,
+    data: &[u8],
+) -> FsResult<(u64, usize)> {
+    let mut entry = open_entry_unlocked(slot, name)?;
+    let size = entry.size as u64;
+    let offset = offset.unwrap_or(size);
+    if data.is_empty() {
+        return Ok((offset, 0));
+    }
+    let end = offset
+        .checked_add(data.len() as u64)
+        .filter(|&end| end <= u32::MAX as u64)
+        .ok_or(FsError::NoSpace)?;
+
+    let cluster_bytes = CLUSTER_BYTES as u64;
+    let start = offset.min(size);
+    let mut cluster_start = start - start % cluster_bytes;
+    let mut reached = start;
+    let mut cluster_buf = alloc::vec![0u8; CLUSTER_BYTES];
+
+    let result = (|| -> FsResult<()> {
+        let (mut prev, mut cluster) =
+            walk_chain_unlocked(entry.first_cluster, cluster_start / cluster_bytes)?;
+        loop {
+            let cluster_end = cluster_start + cluster_bytes;
+            if !is_data_cluster(cluster) {
+                cluster = alloc_cluster_unlocked()?;
+                if prev == 0 {
+                    entry.first_cluster = cluster;
+                } else {
+                    write_fat_entry_unlocked(prev, cluster)?;
+                }
+                cluster_buf.fill(0);
+            } else if offset > cluster_start || end < cluster_end {
+                read_blocks_unlocked(cluster_to_lba(cluster), SECTORS_PER_CLUSTER, cluster_buf.as_mut_ptr())?;
+            }
+
+            let gap_lo = size.max(cluster_start);
+            let gap_hi = offset.min(cluster_end);
+            if gap_lo < gap_hi {
+                cluster_buf[(gap_lo - cluster_start) as usize..(gap_hi - cluster_start) as usize].fill(0);
+            }
+            let lo = offset.max(cluster_start);
+            let hi = end.min(cluster_end);
+            if lo < hi {
+                cluster_buf[(lo - cluster_start) as usize..(hi - cluster_start) as usize]
+                    .copy_from_slice(&data[(lo - offset) as usize..(hi - offset) as usize]);
+            }
+
+            write_blocks_unlocked(cluster_to_lba(cluster), SECTORS_PER_CLUSTER, cluster_buf.as_ptr())?;
+            reached = hi.max(gap_hi);
+            if cluster_end >= end {
+                return Ok(());
+            }
+            cluster_start = cluster_end;
+            prev = cluster;
+            cluster = read_fat_entry_unlocked(cluster)?;
+        }
+    })();
+
+    let written = reached.saturating_sub(offset);
+    if written > 0 {
+        entry.size = size.max(reached) as u32;
+    }
+    write_dir_entry_unlocked(slot, &entry)?;
+    match result {
+        Ok(()) => Ok((offset, data.len())),
+        Err(_) if written > 0 => Ok((offset, written as usize)),
+        Err(e) => Err(e),
+    }
+}
+
+fn file_size_unlocked(slot: usize, name: &str) -> FsResult<u64> {
+    Ok(open_entry_unlocked(slot, name)?.size as u64)
+}
+
 fn list_files_unlocked() -> FsResult<alloc::vec::Vec<PublicFileEntry>> {
     // Validate the volume is formatted
     read_boot_sector_unlocked()?;
@@ -723,6 +914,27 @@ pub fn delete_file(name: &str) -> FsResult<()> {
 pub fn list_files() -> FsResult<alloc::vec::Vec<PublicFileEntry>> {
     let _guard = FS_LOCK.lock();
     list_files_unlocked()
+}
+
+/// Look up (and optionally create or truncate) `name`; returns its directory slot.
+pub fn open_file(name: &str, create: bool, truncate: bool) -> FsResult<usize> {
+    let _guard = FS_LOCK.lock();
+    open_file_unlocked(name, create, truncate)
+}
+
+pub fn read_at(slot: usize, name: &str, offset: u64, buf: &mut [u8]) -> FsResult<usize> {
+    let _guard = FS_LOCK.lock();
+    read_at_unlocked(slot, name, offset, buf)
+}
+
+pub fn write_at(slot: usize, name: &str, offset: Option<u64>, data: &[u8]) -> FsResult<(u64, usize)> {
+    let _guard = FS_LOCK.lock();
+    write_at_unlocked(slot, name, offset, data)
+}
+
+pub fn file_size(slot: usize, name: &str) -> FsResult<u64> {
+    let _guard = FS_LOCK.lock();
+    file_size_unlocked(slot, name)
 }
 
 // ============================================================================

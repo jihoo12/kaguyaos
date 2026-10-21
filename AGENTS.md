@@ -102,7 +102,7 @@ Never restore automatic formatting of unrecognized disks during boot.
 | Tasks | `src/process/mod.rs` | Cooperative round-robin, 100 Hz preemptive tick, SMP |
 | Syscalls | `src/syscall.rs` | 25 syscalls via AMD64 `syscall`/`sysret` |
 | Drivers | `src/drivers/{pci,nvme,xhci}.rs`, `src/drivers/net/` | PCI enumeration, NVMe, xHCI USB, E1000 |
-| Filesystem | `src/fs.rs` | FAT16, global spinlock |
+| Filesystem | `src/fs.rs`, `src/file.rs` | FAT16, global spinlock; per-process fd tables |
 | Console | `src/console/{mod,term}.rs` | VGA framebuffer, font8x8, cell-based terminal |
 | Userspace | `user/src/{init,std,ls,cat,write,rm,ping}.rs` | Shell, syscall wrappers, utilities |
 

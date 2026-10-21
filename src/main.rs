@@ -66,6 +66,7 @@ pub struct BootInfo {
 }
 
 mod acpi;
+mod file;
 mod fs;
 mod gdt;
 mod interrupts;
@@ -499,6 +500,7 @@ fn kernel_normal(boot_info: &BootInfo) -> ! {
                             args,
                             0,
                             Some(alloc::sync::Arc::new(space)),
+                            Some(file::FileTable::with_console()),
                         );
                         loaded = true;
                     }
