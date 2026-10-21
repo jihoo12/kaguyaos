@@ -30,7 +30,7 @@ impl Pipe {
     }
 
     /// Blocks until data arrives; returns 0 once every writer has closed.
-    pub fn read(&self, buf: &mut [u8]) -> FsResult<usize> {
+    fn read(&self, buf: &mut [u8]) -> FsResult<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
@@ -57,7 +57,7 @@ impl Pipe {
 
     /// Blocks until all of `data` is queued. Fails with BrokenPipe once every
     /// reader has closed, unless some bytes were already queued.
-    pub fn write(&self, data: &[u8]) -> FsResult<usize> {
+    fn write(&self, data: &[u8]) -> FsResult<usize> {
         let mut written = 0;
         while written < data.len() {
             let generation = process::event_generation(self.key());
@@ -102,14 +102,14 @@ pub struct PipeReader(Arc<Pipe>);
 pub struct PipeWriter(Arc<Pipe>);
 
 impl PipeReader {
-    pub fn pipe(&self) -> Arc<Pipe> {
-        self.0.clone()
+    pub fn read(&self, buf: &mut [u8]) -> FsResult<usize> {
+        self.0.read(buf)
     }
 }
 
 impl PipeWriter {
-    pub fn pipe(&self) -> Arc<Pipe> {
-        self.0.clone()
+    pub fn write(&self, data: &[u8]) -> FsResult<usize> {
+        self.0.write(data)
     }
 }
 

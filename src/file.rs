@@ -126,9 +126,11 @@ impl FileTable {
                 Ok(n)
             }
             Some(OpenFile::PipeRead(end)) => {
-                let pipe = end.pipe();
+                // Hold a counted end: if another thread closes `fd` while
+                // this read blocks, writers must still see a reader.
+                let end = end.clone();
                 drop(fds);
-                pipe.read(buf)
+                end.read(buf)
             }
             _ => Err(FsError::BadDescriptor),
         }
@@ -148,9 +150,9 @@ impl FileTable {
                 Ok(n)
             }
             Some(OpenFile::PipeWrite(end)) => {
-                let pipe = end.pipe();
+                let end = end.clone();
                 drop(fds);
-                pipe.write(data)
+                end.write(data)
             }
             _ => Err(FsError::BadDescriptor),
         }
