@@ -3,7 +3,8 @@ use crate::memory;
 use core::arch::asm;
 
 /// Returns true if the virtual address range [ptr, ptr+len) is fully mapped
-/// in user-mode page tables.  Kernel-mode pointers are rejected.
+/// user-accessible in the current address space. Kernel pointers, including
+/// the lower-half identity map, are rejected.
 fn user_range_ok(ptr: usize, len: usize) -> bool {
     // Reject null and kernel-space addresses (above 0x0000_7FFF_FFFF_FFFF)
     if ptr == 0 || ptr > 0x0000_7FFF_FFFF_FFFF {
@@ -18,7 +19,7 @@ fn user_range_ok(ptr: usize, len: usize) -> bool {
     }
     let pml4_phys = memory::current_pml4_phys();
     let pml4 = unsafe { memory::get_table_mut(pml4_phys) };
-    memory::is_range_mapped(pml4, ptr as u64, len as u64)
+    memory::is_user_range_mapped(pml4, ptr as u64, len as u64)
 }
 
 // MSR Constants
@@ -324,34 +325,55 @@ fn sys_alloc(size: usize, align: usize) -> usize {
     // We expect valid alignment from userspace (power of 2)
     // If align is 0, default to 8.
     let align = if align == 0 { 8 } else { align };
-    match Layout::from_size_align(size, align) {
-        Ok(layout) => unsafe { crate::memory::heap::user_heap_alloc(layout) as usize },
-        Err(_) => 0, // Allocation failed due to invalid layout
+    let Ok(layout) = Layout::from_size_align(size, align) else {
+        return 0;
+    };
+    let Some(space) = crate::process::current_address_space() else {
+        return 0;
+    };
+    match space.heap() {
+        Some(heap) => unsafe { crate::memory::heap::user_heap_alloc(heap, layout) as usize },
+        None => 0,
     }
 }
 
 fn sys_realloc(ptr: usize, size: usize, align: usize) -> usize {
     let align = if align == 0 { 8 } else { align };
-    match Layout::from_size_align(size, align) {
-        Ok(layout) => unsafe {
-            crate::memory::heap::user_heap_realloc(ptr as *mut u8, layout, size) as usize
+    let Ok(layout) = Layout::from_size_align(size, align) else {
+        return 0;
+    };
+    let Some(space) = crate::process::current_address_space() else {
+        return 0;
+    };
+    if ptr != 0 && !space.heap_contains(ptr as u64) {
+        return 0;
+    }
+    match space.heap() {
+        Some(heap) => unsafe {
+            crate::memory::heap::user_heap_realloc(heap, ptr as *mut u8, layout, size) as usize
         },
-        Err(_) => 0,
+        None => 0,
     }
 }
 
 fn sys_free(ptr: usize) {
-    unsafe {
-        crate::memory::heap::user_heap_free(ptr as *mut u8);
+    let Some(space) = crate::process::current_address_space() else {
+        return;
+    };
+    if !space.heap_contains(ptr as u64) {
+        return;
+    }
+    if let Some(heap) = space.heap() {
+        unsafe { crate::memory::heap::user_heap_free(heap, ptr as *mut u8) };
     }
 }
 
 fn sys_add_task(entry: usize, user_rsp: usize) -> usize {
     // We assume stack size 16KB for new user tasks
     let stack_size = 16384;
-    // The new task may run code from the caller's image, so it shares it.
-    let image = crate::process::current_user_image();
-    crate::process::add_new_user_task(entry as u64, user_rsp as u64, stack_size, 0, 0, image)
+    // Threads share the caller's address space.
+    let space = crate::process::current_address_space();
+    crate::process::add_new_user_task(entry as u64, user_rsp as u64, stack_size, 0, 0, space)
 }
 
 fn sys_switch_task() {
@@ -569,40 +591,23 @@ fn sys_run_ap_scheduler() -> ! {
 }
 
 fn sys_exec(filename_ptr: usize, filename_len: usize) -> usize {
-    if filename_ptr == 0 || filename_len == 0 || filename_len > 255 {
-        return usize::MAX;
-    }
-    if !user_range_ok(filename_ptr, filename_len) {
-        return usize::MAX;
-    }
-    let name_slice = unsafe { core::slice::from_raw_parts(filename_ptr as *const u8, filename_len) };
-    let Ok(filename) = core::str::from_utf8(name_slice) else {
-        return usize::MAX;
-    };
-
-    // 1. Read KEF file from FAT16
-    let file_data = match crate::fs::read_file(filename) {
-        Ok(data) => data,
-        Err(_) => return usize::MAX,
-    };
-
-    // 2. Load the KEF while holding the global frame allocator
-    let Some((entry_point, user_rsp, image)) = load_program(&file_data) else {
-        return usize::MAX;
-    };
-
-    // 3. Create the new user task with no args (shell uses this for exec)
-    crate::process::add_new_user_task(
-        entry_point,
-        user_rsp,
-        16384,
-        0,
-        0,
-        Some(alloc::sync::Arc::new(image)),
-    )
+    exec_program(filename_ptr, filename_len, &[])
 }
 
 fn sys_exec2(filename_ptr: usize, filename_len: usize, args_ptr: usize, args_len: usize) -> usize {
+    if args_ptr == 0 || args_len == 0 {
+        return exec_program(filename_ptr, filename_len, &[]);
+    }
+    if !user_range_ok(args_ptr, args_len) {
+        return usize::MAX;
+    }
+    let args = unsafe { core::slice::from_raw_parts(args_ptr as *const u8, args_len) };
+    exec_program(filename_ptr, filename_len, args)
+}
+
+/// Load a KEF into a new address space. `args` is copied into the child's
+/// stack because the caller's memory is not visible there.
+fn exec_program(filename_ptr: usize, filename_len: usize, args: &[u8]) -> usize {
     if filename_ptr == 0 || filename_len == 0 || filename_len > 255 {
         return usize::MAX;
     }
@@ -614,40 +619,28 @@ fn sys_exec2(filename_ptr: usize, filename_len: usize, args_ptr: usize, args_len
         return usize::MAX;
     };
 
-    // Validate args pointer if provided
-    if args_ptr != 0 && args_len > 0 {
-        if !user_range_ok(args_ptr, args_len) {
-            return usize::MAX;
-        }
-    }
-
-    // 1. Read KEF file from FAT16
     let file_data = match crate::fs::read_file(filename) {
         Ok(data) => data,
         Err(_) => return usize::MAX,
     };
 
-    // 2. Load the KEF while holding the global frame allocator
-    let Some((entry_point, user_rsp, image)) = load_program(&file_data) else {
+    let Some(space) = crate::memory::AddressSpace::new() else {
         return usize::MAX;
     };
+    let (entry_point, user_rsp, args_ptr) =
+        match crate::loader::load_kef(&file_data, &space, args) {
+            Ok(loaded) => loaded,
+            Err(_) => return usize::MAX,
+        };
 
-    // 3. Create the new user task with args in RDI/RSI
     crate::process::add_new_user_task(
         entry_point,
         user_rsp,
         16384,
-        args_ptr as u64,
-        args_len as u64,
-        Some(alloc::sync::Arc::new(image)),
+        args_ptr,
+        args.len() as u64,
+        Some(alloc::sync::Arc::new(space)),
     )
-}
-
-fn load_program(file_data: &[u8]) -> Option<(u64, u64, crate::memory::UserImage)> {
-    let pml4 = unsafe { crate::memory::get_table_mut(crate::memory::current_pml4_phys()) };
-    crate::memory::with_global_frame_allocator(|allocator| {
-        crate::loader::load_kef(file_data, allocator, pml4).ok()
-    })
 }
 
 fn sys_write_cell(row: usize, col: usize, char_code: usize, fg: usize, bg: usize) {

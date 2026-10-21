@@ -144,16 +144,6 @@ impl SegregatedAllocator {
             }
             self.large_head = block;
         }
-
-        crate::println!(
-            "Heap initialised at {:#x}, size {}: arena [{:#x}–{:#x}), large [{:#x}–{:#x})",
-            start,
-            size,
-            start,
-            self.arena_end,
-            lb_start,
-            lb_start + lb_size,
-        );
     }
 
     // -----------------------------------------------------------------------
@@ -423,52 +413,46 @@ static ALLOCATOR: KernelAllocator = KernelAllocator;
 // User-mode heap allocator
 // ---------------------------------------------------------------------------
 //
-// This is a completely separate heap from the kernel's INNER_ALLOCATOR.
-// Its backing pages are mapped with PAGE_USER set, so the userspace task can
-// actually dereference pointers it gets back from sys_alloc/sys_realloc.
-// sys_alloc/sys_free/sys_realloc in syscall.rs must go through this
-// allocator, NOT through alloc_aligned/dealloc_aligned (those operate on
-// INNER_ALLOCATOR, whose pages are kernel-only).
+// Each address space owns a separate SegregatedAllocator over its own heap
+// pages, which are mapped with PAGE_USER so the task can dereference pointers
+// it gets back from sys_alloc/sys_realloc. These helpers must not be used with
+// INNER_ALLOCATOR, whose pages are kernel-only. The allocator state lives in
+// user-writable memory and must only be used while that space is active.
 
-pub(crate) static USER_ALLOCATOR: Spinlock<SegregatedAllocator> = Spinlock::new(SegregatedAllocator::new());
+pub(crate) type UserAllocator = Spinlock<SegregatedAllocator>;
 
-/// Initialise the user heap. `start`/`size` must describe a region that has
-/// already been mapped into the page tables with PAGE_USER | PAGE_WRITABLE.
-pub unsafe fn init_user_heap(start: usize, size: usize) {
-    unsafe { USER_ALLOCATOR.lock().init(start, size) };
-}
-
-/// Allocate from the user heap. Used by sys_alloc.
-pub unsafe fn user_heap_alloc(layout: Layout) -> *mut u8 {
-    unsafe { USER_ALLOCATOR.lock().alloc_aligned(layout.size(), layout.align()) }
+/// Allocate from a user heap. Used by sys_alloc.
+pub unsafe fn user_heap_alloc(heap: &UserAllocator, layout: Layout) -> *mut u8 {
+    unsafe { heap.lock().alloc_aligned(layout.size(), layout.align()) }
 }
 
 /// Free a pointer previously returned by `user_heap_alloc`. Used by sys_free.
-pub unsafe fn user_heap_free(ptr: *mut u8) {
+pub unsafe fn user_heap_free(heap: &UserAllocator, ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    unsafe { USER_ALLOCATOR.lock().dealloc_aligned(ptr) };
+    unsafe { heap.lock().dealloc_aligned(ptr) };
 }
 
 /// Reallocate a pointer previously returned by `user_heap_alloc`. Used by sys_realloc.
-pub unsafe fn user_heap_realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+pub unsafe fn user_heap_realloc(
+    heap: &UserAllocator,
+    ptr: *mut u8,
+    layout: Layout,
+    new_size: usize,
+) -> *mut u8 {
+    let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
+    let new_ptr = unsafe { user_heap_alloc(heap, new_layout) };
     if ptr.is_null() {
-        return unsafe {
-            user_heap_alloc(Layout::from_size_align_unchecked(new_size, layout.align()))
-        };
+        return new_ptr;
     }
 
-    let new_ptr = unsafe {
-        user_heap_alloc(Layout::from_size_align_unchecked(new_size, layout.align()))
-    };
-
     if !new_ptr.is_null() {
-        let old_cap = unsafe { USER_ALLOCATOR.lock().capacity_of(ptr) };
+        let old_cap = unsafe { heap.lock().capacity_of(ptr) };
         let copy_size = new_size.min(old_cap);
         unsafe {
             ptr::copy_nonoverlapping(ptr, new_ptr, copy_size);
-            user_heap_free(ptr);
+            user_heap_free(heap, ptr);
         }
     }
 
@@ -602,6 +586,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
 /// Initialise the heap.
 pub unsafe fn init(start: usize, size: usize) {
     unsafe { INNER_ALLOCATOR.lock().init(start, size) };
+    crate::println!("Kernel heap initialised at {:#x}, size {}", start, size);
 }
 
 /// Allocate `size` bytes (8-byte alignment).

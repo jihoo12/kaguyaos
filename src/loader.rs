@@ -1,7 +1,5 @@
-use crate::memory::{
-    FrameAllocator, PageTable, UserImage, allocate_user_frames, free_user_frames, map_page,
-    PAGE_SIZE, PAGE_PRESENT, PAGE_WRITABLE, PAGE_USER,
-};
+use crate::memory::address_space::{USER_CODE_BASE, USER_STACK_TOP};
+use crate::memory::{AddressSpace, PAGE_SIZE};
 
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
@@ -12,13 +10,14 @@ pub struct KefHeader {
     pub code_size: u32,         // Size of the code segment in bytes
 }
 
-/// Loads a KEF executable from raw file bytes, allocates and maps its code and stack pages,
-/// and returns (entry_point virtual address, user_rsp virtual address, owned frames).
+/// Loads a KEF executable into `space`: code at USER_CODE_BASE, a stack below
+/// USER_STACK_TOP with an unmapped guard page, and `args` copied to the top of
+/// the stack. Returns (entry point, initial RSP, args pointer).
 pub fn load_kef(
     file_data: &[u8],
-    allocator: &mut FrameAllocator,
-    pml4: &mut PageTable,
-) -> Result<(u64, u64, UserImage), &'static str> {
+    space: &AddressSpace,
+    args: &[u8],
+) -> Result<(u64, u64, u64), &'static str> {
     if file_data.len() < core::mem::size_of::<KefHeader>() {
         return Err("File too small to contain KEF header");
     }
@@ -40,60 +39,46 @@ pub fn load_kef(
     if file_code_end > file_data.len() || header.entry_offset as usize >= code_size {
         return Err("Invalid KEF code range or entry point");
     }
-    // Allocate stack frames (16KB / 4 pages) + 1 guard page
-    let stack_pages = 4;
-    let total_stack_frames = stack_pages + 1; // extra guard page at the bottom
-    let code_start_phys = allocate_user_frames(allocator, code_pages)
-        .ok_or("OOM allocating contiguous code frames")?;
-    let Some(guard_frame) = allocate_user_frames(allocator, total_stack_frames) else {
-        free_user_frames(code_start_phys, code_pages);
-        return Err("OOM allocating contiguous stack frames");
-    };
-    let stack_start_phys = guard_frame + PAGE_SIZE;
 
-    // Recycled frames still hold a previous program's code and stack.
-    unsafe {
-        core::ptr::write_bytes(code_start_phys as *mut u8, 0, code_pages * PAGE_SIZE as usize);
-        core::ptr::write_bytes(stack_start_phys as *mut u8, 0, stack_pages * PAGE_SIZE as usize);
+    const STACK_PAGES: u64 = 4;
+    if args.len() > PAGE_SIZE as usize / 2 {
+        return Err("KEF arguments too long");
     }
 
-    // Map code pages as user-accessible
-    let flags = PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
-    for i in 0..code_pages {
-        let addr = code_start_phys + i as u64 * 4096;
+    let code = &file_data[file_code_start..file_code_end];
+    for (i, chunk) in code.chunks(PAGE_SIZE as usize).enumerate() {
+        let frame = space
+            .map_new_page(USER_CODE_BASE + i as u64 * PAGE_SIZE, true, true)
+            .ok_or("OOM mapping KEF code")?;
         unsafe {
-            map_page(pml4, addr, addr, flags, allocator);
+            core::ptr::copy_nonoverlapping(chunk.as_ptr(), frame as *mut u8, chunk.len());
         }
     }
 
-    // Copy code into the allocated frames
+    let mut top_frame = 0;
+    for i in (1..=STACK_PAGES).rev() {
+        top_frame = space
+            .map_new_page(USER_STACK_TOP - i * PAGE_SIZE, true, false)
+            .ok_or("OOM mapping KEF stack")?;
+    }
+
+    let args_ptr = (USER_STACK_TOP - args.len() as u64) & !0xF;
+    let args_offset = args_ptr - (USER_STACK_TOP - PAGE_SIZE);
     unsafe {
         core::ptr::copy_nonoverlapping(
-            file_data.as_ptr().add(file_code_start),
-            code_start_phys as *mut u8,
-            code_size,
+            args.as_ptr(),
+            (top_frame + args_offset) as *mut u8,
+            args.len(),
         );
     }
 
-    // Map only the usable stack pages (skip the guard frame — it stays unmapped)
-    for i in 0..stack_pages {
-        let addr = stack_start_phys + i as u64 * 4096;
-        unsafe {
-            map_page(pml4, addr, addr, flags, allocator);
-        }
-    }
-    // guard_frame at (stack_start_phys - 4096) is intentionally NOT mapped.
-
-    let entry_point = code_start_phys + header.entry_offset as u64;
-    let user_rsp = stack_start_phys + (stack_pages as u64 * 4096);
-
+    let entry_point = USER_CODE_BASE + header.entry_offset as u64;
     crate::println!(
-        "[kef] loaded at phys={:#x}, entry={:#x}, rsp={:#x}, code={} bytes, {} pages",
-        code_start_phys, entry_point, user_rsp, code_size, code_pages
+        "[kef] loaded {} bytes at {:#x}, {} frames in use",
+        code_size,
+        USER_CODE_BASE,
+        crate::memory::frames_in_use()
     );
 
-    let image = UserImage {
-        runs: [(code_start_phys, code_pages), (guard_frame, total_stack_frames)],
-    };
-    Ok((entry_point, user_rsp, image))
+    Ok((entry_point, args_ptr, args_ptr))
 }

@@ -2,7 +2,7 @@
 
 kaguyaOS uses the AMD64 fast `syscall`/`sysret` interface. Syscall number is passed in `RAX`, arguments in `RDI`–`R8`. Return value in `RAX`. Unknown syscalls return `usize::MAX`.
 
-All pointer arguments are validated against user address-space limits and page table mappings before kernel access.
+Every process has its own address space. All pointer arguments must be mapped user-accessible in the caller's address space; kernel identity-mapped memory is rejected.
 
 ---
 
@@ -19,7 +19,7 @@ All pointer arguments are validated against user address-space limits and page t
 
 | # | Name | Arguments | Return | Description |
 |---|------|-----------|--------|-------------|
-| 1 | `alloc` | `RDI=size, RSI=align` | `ptr` | Allocate from user heap |
+| 1 | `alloc` | `RDI=size, RSI=align` | `ptr` | Allocate from the process's 512 KiB heap (mapped on first use) |
 | 2 | `free` | `RDI=ptr` | — | Free user heap memory |
 | 10 | `realloc` | `RDI=ptr, RSI=size, RDX=align` | `ptr` | Reallocate user heap memory |
 
@@ -27,13 +27,13 @@ All pointer arguments are validated against user address-space limits and page t
 
 | # | Name | Arguments | Return | Description |
 |---|------|-----------|--------|-------------|
-| 3 | `add_task` | `RDI=entry, RSI=user_rsp` | `task_id` | Spawn a new user-mode task |
+| 3 | `add_task` | `RDI=entry, RSI=user_rsp` | `task_id` | Spawn a user-mode thread sharing the caller's address space |
 | 4 | `yield` | — | — | Yield (cooperative context switch) |
 | 5 | `terminate` | `RDI=exit_code` | — | Terminate current task |
 | 16 | `get_task_status` | `RDI=task_id` | `usize` | Query task state (0=Ready, 1=Running, 2=Terminated) |
 | 17 | `get_task_exit_code` | `RDI=task_id` | `usize` | Get terminated task's exit code |
 | 21 | `exec` | `RDI=name_ptr, RSI=name_len` | `task_id` | Execute a KEF binary (no arguments) |
-| 22 | `exec2` | `RDI=name_ptr, RSI=name_len, RDX=args_ptr, R10=args_len` | `task_id` | Execute a KEF binary with arguments |
+| 22 | `exec2` | `RDI=name_ptr, RSI=name_len, RDX=args_ptr, R10=args_len` | `task_id` | Execute a KEF binary with arguments (≤ 2 KiB, copied to the top of the child's stack) |
 | 26 | `wait_task` | `RDI=task_id` | `exit_code` | Block current task until the target task exits |
 
 ## Filesystem (FAT16 on NVMe)
