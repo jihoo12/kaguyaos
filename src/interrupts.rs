@@ -277,6 +277,8 @@ pub unsafe extern "sysv64" fn irq_handler(frame: *mut InterruptFrame) { unsafe {
             if cs & 3 == 3 {
                 crate::process::scheduler_tick();
             }
+
+            crate::drivers::keyboard::poll();
         }
         1 => {
             //

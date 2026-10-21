@@ -429,6 +429,10 @@ fn push_key(key: u8) {
     }
 }
 
+pub fn has_key() -> bool {
+    unsafe { KBD_BUF_HEAD != KBD_BUF_TAIL }
+}
+
 pub fn get_key() -> Option<u8> {
     unsafe {
         if KBD_BUF_HEAD == KBD_BUF_TAIL {

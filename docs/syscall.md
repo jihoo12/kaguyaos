@@ -11,8 +11,8 @@ Every process has its own address space. All pointer arguments must be mapped us
 | # | Name | Arguments | Return | Description |
 |---|------|-----------|--------|-------------|
 | 0 | `print` | `RDI=ptr, RSI=len` | — | Write UTF-8 string to console |
-| 6 | `xhci_poll` | — | — | Poll xHCI for USB events (keyboard input) |
-| 8 | `read_key` | — | `u8` | Read one key from keyboard buffer (0 if empty) |
+| 6 | `xhci_poll` | — | — | Poll xHCI for USB events. Not needed with `read` on the console, which polls on the caller's behalf |
+| 8 | `read_key` | — | `u8` | Read one key from keyboard buffer (0 if empty, never blocks). Prefer `read` on fd 0 |
 | 9 | `clear` | — | — | Clear the screen |
 
 ## Memory
@@ -42,7 +42,7 @@ Each process has up to 32 descriptors. fds 0, 1 and 2 start as the console; `exe
 | # | Name | Arguments | Return | Description |
 |---|------|-----------|--------|-------------|
 | 29 | `open` | `RDI=name_ptr, RSI=name_len, RDX=flags` | `fd` | Open a file. Flags: `READ=1`, `WRITE=2`, `CREATE=4`, `TRUNC=8`, `APPEND=16`; at least one of READ/WRITE, and CREATE/TRUNC/APPEND need WRITE |
-| 30 | `read` | `RDI=fd, RSI=buf_ptr, RDX=len` | `bytes` | Read from the current offset; 0 at end of file. On the console it returns buffered keys without blocking (0 if none) |
+| 30 | `read` | `RDI=fd, RSI=buf_ptr, RDX=len` | `bytes` | Read from the current offset; 0 at end of file. On the console it sleeps until at least one key arrives (the console has no end of input); while a reader waits, the BSP timer tick polls xHCI, or the idle loop in the hardware shell |
 | 31 | `write` | `RDI=fd, RSI=buf_ptr, RDX=len` | `bytes` | Write at the current offset (end of file with APPEND); goes straight to disk. Writing past the end zero-fills the gap. Short only when the disk fills up |
 | 32 | `close` | `RDI=fd` | `0` | Release a descriptor |
 | 33 | `seek` | `RDI=fd, RSI=offset (signed), RDX=whence` | `offset` | Set the offset relative to `0`=start, `1`=current, `2`=end. Only valid on files |

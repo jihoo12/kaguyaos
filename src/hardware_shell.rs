@@ -104,9 +104,12 @@ pub fn run(info: &BootInfo) -> ! {
         );
         crate::println!("Try ls, cat welcome.txt, write note hello, cat note and rm note.");
         process::enter_bsp_scheduler_idle();
-        process::switch_task();
+        // Without timer interrupts, the idle loop polls the keyboard for
+        // tasks blocked on console input.
         loop {
-            core::arch::asm!("cli; hlt", options(nomem, nostack));
+            process::switch_task();
+            crate::drivers::keyboard::poll();
+            core::hint::spin_loop();
         }
     }
 }
