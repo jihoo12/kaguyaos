@@ -1,6 +1,7 @@
 #![allow(static_mut_refs)]
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -38,6 +39,8 @@ pub struct Task {
     pub exit_code: usize,
     pub wake_tick: u64,
     pub waiting_for: usize,
+    /// Code/stack frames of the program; shared with tasks it spawns.
+    pub user_image: Option<Arc<crate::memory::UserImage>>,
 }
 
 /// Scheduler metadata protected by SCHEDULER_LOCK.
@@ -157,6 +160,7 @@ pub unsafe fn init() {
         exit_code: 0,
         wake_tick: 0,
         waiting_for: usize::MAX,
+        user_image: None,
     };
 
     if let Some(scheduler) = unsafe { SCHEDULER.as_mut() } {
@@ -260,7 +264,14 @@ fn steal_and_claim_ready_task(scheduler: &mut Scheduler, thief_cpu: usize) -> Op
     None
 }
 
-pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi: u64, rsi: u64) -> usize {
+pub fn add_new_user_task(
+    entry_point: u64,
+    user_rsp: u64,
+    stack_size: usize,
+    rdi: u64,
+    rsi: u64,
+    user_image: Option<Arc<crate::memory::UserImage>>,
+) -> usize {
     let _guard = SCHEDULER_LOCK.lock();
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_mut() {
@@ -319,6 +330,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize, rdi
                 exit_code: 0,
                 wake_tick: 0,
                 waiting_for: usize::MAX,
+                user_image,
             };
 
             scheduler.metadata.tasks.push(Box::new(task));
@@ -402,6 +414,7 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
                 exit_code: 0,
                 wake_tick: 0,
                 waiting_for: usize::MAX,
+                user_image: None,
             };
 
             scheduler.metadata.tasks.push(Box::new(task));
@@ -866,9 +879,8 @@ pub fn reschedule_if_needed() {
 /// Reclaim resources owned by zombie tasks that are no longer running on any CPU.
 ///
 /// Task slots stay allocated so run-queue/current-task indices remain stable. This
-/// first reaping step releases the per-task kernel stack, which is the largest
-/// scheduler-owned allocation. User stacks belong to the shared userspace heap
-/// and are left alone until address spaces/lifetimes are separated.
+/// releases the per-task kernel stack and the task's reference to its program
+/// image. Allocations from the shared user heap are not tracked per task.
 fn reap_zombies(scheduler: &mut Scheduler) {
     let current_indices: [usize; crate::processor::MAX_AP_COUNT + 1] =
         core::array::from_fn(published_current_task);
@@ -909,6 +921,7 @@ fn reap_zombies(scheduler: &mut Scheduler) {
         unsafe {
             crate::memory::heap::free(task.kernel_stack_bottom as *mut u8);
         }
+        task.user_image = None;
         task.kernel_stack_bottom = 0;
         task.kernel_stack_top = 0;
     }
@@ -976,22 +989,27 @@ unsafe extern "sysv64" fn context_switch(
         "mov [rdi], rsp",
         // From this instruction onward the outgoing stack is no longer active.
         "mov rsp, rsi",
-        // Publish zombie-stack retirement from the new stack. xchg with memory
-        // is atomic and acts as the release point observed by CPU0's reaper.
+        // Publish the preempted task handoff (rdx <- rcx) from the new stack.
+        // The slot is drained by finish_switched_out_task before every switch.
         "test rcx, rcx",
-        "jz 3f",
-        "mov r9, rdx",
-        "mov r10, r8",
+        "jz 2f",
+        "xchg [rdx], rcx",
         "2:",
+        // Publish zombie-stack retirement (first free slot of r8 <- r9). The
+        // locked cmpxchg is the release point observed by CPU0's reaper.
+        "test r9, r9",
+        "jz 4f",
+        "mov r10, {slots}",
+        "3:",
         "xor eax, eax",
-        "lock cmpxchg [r9], rcx",
-        "jz 3f",
-        "add r9, 8",
+        "lock cmpxchg [r8], r9",
+        "jz 4f",
+        "add r8, 8",
         "dec r10",
-        "jnz 2b",
+        "jnz 3b",
         // The ring should be generously sized; if it is ever full, leave the
         // zombie unreclaimed rather than overwrite an acknowledgement.
-        "3:",
+        "4:",
         "pop rsi",
         "pop rdi",
         "pop rbp",
@@ -1001,7 +1019,22 @@ unsafe extern "sysv64" fn context_switch(
         "pop r14",
         "pop r15",
         "ret", // Jumps to return address on top of new stack
+        slots = const RETIRED_STACK_SLOTS,
     );
+}
+
+/// The program image of the task running on this CPU, if it has one.
+pub fn current_user_image() -> Option<Arc<crate::memory::UserImage>> {
+    let _guard = SCHEDULER_LOCK.lock();
+    unsafe {
+        let scheduler = SCHEDULER.as_ref()?;
+        let percpu = crate::processor::get_percpu_data();
+        if percpu.is_null() {
+            return None;
+        }
+        let index = (*percpu).current_task_index;
+        scheduler.metadata.tasks.get(index)?.user_image.clone()
+    }
 }
 
 // Helper to get current task id

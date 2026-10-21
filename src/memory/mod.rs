@@ -147,6 +147,135 @@ pub fn commit_frame_allocator(alloc: &FrameAllocator) {
     }
 }
 
+/// Serializes clone/commit of GLOBAL_ALLOCATOR so concurrent execs on
+/// different CPUs cannot hand out the same frames.
+static GLOBAL_ALLOCATOR_LOCK: crate::sync::Spinlock<()> = crate::sync::Spinlock::new(());
+
+pub fn with_global_frame_allocator<R>(f: impl FnOnce(&mut FrameAllocator) -> R) -> R {
+    let _guard = GLOBAL_ALLOCATOR_LOCK.lock();
+    let mut allocator = new_frame_allocator();
+    let result = f(&mut allocator);
+    commit_frame_allocator(&allocator);
+    result
+}
+
+/// Physically contiguous, identity-mapped frames owned by one user program
+/// (code run and guard+stack run). Tasks share it through an Arc; the frames
+/// are recycled when the last task using the image has been reaped.
+#[derive(Debug)]
+pub struct UserImage {
+    pub runs: [(u64, usize); 2],
+}
+
+impl Drop for UserImage {
+    fn drop(&mut self) {
+        unsafe { release_user_image(get_table_mut(current_pml4_phys()), self) };
+    }
+}
+
+const RECYCLED_RUN_SLOTS: usize = 64;
+
+/// Frame runs released by exited programs, coalesced on insert; (_, 0) is empty.
+/// The bump allocator has no free list, so these frames are only ever reused
+/// for later user images.
+static RECYCLED_RUNS: crate::sync::Spinlock<[(u64, usize); RECYCLED_RUN_SLOTS]> =
+    crate::sync::Spinlock::new([(0, 0); RECYCLED_RUN_SLOTS]);
+
+/// Allocate `count` contiguous frames for a user image, preferring frames
+/// released by exited programs.
+pub fn allocate_user_frames(allocator: &mut FrameAllocator, count: usize) -> Option<u64> {
+    if count == 0 {
+        return None;
+    }
+    {
+        let mut runs = RECYCLED_RUNS.lock();
+        let best = runs
+            .iter()
+            .enumerate()
+            .filter(|(_, run)| run.1 >= count)
+            .min_by_key(|(_, run)| run.1)
+            .map(|(i, _)| i);
+        if let Some(i) = best {
+            let (base, pages) = runs[i];
+            runs[i] = if pages == count {
+                (0, 0)
+            } else {
+                (base + count as u64 * PAGE_SIZE, pages - count)
+            };
+            return Some(base);
+        }
+    }
+    allocator.allocate_contiguous(count)
+}
+
+/// Return a frame run to the recycle list, merging with adjacent runs.
+/// If the list is full the run is leaked rather than overwriting another.
+pub fn free_user_frames(base: u64, count: usize) {
+    if count == 0 {
+        return;
+    }
+    let mut runs = RECYCLED_RUNS.lock();
+    let (mut base, mut count) = (base, count);
+    loop {
+        let end = base + count as u64 * PAGE_SIZE;
+        let Some(i) = runs.iter().position(|&(b, p)| {
+            p != 0 && (b + p as u64 * PAGE_SIZE == base || b == end)
+        }) else {
+            break;
+        };
+        let (b, p) = runs[i];
+        runs[i] = (0, 0);
+        base = base.min(b);
+        count += p;
+    }
+    if let Some(slot) = runs.iter_mut().find(|(_, p)| *p == 0) {
+        *slot = (base, count);
+    } else {
+        crate::console::serial(format_args!(
+            "memory: recycle list full, leaking {} frames at {:#x}\n",
+            count, base
+        ));
+    }
+}
+
+/// Revoke user access from identity-mapped pages and recycle the frames.
+///
+/// Must only be called once no CPU can still be executing the program.
+/// Other CPUs may keep stale user TLB entries until their next flush; this
+/// is tolerated because these frames are only reused for user images in the
+/// shared user address space.
+pub unsafe fn release_user_image(pml4: &mut PageTable, image: &UserImage) {
+    for &(base, pages) in &image.runs {
+        for i in 0..pages as u64 {
+            unsafe { set_kernel_only(pml4, base + i * PAGE_SIZE) };
+        }
+        free_user_frames(base, pages);
+    }
+}
+
+unsafe fn set_kernel_only(pml4: &mut PageTable, virt_addr: u64) {
+    let indices = [
+        ((virt_addr >> 39) & 0x1FF) as usize,
+        ((virt_addr >> 30) & 0x1FF) as usize,
+        ((virt_addr >> 21) & 0x1FF) as usize,
+    ];
+    let mut table: &mut PageTable = pml4;
+    for idx in indices {
+        let entry = table.entries[idx];
+        if entry & PAGE_PRESENT == 0 || entry & (1 << 7) != 0 {
+            return;
+        }
+        table = unsafe { get_table_mut(entry & !0xFFF) };
+    }
+    let pt_idx = ((virt_addr >> 12) & 0x1FF) as usize;
+    if table.entries[pt_idx] & PAGE_PRESENT != 0 {
+        table.entries[pt_idx] &= !PAGE_USER;
+        unsafe {
+            core::arch::asm!("invlpg [{}]", in(reg) virt_addr, options(nostack, preserves_flags));
+        }
+    }
+}
+
 pub fn init_global_frame_allocator() {
     unsafe {
         GLOBAL_ALLOCATOR = Some(FrameAllocator {

@@ -514,9 +514,16 @@ fn kernel_normal(boot_info: &BootInfo) -> ! {
             Ok(file_data) => {
                 let pml4 = unsafe { memory::get_table_mut(pml4_phys) };
                 match loader::load_kef(&file_data, &mut allocator, pml4) {
-                    Ok((entry_point, user_rsp)) => {
+                    Ok((entry_point, user_rsp, image)) => {
                         println!("Loader: Successfully loaded init.kef. Entry={:#x}, RSP={:#x}", entry_point, user_rsp);
-                        process::add_new_user_task(entry_point, user_rsp, 16384, 0, 0);
+                        process::add_new_user_task(
+                            entry_point,
+                            user_rsp,
+                            16384,
+                            0,
+                            0,
+                            Some(alloc::sync::Arc::new(image)),
+                        );
                         loaded = true;
                     }
                     Err(e) => {

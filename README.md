@@ -245,7 +245,8 @@ Networking remains an active subsystem. A later milestone is to add TCP and HTTP
 - IPv4 configuration currently assumes the QEMU user-networking environment.
 - DNS is a minimal single-query A-record resolver.
 - TCP, HTTP, and TLS are not implemented.
-- User stacks are not yet reclaimed after task exit.
+- Exited programs return their kernel stack and code/stack frames, but allocations from the shared 512 KiB user heap are not tracked per task.
+- All user programs share one address space; reaping revokes user access only on the reaping CPU's TLB.
 
 ---
 
@@ -390,6 +391,8 @@ python3 tools/gpu-smoke.py --hardware-shell --no-keyboard --output /tmp/kaguya-u
 python3 tools/gpu-smoke.py --hardware-shell --shutdown --output /tmp/kaguya-shutdown
 ```
 
+The default hardware-shell check also runs `ls` 40 times and requires every run to load at the
+same physical address, verifying that exited programs' frames and kernel stacks are reclaimed.
 The stress check exercises Shift/Backspace and 30 `help` commands to wrap the transfer
 and event rings. A mouse preceding the keyboard tests HID filtering; an additional
 mouse after the keyboard checks that enumeration stops. The empty-controller
