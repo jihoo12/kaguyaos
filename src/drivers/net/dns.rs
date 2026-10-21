@@ -2,7 +2,7 @@ use crate::drivers::net::ipv4;
 
 const DNS_SERVER: [u8; 4] = [10, 0, 2, 3];
 const DNS_PORT: u16 = 53;
-const SRC_PORT: u16 = 49152;
+pub const SRC_PORT: u16 = 49152;
 const TXID: u16 = 0x4b47;
 /// Reserved scheduler wait key for the single outstanding DNS request.
 pub const WAIT_KEY: usize = usize::MAX - 1;
