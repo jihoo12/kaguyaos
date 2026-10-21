@@ -46,7 +46,7 @@ pub(crate) static mut KERNEL_GS_BASE: KernelGsBase = KernelGsBase {
     scratch: 0,
 };
 
-static XHCI_LOCK: crate::sync::Spinlock<()> = crate::sync::Spinlock::new(());
+pub(crate) static XHCI_LOCK: crate::sync::Spinlock<()> = crate::sync::Spinlock::new(());
 
 pub unsafe fn get_global_gs_base() -> u64 {
     core::ptr::addr_of_mut!(KERNEL_GS_BASE) as u64
@@ -282,6 +282,26 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_heap_grow(bytes) -> previous heap end, or 0
             sys_heap_grow(arg1)
         }
+        29 => {
+            // sys_open(path_ptr, path_len, flags) -> fd
+            sys_open(arg1, arg2, arg3) as usize
+        }
+        30 => {
+            // sys_read(fd, buf_ptr, buf_len) -> bytes_read
+            sys_read(arg1, arg2, arg3) as usize
+        }
+        31 => {
+            // sys_write(fd, buf_ptr, buf_len) -> bytes_written
+            sys_write(arg1, arg2, arg3) as usize
+        }
+        32 => {
+            // sys_close(fd) -> 0
+            sys_close(arg1) as usize
+        }
+        33 => {
+            // sys_seek(fd, offset, whence) -> new offset
+            sys_seek(arg1, arg2 as isize, arg3) as usize
+        }
         _ => {
             // Unknown syscall
             let _ = crate::println!("Unknown syscall: {}", id);
@@ -324,9 +344,10 @@ fn sys_heap_grow(bytes: usize) -> usize {
 fn sys_add_task(entry: usize, user_rsp: usize) -> usize {
     // We assume stack size 16KB for new user tasks
     let stack_size = 16384;
-    // Threads share the caller's address space.
+    // Threads share the caller's address space and file descriptors.
     let space = crate::process::current_address_space();
-    crate::process::add_new_user_task(entry as u64, user_rsp as u64, stack_size, 0, 0, space)
+    let files = crate::process::current_files();
+    crate::process::add_new_user_task(entry as u64, user_rsp as u64, stack_size, 0, 0, space, files)
 }
 
 fn sys_switch_task() {
@@ -531,6 +552,60 @@ fn sys_fsrm(filename_ptr: usize, filename_len: usize) -> i32 {
     }
 }
 
+// ── File descriptors ────────────────────────────────────────────────────────
+
+fn fd_result<T: TryInto<isize>>(result: crate::fs::FsResult<T>) -> isize {
+    match result {
+        Ok(value) => value.try_into().unwrap_or(isize::MAX),
+        Err(e) => e.code() as isize,
+    }
+}
+
+fn current_files() -> crate::fs::FsResult<alloc::sync::Arc<crate::file::FileTable>> {
+    crate::process::current_files().ok_or(crate::fs::FsError::BadDescriptor)
+}
+
+fn sys_open(path_ptr: usize, path_len: usize, flags: usize) -> isize {
+    if path_len == 0 || !user_range_ok(path_ptr, path_len) {
+        return crate::fs::FsError::InvalidArgument.code() as isize;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, path_len) };
+    let Ok(path) = core::str::from_utf8(bytes) else {
+        return crate::fs::FsError::InvalidArgument.code() as isize;
+    };
+    fd_result(current_files().and_then(|files| files.open(path, flags)))
+}
+
+fn sys_read(fd: usize, buf_ptr: usize, buf_len: usize) -> isize {
+    if buf_len == 0 {
+        return 0;
+    }
+    if !user_range_ok(buf_ptr, buf_len) {
+        return crate::fs::FsError::InvalidArgument.code() as isize;
+    }
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
+    fd_result(current_files().and_then(|files| files.read(fd, buf)))
+}
+
+fn sys_write(fd: usize, buf_ptr: usize, buf_len: usize) -> isize {
+    if buf_len == 0 {
+        return 0;
+    }
+    if !user_range_ok(buf_ptr, buf_len) {
+        return crate::fs::FsError::InvalidArgument.code() as isize;
+    }
+    let data = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, buf_len) };
+    fd_result(current_files().and_then(|files| files.write(fd, data)))
+}
+
+fn sys_close(fd: usize) -> isize {
+    fd_result(current_files().and_then(|files| files.close(fd)).map(|()| 0))
+}
+
+fn sys_seek(fd: usize, offset: isize, whence: usize) -> isize {
+    fd_result(current_files().and_then(|files| files.seek(fd, offset as i64, whence)))
+}
+
 fn sys_get_task_status(task_id: usize) -> usize {
     crate::process::get_task_status(task_id)
 }
@@ -593,6 +668,7 @@ fn exec_program(filename_ptr: usize, filename_len: usize, args: &[u8]) -> usize 
         args_ptr,
         args.len() as u64,
         Some(alloc::sync::Arc::new(space)),
+        Some(crate::file::FileTable::with_console()),
     )
 }
 

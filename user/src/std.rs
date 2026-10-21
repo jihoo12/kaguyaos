@@ -64,6 +64,26 @@ unsafe fn syscall2(id: usize, arg1: usize, arg2: usize) -> usize {
 }
 
 #[inline(always)]
+unsafe fn syscall3(id: usize, arg1: usize, arg2: usize, arg3: usize) -> usize {
+    let ret: usize;
+    core::arch::asm!(
+        "syscall",
+        in("rax") id,
+        inout("rdi") arg1 => _,
+        inout("rsi") arg2 => _,
+        inout("rdx") arg3 => _,
+        lateout("rax") ret,
+        out("rcx") _,
+        out("r11") _,
+        out("r10") _,
+        out("r8") _,
+        out("r9") _,
+        options(nostack, preserves_flags)
+    );
+    ret
+}
+
+#[inline(always)]
 unsafe fn syscall4(id: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize) -> usize {
     let ret: usize;
     core::arch::asm!(
@@ -308,6 +328,50 @@ pub fn wait_task(task_id: usize) -> usize {
 /// Returns exit code of a finished task.
 pub fn get_task_exit_code(task_id: usize) -> usize {
     unsafe { syscall1(17, task_id) }
+}
+
+// ── File descriptors ─────────────────────────────────────────────────────────
+//
+// Every process starts with the console on STDIN, STDOUT and STDERR. Reading
+// STDIN never blocks: it returns 0 when no key is buffered. Errors are the
+// negative filesystem codes.
+
+pub const STDIN: usize = 0;
+pub const STDOUT: usize = 1;
+pub const STDERR: usize = 2;
+
+pub const O_READ: usize = 1;
+pub const O_WRITE: usize = 2;
+pub const O_CREATE: usize = 4;
+pub const O_TRUNC: usize = 8;
+pub const O_APPEND: usize = 16;
+
+pub const SEEK_SET: usize = 0;
+pub const SEEK_CUR: usize = 1;
+pub const SEEK_END: usize = 2;
+
+/// Open a file. Returns a descriptor, or negative on error.
+pub fn open(filename: &str, flags: usize) -> isize {
+    unsafe { syscall3(29, filename.as_ptr() as usize, filename.len(), flags) as isize }
+}
+
+/// Read up to `buf.len()` bytes. Returns bytes read (0 at end of file).
+pub fn read(fd: usize, buf: &mut [u8]) -> isize {
+    unsafe { syscall3(30, fd, buf.as_mut_ptr() as usize, buf.len()) as isize }
+}
+
+/// Write `data`. Returns bytes written, which is short only if the disk filled up.
+pub fn write(fd: usize, data: &[u8]) -> isize {
+    unsafe { syscall3(31, fd, data.as_ptr() as usize, data.len()) as isize }
+}
+
+pub fn close(fd: usize) -> isize {
+    unsafe { syscall1(32, fd) as isize }
+}
+
+/// Move the file offset. Returns the new offset.
+pub fn seek(fd: usize, offset: isize, whence: usize) -> isize {
+    unsafe { syscall3(33, fd, offset as usize, whence) as isize }
 }
 
 // ── Filesystem ───────────────────────────────────────────────────────────────

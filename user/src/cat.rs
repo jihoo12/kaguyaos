@@ -44,47 +44,39 @@ pub extern "C" fn _start(args_ptr: *const u8, args_len: usize) -> ! {
 
     let fname_str = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(filename, fname_len)) };
 
-    let size = std::fs_read(fname_str, &mut []);
-    if size < 0 {
+    let fd = std::open(fname_str, std::O_READ);
+    if fd < 0 {
         print("Error: ");
         print(fname_str);
         println(" not found");
         std::terminate_task(1);
     }
-    if size == 0 {
-        println("(empty)");
-        std::terminate_task(0);
-    }
+    let fd = fd as usize;
 
-    let buf = std::alloc(size as usize, 1);
-    if buf.is_null() {
-        println("Error: out of memory");
-        std::terminate_task(1);
-    }
-
-    let slice = unsafe { core::slice::from_raw_parts_mut(buf, size as usize) };
-    let read = std::fs_read(fname_str, slice);
-    if read > 0 {
-        unsafe {
-            let data = core::slice::from_raw_parts(buf, read as usize);
-            let mut is_text = true;
-            let mut j = 0;
-            while j < data.len() {
-                if data[j] >= 0x80 {
-                    is_text = false;
-                    break;
-                }
-                j += 1;
-            }
-            if is_text {
-                let s = core::str::from_utf8_unchecked(data);
-                std::print(s);
-            } else {
-                println("(binary, cannot display)");
-            }
+    let mut buf = [0u8; 512];
+    let mut total = 0;
+    loop {
+        let n = std::read(fd, &mut buf);
+        if n < 0 {
+            println("Error: read failed");
+            std::close(fd);
+            std::terminate_task(1);
         }
+        if n == 0 {
+            break;
+        }
+        let data = &buf[..n as usize];
+        if data.contains(&0) {
+            println("(binary, cannot display)");
+            break;
+        }
+        std::write(std::STDOUT, data);
+        total += n;
+    }
+    if total == 0 {
+        println("(empty)");
     }
 
-    std::free(buf);
+    std::close(fd);
     std::terminate_task(0);
 }

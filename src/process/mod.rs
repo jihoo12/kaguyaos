@@ -41,6 +41,8 @@ pub struct Task {
     pub waiting_for: usize,
     /// Page tables for user tasks; threads share one. Dropped when reaped.
     pub address_space: Option<Arc<crate::memory::AddressSpace>>,
+    /// Open file descriptors; shared by threads like the address space.
+    pub files: Option<Arc<crate::file::FileTable>>,
 }
 
 /// Scheduler metadata protected by SCHEDULER_LOCK.
@@ -161,6 +163,7 @@ pub unsafe fn init() {
         wake_tick: 0,
         waiting_for: usize::MAX,
         address_space: None,
+        files: None,
     };
 
     if let Some(scheduler) = unsafe { SCHEDULER.as_mut() } {
@@ -271,6 +274,7 @@ pub fn add_new_user_task(
     rdi: u64,
     rsi: u64,
     address_space: Option<Arc<crate::memory::AddressSpace>>,
+    files: Option<Arc<crate::file::FileTable>>,
 ) -> usize {
     let _guard = SCHEDULER_LOCK.lock();
     unsafe {
@@ -331,6 +335,7 @@ pub fn add_new_user_task(
                 wake_tick: 0,
                 waiting_for: usize::MAX,
                 address_space,
+                files,
             };
 
             scheduler.metadata.tasks.push(Box::new(task));
@@ -415,6 +420,7 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
                 wake_tick: 0,
                 waiting_for: usize::MAX,
                 address_space: None,
+                files: None,
             };
 
             scheduler.metadata.tasks.push(Box::new(task));
@@ -886,8 +892,8 @@ pub fn reschedule_if_needed() {
 /// Reclaim resources owned by zombie tasks that are no longer running on any CPU.
 ///
 /// Task slots stay allocated so run-queue/current-task indices remain stable. This
-/// releases the per-task kernel stack and the task's reference to its address
-/// space. Every switch loads the incoming CR3 before context_switch publishes
+/// releases the per-task kernel stack and the task's references to its address
+/// space and file table. Every switch loads the incoming CR3 before context_switch publishes
 /// the retirement, so no CPU still uses a released page table.
 fn reap_zombies(scheduler: &mut Scheduler) {
     let current_indices: [usize; crate::processor::MAX_AP_COUNT + 1] =
@@ -930,6 +936,7 @@ fn reap_zombies(scheduler: &mut Scheduler) {
             crate::memory::heap::free(task.kernel_stack_bottom as *mut u8);
         }
         task.address_space = None;
+        task.files = None;
         task.kernel_stack_bottom = 0;
         task.kernel_stack_top = 0;
     }
@@ -1042,6 +1049,20 @@ pub fn current_address_space() -> Option<Arc<crate::memory::AddressSpace>> {
         }
         let index = (*percpu).current_task_index;
         scheduler.metadata.tasks.get(index)?.address_space.clone()
+    }
+}
+
+/// The file descriptor table of the task running on this CPU, if it has one.
+pub fn current_files() -> Option<Arc<crate::file::FileTable>> {
+    let _guard = SCHEDULER_LOCK.lock();
+    unsafe {
+        let scheduler = SCHEDULER.as_ref()?;
+        let percpu = crate::processor::get_percpu_data();
+        if percpu.is_null() {
+            return None;
+        }
+        let index = (*percpu).current_task_index;
+        scheduler.metadata.tasks.get(index)?.files.clone()
     }
 }
 
