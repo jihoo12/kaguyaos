@@ -62,14 +62,18 @@ struct Tcb {
     remote: Endpoint,
     iss: u32,
     snd_una: u32,
+    /// Next sequence number to send; retransmission moves it back to `snd_una`.
     snd_nxt: u32,
+    /// One past the highest sequence number ever sent. ACKs up to here are valid.
+    snd_max: u32,
     snd_wnd: usize,
     mss: usize,
     /// Unacknowledged and unsent data, starting at `snd_una`.
     send_buf: VecDeque<u8>,
     /// The user closed: send a FIN after the queued data.
     fin_queued: bool,
-    fin_sent: bool,
+    /// Sequence number of our FIN once it has been sent.
+    fin_seq: Option<u32>,
     fin_acked: bool,
     rcv_nxt: u32,
     recv_buf: VecDeque<u8>,
@@ -188,11 +192,12 @@ impl Tcb {
             iss: 0,
             snd_una: 0,
             snd_nxt: 0,
+            snd_max: 0,
             snd_wnd: 0,
             mss: DEFAULT_PEER_MSS,
             send_buf: VecDeque::new(),
             fin_queued: false,
-            fin_sent: false,
+            fin_seq: None,
             fin_acked: false,
             rcv_nxt: 0,
             recv_buf: VecDeque::new(),
@@ -214,7 +219,14 @@ impl Tcb {
     }
 
     fn send_ack(&mut self) {
-        self.send(ACK, self.snd_nxt, &[]);
+        self.send(ACK, self.snd_max, &[]);
+    }
+
+    fn advance(&mut self, len: u32) {
+        self.snd_nxt = self.snd_nxt.wrapping_add(len);
+        if seq_lt(self.snd_max, self.snd_nxt) {
+            self.snd_max = self.snd_nxt;
+        }
     }
 
     fn arm(&mut self, now: u64) {
@@ -230,10 +242,9 @@ impl Tcb {
         self.send_buf.clear();
     }
 
-    /// Bytes of `send_buf` already transmitted.
-    fn data_in_flight(&self) -> usize {
-        let in_flight = self.snd_nxt.wrapping_sub(self.snd_una) as usize;
-        in_flight - (self.fin_sent && !self.fin_acked) as usize
+    /// Bytes of `send_buf` before the send cursor.
+    fn data_before_cursor(&self) -> usize {
+        (self.snd_nxt.wrapping_sub(self.snd_una) as usize).min(self.send_buf.len())
     }
 
     /// Send whatever the peer's window allows, then a queued FIN.
@@ -242,7 +253,7 @@ impl Tcb {
             State::SynSent => {
                 if self.snd_nxt == self.iss {
                     self.send(SYN, self.iss, &[]);
-                    self.snd_nxt = self.iss.wrapping_add(1);
+                    self.advance(1);
                     self.arm(now);
                 }
                 return;
@@ -253,7 +264,7 @@ impl Tcb {
 
         let mut payload = [0u8; MSS];
         loop {
-            let in_flight = self.data_in_flight();
+            let in_flight = self.data_before_cursor();
             let unsent = self.send_buf.len() - in_flight;
             // A zero window is probed with one byte when the timer expires.
             let window = if probe && self.snd_wnd == 0 && in_flight == 0 { 1 } else { self.snd_wnd };
@@ -264,16 +275,21 @@ impl Tcb {
             for (dst, src) in payload.iter_mut().zip(self.send_buf.range(in_flight..in_flight + n)) {
                 *dst = *src;
             }
-            let seq = self.snd_nxt;
-            self.send(ACK | PSH, seq, &payload[..n]);
-            self.snd_nxt = seq.wrapping_add(n as u32);
+            self.send(ACK | PSH, self.snd_nxt, &payload[..n]);
+            self.advance(n as u32);
             self.arm(now);
         }
 
-        if self.fin_queued && !self.fin_sent && self.data_in_flight() == self.send_buf.len() {
+        // The FIN follows the last data byte, the first time and on retransmission.
+        let cursor_at_fin = self.snd_nxt.wrapping_sub(self.snd_una) as usize == self.send_buf.len();
+        if self.fin_queued
+            && !self.fin_acked
+            && cursor_at_fin
+            && self.fin_seq.is_none_or(|fin| fin == self.snd_nxt)
+        {
+            self.fin_seq = Some(self.snd_nxt);
             self.send(FIN | ACK, self.snd_nxt, &[]);
-            self.snd_nxt = self.snd_nxt.wrapping_add(1);
-            self.fin_sent = true;
+            self.advance(1);
             self.state = match self.state {
                 State::Established => State::FinWait1,
                 State::CloseWait => State::LastAck,
@@ -281,7 +297,7 @@ impl Tcb {
             };
             self.arm(now);
         }
-        if self.send_buf.len() > self.data_in_flight() {
+        if self.send_buf.len() > self.data_before_cursor() {
             self.arm(now);
         }
     }
@@ -335,17 +351,20 @@ impl Tcb {
             return;
         }
 
-        if seq_lt(self.snd_una, seg.ack) && seq_le(seg.ack, self.snd_nxt) {
+        if seq_lt(self.snd_una, seg.ack) && seq_le(seg.ack, self.snd_max) {
             let acked = seg.ack.wrapping_sub(self.snd_una) as usize;
-            let data = acked.min(self.send_buf.len());
-            self.send_buf.drain(..data);
-            if acked > data && self.fin_sent {
+            self.send_buf.drain(..acked.min(self.send_buf.len()));
+            if self.fin_seq.is_some_and(|fin| seq_lt(fin, seg.ack)) {
                 self.fin_acked = true;
             }
             self.snd_una = seg.ack;
+            // After a timeout the cursor may trail data the peer already has.
+            if seq_lt(self.snd_nxt, self.snd_una) {
+                self.snd_nxt = self.snd_una;
+            }
             self.retries = 0;
             self.rto = INITIAL_RTO;
-            self.deadline = (self.snd_una != self.snd_nxt).then(|| now + self.rto);
+            self.deadline = (self.snd_una != self.snd_max).then(|| now + self.rto);
             if self.fin_acked {
                 match self.state {
                     State::FinWait1 => {
@@ -356,7 +375,7 @@ impl Tcb {
                     _ => {}
                 }
             }
-        } else if seq_lt(self.snd_nxt, seg.ack) {
+        } else if seq_lt(self.snd_max, seg.ack) {
             self.send_ack();
             return;
         } else if seg.ack == self.snd_una && seg.window == 0 {
@@ -422,10 +441,9 @@ impl Tcb {
         }
         self.rto = (self.rto * 2).min(MAX_RTO);
         // Go back to the oldest unacknowledged byte (or the SYN) and resend.
+        // snd_max keeps the high-water mark, so ACKs for anything sent before
+        // the timeout are still accepted.
         self.snd_nxt = if self.state == State::SynSent { self.iss } else { self.snd_una };
-        if !self.fin_acked {
-            self.fin_sent = false;
-        }
         self.output(now, true);
         self.arm(now);
     }
@@ -501,6 +519,7 @@ impl TcpSocket {
             tcb.iss = iss;
             tcb.snd_una = iss;
             tcb.snd_nxt = iss;
+            tcb.snd_max = iss;
             tcb.state = State::SynSent;
             tcb.output(process::scheduler_clock_now(), false);
             conns.push(Entry { local_port, remote, conn: self.conn.clone() });
