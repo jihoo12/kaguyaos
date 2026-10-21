@@ -63,11 +63,17 @@ impl UdpSocket {
 
     /// Bind to `port`, or to a free ephemeral port when `port` is 0.
     pub fn bind(self: &Arc<Self>, port: u16) -> FsResult<u16> {
+        self.bind_port(port, false)
+    }
+
+    /// With `implicit`, a socket that is already bound (perhaps by another
+    /// thread racing on the same socket) keeps its port instead of failing.
+    fn bind_port(self: &Arc<Self>, port: u16, implicit: bool) -> FsResult<u16> {
         let mut ports = PORTS.lock();
         ports.retain(|(_, socket)| socket.strong_count() > 0);
         let mut state = self.state.lock();
         if state.local_port != 0 {
-            return Err(FsError::InvalidArgument);
+            return if implicit { Ok(state.local_port) } else { Err(FsError::InvalidArgument) };
         }
         let in_use = |port: u16| port == dns::SRC_PORT || ports.iter().any(|(bound, _)| *bound == port);
         let port = if port != 0 {
@@ -96,7 +102,7 @@ impl UdpSocket {
 
     fn ensure_bound(self: &Arc<Self>) -> FsResult<u16> {
         let port = self.state.lock().local_port;
-        if port != 0 { Ok(port) } else { self.bind(0) }
+        if port != 0 { Ok(port) } else { self.bind_port(0, true) }
     }
 
     /// Set the default destination and accept datagrams only from it.
