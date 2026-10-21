@@ -11,7 +11,7 @@ RUSTC_FLAGS="--target x86_64-unknown-none \
       -C linker-flavor=ld.lld \
       -C linker=rust-lld \
       -C link-arg=-Tuser/linker.ld \
-      -C link-arg=--oformat=binary \
+      -C link-arg=--oformat=binary -C link-arg=--apply-dynamic-relocs \
       -O"
 
 PROGRAMS="init ls cat rm write ping"

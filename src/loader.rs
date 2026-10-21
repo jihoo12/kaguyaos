@@ -34,9 +34,14 @@ pub fn load_kef(
         return Err("KEF code size is 0");
     }
 
+    // Trailing .bss is not stored in the flat binary; the loader zero-fills
+    // whatever part of code_size lies past the end of the file.
     let file_code_start = header.code_offset as usize;
-    let file_code_end = file_code_start.checked_add(code_size).ok_or("KEF code size overflow")?;
-    if file_code_end > file_data.len() || header.entry_offset as usize >= code_size {
+    let file_code_end = file_code_start
+        .checked_add(code_size)
+        .ok_or("KEF code size overflow")?
+        .min(file_data.len());
+    if file_code_start > file_code_end || header.entry_offset as usize >= code_size {
         return Err("Invalid KEF code range or entry point");
     }
 
@@ -46,12 +51,14 @@ pub fn load_kef(
     }
 
     let code = &file_data[file_code_start..file_code_end];
-    for (i, chunk) in code.chunks(PAGE_SIZE as usize).enumerate() {
+    for i in 0..code_pages {
         let frame = space
-            .map_new_page(USER_CODE_BASE + i as u64 * PAGE_SIZE, true, true)
+            .map_new_page(USER_CODE_BASE + (i as u64) * PAGE_SIZE, true, true)
             .ok_or("OOM mapping KEF code")?;
-        unsafe {
-            core::ptr::copy_nonoverlapping(chunk.as_ptr(), frame as *mut u8, chunk.len());
+        if let Some(chunk) = code.chunks(PAGE_SIZE as usize).nth(i) {
+            unsafe {
+                core::ptr::copy_nonoverlapping(chunk.as_ptr(), frame as *mut u8, chunk.len());
+            }
         }
     }
 

@@ -5,7 +5,6 @@
 //! space is created, so kernel mappings below these slots (the identity map)
 //! and above them (heaps, RAM disk) are shared. Kernel mappings must not add
 //! new PML4 slots after the first process is created.
-use super::heap::{SegregatedAllocator, UserAllocator};
 use super::{
     PAGE_NO_EXECUTE, PAGE_PRESENT, PAGE_SIZE, PAGE_USER, PAGE_WRITABLE, PageTable, alloc_frame,
     free_frame, get_table_mut, kernel_pml4_phys,
@@ -20,13 +19,13 @@ pub const USER_SPACE_END: u64 = (USER_PML4_END as u64) << 39;
 
 pub const USER_CODE_BASE: u64 = USER_SPACE_START;
 pub const USER_HEAP_BASE: u64 = 0x0000_7000_0000_0000;
-pub const USER_HEAP_PAGES: usize = 128;
+pub const USER_HEAP_LIMIT: u64 = USER_HEAP_BASE + 256 * 1024 * 1024;
 pub const USER_STACK_TOP: u64 = 0x0000_7fff_ffff_0000;
 
 pub struct AddressSpace {
     pml4: u64,
-    heap: UserAllocator,
-    heap_ready: Spinlock<bool>,
+    /// End of the mapped heap; pages in [USER_HEAP_BASE, heap_end) are mapped.
+    heap_end: Spinlock<u64>,
 }
 
 impl AddressSpace {
@@ -39,8 +38,7 @@ impl AddressSpace {
         }
         Some(Self {
             pml4,
-            heap: Spinlock::new(SegregatedAllocator::new()),
-            heap_ready: Spinlock::new(false),
+            heap_end: Spinlock::new(USER_HEAP_BASE),
         })
     }
 
@@ -90,25 +88,22 @@ impl AddressSpace {
         true
     }
 
-    /// The user heap, mapped on first use. Must be called with this space active.
-    pub(crate) fn heap(&self) -> Option<&UserAllocator> {
-        let mut ready = self.heap_ready.lock();
-        if !*ready {
-            for i in 0..USER_HEAP_PAGES as u64 {
-                self.map_new_page(USER_HEAP_BASE + i * PAGE_SIZE, true, false)?;
-            }
-            unsafe {
-                self.heap
-                    .lock()
-                    .init(USER_HEAP_BASE as usize, USER_HEAP_PAGES * PAGE_SIZE as usize)
-            };
-            *ready = true;
+    /// Extend the heap by `bytes` (rounded up to pages) of zeroed memory and
+    /// return the previous end. The kernel never reads heap contents; the
+    /// allocator lives in userspace.
+    pub fn grow_heap(&self, bytes: u64) -> Option<u64> {
+        let mut end = self.heap_end.lock();
+        let old = *end;
+        let new = old
+            .checked_add(bytes.checked_add(PAGE_SIZE - 1)? & !(PAGE_SIZE - 1))?;
+        if new > USER_HEAP_LIMIT {
+            return None;
         }
-        Some(&self.heap)
-    }
-
-    pub fn heap_contains(&self, addr: u64) -> bool {
-        (USER_HEAP_BASE..USER_HEAP_BASE + (USER_HEAP_PAGES as u64) * PAGE_SIZE).contains(&addr)
+        while *end < new {
+            self.map_new_page(*end, true, false)?;
+            *end += PAGE_SIZE;
+        }
+        Some(old)
     }
 }
 

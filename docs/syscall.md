@@ -19,9 +19,8 @@ Every process has its own address space. All pointer arguments must be mapped us
 
 | # | Name | Arguments | Return | Description |
 |---|------|-----------|--------|-------------|
-| 1 | `alloc` | `RDI=size, RSI=align` | `ptr` | Allocate from the process's 512 KiB heap (mapped on first use) |
-| 2 | `free` | `RDI=ptr` | — | Free user heap memory |
-| 10 | `realloc` | `RDI=ptr, RSI=size, RDX=align` | `ptr` | Reallocate user heap memory |
+| 28 | `heap_grow` | `RDI=bytes` | `old_end` | Map `bytes` (rounded up to pages) of zeroed memory at the end of the process heap (`0x7000_0000_0000`, up to 256 MiB). Returns the previous end, or 0 on failure. `heap_grow(0)` returns the current end. |
+| 1, 2, 10 | *(retired)* | — | `0` | Former kernel-side `alloc`/`free`/`realloc`. `alloc`, `free` and `realloc` in `user/src/std.rs` are now a userspace allocator built on `heap_grow`; the kernel never reads heap contents. |
 
 ## Tasks
 
@@ -72,6 +71,7 @@ Every process has its own address space. All pointer arguments must be mapped us
 ## Notes
 
 - **Argument passing**: Syscall number in `RAX`, up to 6 args in `RDI`, `RSI`, `RDX`, `R10`, `R8`, `R9`.
+- **Clobbers**: `RCX`, `R11` and all argument registers (`RDI`, `RSI`, `RDX`, `R10`, `R8`, `R9`) are clobbered; inline-asm wrappers must declare them as outputs.
 - **String args**: Pass a pointer and length (e.g., `RDI=name_ptr, RSI=name_len`).
 - **Packed IP**: For `net_send_ping`, pack 4 bytes of IPv4 into a single `u32` (e.g., `0x0A000202` for `10.0.2.2`).
 - **Task IDs**: Returned by `add_task`, `exec`, `exec2`. Use with `wait_task`, `get_task_status`, or `get_task_exit_code`.
