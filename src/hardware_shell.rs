@@ -94,9 +94,10 @@ pub fn run(info: &BootInfo) -> ! {
         crate::println!("RAM filesystem: 8 MiB, changes disappear on reboot");
         crate::println!("[5/6] Loading embedded init.kef ({} bytes)", INIT.len());
         process::init();
-        let (entry, stack) = loader::load_kef(INIT, &mut allocator, memory::get_table_mut(pml4))
-            .expect("embedded init.kef is invalid");
-        process::add_new_user_task(entry, stack, 16384, 0, 0);
+        let (entry, stack, image) =
+            loader::load_kef(INIT, &mut allocator, memory::get_table_mut(pml4))
+                .expect("embedded init.kef is invalid");
+        process::add_new_user_task(entry, stack, 16384, 0, 0, Some(image));
         memory::commit_frame_allocator(&allocator);
         crate::println!("[6/6] Entering ring 3 on BSP");
         crate::println!(

@@ -1,4 +1,7 @@
-use crate::memory::{FrameAllocator, PageTable, map_page, PAGE_SIZE, PAGE_PRESENT, PAGE_WRITABLE, PAGE_USER};
+use crate::memory::{
+    FrameAllocator, PageTable, UserImage, allocate_user_frames, free_user_frames, map_page,
+    PAGE_SIZE, PAGE_PRESENT, PAGE_WRITABLE, PAGE_USER,
+};
 
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
@@ -10,12 +13,12 @@ pub struct KefHeader {
 }
 
 /// Loads a KEF executable from raw file bytes, allocates and maps its code and stack pages,
-/// and returns (entry_point virtual address, user_rsp virtual address).
+/// and returns (entry_point virtual address, user_rsp virtual address, owned frames).
 pub fn load_kef(
     file_data: &[u8],
     allocator: &mut FrameAllocator,
     pml4: &mut PageTable,
-) -> Result<(u64, u64), &'static str> {
+) -> Result<(u64, u64, UserImage), &'static str> {
     if file_data.len() < core::mem::size_of::<KefHeader>() {
         return Err("File too small to contain KEF header");
     }
@@ -37,8 +40,22 @@ pub fn load_kef(
     if file_code_end > file_data.len() || header.entry_offset as usize >= code_size {
         return Err("Invalid KEF code range or entry point");
     }
-    let code_start_phys = allocator.allocate_contiguous(code_pages)
+    // Allocate stack frames (16KB / 4 pages) + 1 guard page
+    let stack_pages = 4;
+    let total_stack_frames = stack_pages + 1; // extra guard page at the bottom
+    let code_start_phys = allocate_user_frames(allocator, code_pages)
         .ok_or("OOM allocating contiguous code frames")?;
+    let Some(guard_frame) = allocate_user_frames(allocator, total_stack_frames) else {
+        free_user_frames(code_start_phys, code_pages);
+        return Err("OOM allocating contiguous stack frames");
+    };
+    let stack_start_phys = guard_frame + PAGE_SIZE;
+
+    // Recycled frames still hold a previous program's code and stack.
+    unsafe {
+        core::ptr::write_bytes(code_start_phys as *mut u8, 0, code_pages * PAGE_SIZE as usize);
+        core::ptr::write_bytes(stack_start_phys as *mut u8, 0, stack_pages * PAGE_SIZE as usize);
+    }
 
     // Map code pages as user-accessible
     let flags = PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
@@ -58,13 +75,6 @@ pub fn load_kef(
         );
     }
 
-    // Allocate stack frames (16KB / 4 pages) + 1 guard page
-    let stack_pages = 4;
-    let total_stack_frames = stack_pages + 1; // extra guard page at the bottom
-    let guard_frame = allocator.allocate_contiguous(total_stack_frames)
-        .ok_or("OOM allocating contiguous stack frames")?;
-    let stack_start_phys = guard_frame + PAGE_SIZE;
-
     // Map only the usable stack pages (skip the guard frame — it stays unmapped)
     for i in 0..stack_pages {
         let addr = stack_start_phys + i as u64 * 4096;
@@ -82,5 +92,8 @@ pub fn load_kef(
         code_start_phys, entry_point, user_rsp, code_size, code_pages
     );
 
-    Ok((entry_point, user_rsp))
+    let image = UserImage {
+        runs: [(code_start_phys, code_pages), (guard_frame, total_stack_frames)],
+    };
+    Ok((entry_point, user_rsp, image))
 }

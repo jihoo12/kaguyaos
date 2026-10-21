@@ -349,7 +349,7 @@ fn sys_free(ptr: usize) {
 fn sys_add_task(entry: usize, user_rsp: usize) -> usize {
     // We assume stack size 16KB for new user tasks
     let stack_size = 16384;
-    crate::process::add_new_user_task(entry as u64, user_rsp as u64, stack_size, 0, 0)
+    crate::process::add_new_user_task(entry as u64, user_rsp as u64, stack_size, 0, 0, None)
 }
 
 fn sys_switch_task() {
@@ -584,21 +584,13 @@ fn sys_exec(filename_ptr: usize, filename_len: usize) -> usize {
         Err(_) => return usize::MAX,
     };
 
-    // 2. Create a fresh frame allocator and load the KEF
-    let mut allocator = crate::memory::new_frame_allocator();
-    let pml4_phys = crate::memory::current_pml4_phys();
-    let pml4 = unsafe { crate::memory::get_table_mut(pml4_phys) };
-
-    let (entry_point, user_rsp) = match crate::loader::load_kef(&file_data, &mut allocator, pml4) {
-        Ok(ep) => ep,
-        Err(_) => return usize::MAX,
+    // 2. Load the KEF while holding the global frame allocator
+    let Some((entry_point, user_rsp, image)) = load_program(&file_data) else {
+        return usize::MAX;
     };
 
-    // Save allocator position so next exec doesn't reuse these frames
-    crate::memory::commit_frame_allocator(&allocator);
-
     // 3. Create the new user task with no args (shell uses this for exec)
-    crate::process::add_new_user_task(entry_point, user_rsp, 16384, 0, 0)
+    crate::process::add_new_user_task(entry_point, user_rsp, 16384, 0, 0, Some(image))
 }
 
 fn sys_exec2(filename_ptr: usize, filename_len: usize, args_ptr: usize, args_len: usize) -> usize {
@@ -626,21 +618,27 @@ fn sys_exec2(filename_ptr: usize, filename_len: usize, args_ptr: usize, args_len
         Err(_) => return usize::MAX,
     };
 
-    // 2. Create a fresh frame allocator and load the KEF
-    let mut allocator = crate::memory::new_frame_allocator();
-    let pml4_phys = crate::memory::current_pml4_phys();
-    let pml4 = unsafe { crate::memory::get_table_mut(pml4_phys) };
-
-    let (entry_point, user_rsp) = match crate::loader::load_kef(&file_data, &mut allocator, pml4) {
-        Ok(ep) => ep,
-        Err(_) => return usize::MAX,
+    // 2. Load the KEF while holding the global frame allocator
+    let Some((entry_point, user_rsp, image)) = load_program(&file_data) else {
+        return usize::MAX;
     };
 
-    // Save allocator position so next exec doesn't reuse these frames
-    crate::memory::commit_frame_allocator(&allocator);
-
     // 3. Create the new user task with args in RDI/RSI
-    crate::process::add_new_user_task(entry_point, user_rsp, 16384, args_ptr as u64, args_len as u64)
+    crate::process::add_new_user_task(
+        entry_point,
+        user_rsp,
+        16384,
+        args_ptr as u64,
+        args_len as u64,
+        Some(image),
+    )
+}
+
+fn load_program(file_data: &[u8]) -> Option<(u64, u64, crate::memory::UserImage)> {
+    let pml4 = unsafe { crate::memory::get_table_mut(crate::memory::current_pml4_phys()) };
+    crate::memory::with_global_frame_allocator(|allocator| {
+        crate::loader::load_kef(file_data, allocator, pml4).ok()
+    })
 }
 
 fn sys_write_cell(row: usize, col: usize, char_code: usize, fg: usize, bg: usize) {
