@@ -1,4 +1,7 @@
+pub mod address_space;
 pub mod heap;
+
+pub use address_space::AddressSpace;
 
 use crate::BootInfo;
 use crate::uefi::{EFI_CONVENTIONAL_MEMORY, EFI_MEMORY_DESCRIPTOR};
@@ -102,190 +105,88 @@ pub unsafe fn store_boot_info(
     }
 }
 
-/// Persistent frame allocator: the global tracks the high-water mark of all
-/// frames ever given out.  `new_frame_allocator()` clones the current global
-/// position.  After `load_kef` (or any heavy allocation), call
-/// `commit_frame_allocator()` to push the new position back into the global.
-static mut GLOBAL_ALLOCATOR: Option<FrameAllocator> = None;
-
-pub fn new_frame_allocator() -> FrameAllocator {
-    unsafe {
-        if let Some(ref alloc) = GLOBAL_ALLOCATOR {
-            FrameAllocator {
-                memory_map: alloc.memory_map,
-                memory_map_size: alloc.memory_map_size,
-                descriptor_size: alloc.descriptor_size,
-                descriptor_version: alloc.descriptor_version,
-                current_descriptor_index: alloc.current_descriptor_index,
-                current_page_offset: alloc.current_page_offset,
-            }
-        } else {
-            FrameAllocator {
-                memory_map: BOOT_INFO_MEM_MAP,
-                memory_map_size: BOOT_INFO_MEM_MAP_SIZE,
-                descriptor_size: BOOT_INFO_DESC_SIZE,
-                descriptor_version: BOOT_INFO_DESC_VER,
-                current_descriptor_index: 0,
-                current_page_offset: 0,
-            }
-        }
-    }
+/// Frames handed out after boot: a free list of released frames, refilled
+/// from the boot bump allocator committed by `commit_frame_allocator`.
+/// Free frames are identity-mapped, so each stores the next free address.
+struct FrameState {
+    bump: Option<FrameAllocator>,
+    free_head: u64,
+    free_count: usize,
+    in_use: usize,
 }
 
-/// Save the allocator's current position back into the global so the next
-/// `new_frame_allocator()` call resumes from here instead of from the start.
+static FRAMES: crate::sync::Spinlock<FrameState> = crate::sync::Spinlock::new(FrameState {
+    bump: None,
+    free_head: 0,
+    free_count: 0,
+    in_use: 0,
+});
+
+unsafe impl Send for FrameAllocator {}
+
+/// Hand the boot allocator's remaining memory to the global frame pool.
+/// The boot allocator must not be used afterwards.
 pub fn commit_frame_allocator(alloc: &FrameAllocator) {
-    unsafe {
-        GLOBAL_ALLOCATOR = Some(FrameAllocator {
-            memory_map: alloc.memory_map,
-            memory_map_size: alloc.memory_map_size,
-            descriptor_size: alloc.descriptor_size,
-            descriptor_version: alloc.descriptor_version,
-            current_descriptor_index: alloc.current_descriptor_index,
-            current_page_offset: alloc.current_page_offset,
-        });
-    }
+    FRAMES.lock().bump = Some(FrameAllocator {
+        memory_map: alloc.memory_map,
+        memory_map_size: alloc.memory_map_size,
+        descriptor_size: alloc.descriptor_size,
+        descriptor_version: alloc.descriptor_version,
+        current_descriptor_index: alloc.current_descriptor_index,
+        current_page_offset: alloc.current_page_offset,
+    });
 }
 
-/// Serializes clone/commit of GLOBAL_ALLOCATOR so concurrent execs on
-/// different CPUs cannot hand out the same frames.
-static GLOBAL_ALLOCATOR_LOCK: crate::sync::Spinlock<()> = crate::sync::Spinlock::new(());
-
-pub fn with_global_frame_allocator<R>(f: impl FnOnce(&mut FrameAllocator) -> R) -> R {
-    let _guard = GLOBAL_ALLOCATOR_LOCK.lock();
-    let mut allocator = new_frame_allocator();
-    let result = f(&mut allocator);
-    commit_frame_allocator(&allocator);
-    result
-}
-
-/// Physically contiguous, identity-mapped frames owned by one user program
-/// (code run and guard+stack run). Tasks share it through an Arc; the frames
-/// are recycled when the last task using the image has been reaped.
-#[derive(Debug)]
-pub struct UserImage {
-    pub runs: [(u64, usize); 2],
-}
-
-impl Drop for UserImage {
-    fn drop(&mut self) {
-        unsafe { release_user_image(get_table_mut(current_pml4_phys()), self) };
-    }
-}
-
-const RECYCLED_RUN_SLOTS: usize = 64;
-
-/// Frame runs released by exited programs, coalesced on insert; (_, 0) is empty.
-/// The bump allocator has no free list, so these frames are only ever reused
-/// for later user images.
-static RECYCLED_RUNS: crate::sync::Spinlock<[(u64, usize); RECYCLED_RUN_SLOTS]> =
-    crate::sync::Spinlock::new([(0, 0); RECYCLED_RUN_SLOTS]);
-
-/// Allocate `count` contiguous frames for a user image, preferring frames
-/// released by exited programs.
-pub fn allocate_user_frames(allocator: &mut FrameAllocator, count: usize) -> Option<u64> {
-    if count == 0 {
-        return None;
-    }
-    {
-        let mut runs = RECYCLED_RUNS.lock();
-        let best = runs
-            .iter()
-            .enumerate()
-            .filter(|(_, run)| run.1 >= count)
-            .min_by_key(|(_, run)| run.1)
-            .map(|(i, _)| i);
-        if let Some(i) = best {
-            let (base, pages) = runs[i];
-            runs[i] = if pages == count {
-                (0, 0)
-            } else {
-                (base + count as u64 * PAGE_SIZE, pages - count)
-            };
-            return Some(base);
-        }
-    }
-    allocator.allocate_contiguous(count)
-}
-
-/// Return a frame run to the recycle list, merging with adjacent runs.
-/// If the list is full the run is leaked rather than overwriting another.
-pub fn free_user_frames(base: u64, count: usize) {
-    if count == 0 {
-        return;
-    }
-    let mut runs = RECYCLED_RUNS.lock();
-    let (mut base, mut count) = (base, count);
-    loop {
-        let end = base + count as u64 * PAGE_SIZE;
-        let Some(i) = runs.iter().position(|&(b, p)| {
-            p != 0 && (b + p as u64 * PAGE_SIZE == base || b == end)
-        }) else {
-            break;
+/// Allocate one zeroed frame from the global pool.
+pub fn alloc_frame() -> Option<u64> {
+    let frame = {
+        let mut state = FRAMES.lock();
+        let frame = if state.free_head != 0 {
+            let frame = state.free_head;
+            state.free_head = unsafe { *(frame as *const u64) };
+            state.free_count -= 1;
+            frame
+        } else {
+            state.bump.as_mut()?.allocate_frame()?
         };
-        let (b, p) = runs[i];
-        runs[i] = (0, 0);
-        base = base.min(b);
-        count += p;
-    }
-    if let Some(slot) = runs.iter_mut().find(|(_, p)| *p == 0) {
-        *slot = (base, count);
-    } else {
-        crate::console::serial(format_args!(
-            "memory: recycle list full, leaking {} frames at {:#x}\n",
-            count, base
-        ));
+        state.in_use += 1;
+        frame
+    };
+    unsafe { core::ptr::write_bytes(frame as *mut u8, 0, PAGE_SIZE as usize) };
+    Some(frame)
+}
+
+/// Return a frame obtained from `alloc_frame` to the global pool.
+pub fn free_frame(frame: u64) {
+    let mut state = FRAMES.lock();
+    unsafe { *(frame as *mut u64) = state.free_head };
+    state.free_head = frame;
+    state.free_count += 1;
+    state.in_use -= 1;
+}
+
+/// Frames currently allocated from the global pool.
+pub fn frames_in_use() -> usize {
+    FRAMES.lock().in_use
+}
+
+/// Source of page-table frames for `map_page`.
+pub trait FrameSource {
+    fn allocate_frame(&mut self) -> Option<u64>;
+}
+
+impl FrameSource for FrameAllocator {
+    fn allocate_frame(&mut self) -> Option<u64> {
+        FrameAllocator::allocate_frame(self)
     }
 }
 
-/// Revoke user access from identity-mapped pages and recycle the frames.
-///
-/// Must only be called once no CPU can still be executing the program.
-/// Other CPUs may keep stale user TLB entries until their next flush; this
-/// is tolerated because these frames are only reused for user images in the
-/// shared user address space.
-pub unsafe fn release_user_image(pml4: &mut PageTable, image: &UserImage) {
-    for &(base, pages) in &image.runs {
-        for i in 0..pages as u64 {
-            unsafe { set_kernel_only(pml4, base + i * PAGE_SIZE) };
-        }
-        free_user_frames(base, pages);
-    }
-}
+/// The global frame pool, usable once boot has committed its allocator.
+pub struct GlobalFrames;
 
-unsafe fn set_kernel_only(pml4: &mut PageTable, virt_addr: u64) {
-    let indices = [
-        ((virt_addr >> 39) & 0x1FF) as usize,
-        ((virt_addr >> 30) & 0x1FF) as usize,
-        ((virt_addr >> 21) & 0x1FF) as usize,
-    ];
-    let mut table: &mut PageTable = pml4;
-    for idx in indices {
-        let entry = table.entries[idx];
-        if entry & PAGE_PRESENT == 0 || entry & (1 << 7) != 0 {
-            return;
-        }
-        table = unsafe { get_table_mut(entry & !0xFFF) };
-    }
-    let pt_idx = ((virt_addr >> 12) & 0x1FF) as usize;
-    if table.entries[pt_idx] & PAGE_PRESENT != 0 {
-        table.entries[pt_idx] &= !PAGE_USER;
-        unsafe {
-            core::arch::asm!("invlpg [{}]", in(reg) virt_addr, options(nostack, preserves_flags));
-        }
-    }
-}
-
-pub fn init_global_frame_allocator() {
-    unsafe {
-        GLOBAL_ALLOCATOR = Some(FrameAllocator {
-            memory_map: BOOT_INFO_MEM_MAP,
-            memory_map_size: BOOT_INFO_MEM_MAP_SIZE,
-            descriptor_size: BOOT_INFO_DESC_SIZE,
-            descriptor_version: BOOT_INFO_DESC_VER,
-            current_descriptor_index: 0,
-            current_page_offset: 0,
-        });
+impl FrameSource for GlobalFrames {
+    fn allocate_frame(&mut self) -> Option<u64> {
+        alloc_frame()
     }
 }
 
@@ -319,7 +220,7 @@ pub unsafe fn map_page(
     virt_addr: u64,
     phys_addr: u64,
     flags: u64,
-    allocator: &mut FrameAllocator,
+    allocator: &mut impl FrameSource,
 ) {
     let pml4_idx = ((virt_addr >> 39) & 0x1FF) as usize;
     let pdp_idx = ((virt_addr >> 30) & 0x1FF) as usize;
@@ -411,6 +312,57 @@ fn is_page_mapped(pml4: &PageTable, virt_addr: u64) -> bool {
     (pt.entries[pt_idx] & PAGE_PRESENT) != 0
 }
 
+/// Check that every page in [start, start + len) is mapped user-accessible.
+/// User pointers must pass this so they cannot name kernel identity mappings.
+pub fn is_user_range_mapped(pml4: &PageTable, start: u64, len: u64) -> bool {
+    let Some(end) = start.checked_add(len) else {
+        return false;
+    };
+    let mut addr = start & !0xFFF;
+    while addr < end {
+        if !is_user_page(pml4, addr) {
+            return false;
+        }
+        addr += PAGE_SIZE;
+    }
+    true
+}
+
+fn is_user_page(pml4: &PageTable, virt_addr: u64) -> bool {
+    let indices = [
+        ((virt_addr >> 39) & 0x1FF) as usize,
+        ((virt_addr >> 30) & 0x1FF) as usize,
+        ((virt_addr >> 21) & 0x1FF) as usize,
+        ((virt_addr >> 12) & 0x1FF) as usize,
+    ];
+    let mut table = pml4;
+    for (level, idx) in indices.into_iter().enumerate() {
+        let entry = table.entries[idx];
+        if entry & (PAGE_PRESENT | PAGE_USER) != PAGE_PRESENT | PAGE_USER {
+            return false;
+        }
+        if level == 3 || entry & (1 << 7) != 0 {
+            return true;
+        }
+        table = unsafe { get_table_mut(entry & !0xFFF) };
+    }
+    false
+}
+
+static KERNEL_PML4: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The boot page table, used by kernel threads and idle CPUs.
+pub fn kernel_pml4_phys() -> u64 {
+    KERNEL_PML4.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Load `pml4_phys` into CR3 unless it is already active.
+pub unsafe fn switch_pml4(pml4_phys: u64) {
+    if current_pml4_phys() != pml4_phys {
+        unsafe { asm!("mov cr3, {}", in(reg) pml4_phys, options(nostack, preserves_flags)) };
+    }
+}
+
 pub unsafe fn init_paging(boot_info: &BootInfo, allocator: &mut FrameAllocator) -> u64 {
     // 1. Allocate PML4
     let pml4_phys = allocator.allocate_frame().expect("Failed to allocate PML4");
@@ -457,6 +409,7 @@ pub unsafe fn init_paging(boot_info: &BootInfo, allocator: &mut FrameAllocator) 
 
     // 4. Load CR3
     unsafe { asm!("mov cr3, {}", in(reg) pml4_phys) };
+    KERNEL_PML4.store(pml4_phys, core::sync::atomic::Ordering::Relaxed);
 
     pml4_phys
 }

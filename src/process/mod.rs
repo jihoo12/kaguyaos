@@ -39,8 +39,8 @@ pub struct Task {
     pub exit_code: usize,
     pub wake_tick: u64,
     pub waiting_for: usize,
-    /// Code/stack frames of the program; shared with tasks it spawns.
-    pub user_image: Option<Arc<crate::memory::UserImage>>,
+    /// Page tables for user tasks; threads share one. Dropped when reaped.
+    pub address_space: Option<Arc<crate::memory::AddressSpace>>,
 }
 
 /// Scheduler metadata protected by SCHEDULER_LOCK.
@@ -160,7 +160,7 @@ pub unsafe fn init() {
         exit_code: 0,
         wake_tick: 0,
         waiting_for: usize::MAX,
-        user_image: None,
+        address_space: None,
     };
 
     if let Some(scheduler) = unsafe { SCHEDULER.as_mut() } {
@@ -270,7 +270,7 @@ pub fn add_new_user_task(
     stack_size: usize,
     rdi: u64,
     rsi: u64,
-    user_image: Option<Arc<crate::memory::UserImage>>,
+    address_space: Option<Arc<crate::memory::AddressSpace>>,
 ) -> usize {
     let _guard = SCHEDULER_LOCK.lock();
     unsafe {
@@ -330,7 +330,7 @@ pub fn add_new_user_task(
                 exit_code: 0,
                 wake_tick: 0,
                 waiting_for: usize::MAX,
-                user_image,
+                address_space,
             };
 
             scheduler.metadata.tasks.push(Box::new(task));
@@ -414,7 +414,7 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
                 exit_code: 0,
                 wake_tick: 0,
                 waiting_for: usize::MAX,
-                user_image: None,
+                address_space: None,
             };
 
             scheduler.metadata.tasks.push(Box::new(task));
@@ -469,6 +469,7 @@ struct SwitchPlan {
     new_kernel_stack_top: u64,
     new_user_rsp: u64,
     new_user_gs: u64,
+    new_pml4: u64,
 }
 
 fn finish_switched_out_task(scheduler: &mut Scheduler, cpu_index: usize) {
@@ -543,9 +544,10 @@ pub fn switch_task() {
                             crate::processor::MSR_IA32_KERNEL_GS_BASE,
                             0,
                         );
-                        core::mem::drop(guard);
                         let retired_stack_bottom =
                             scheduler.metadata.tasks[current_index].kernel_stack_bottom;
+                        core::mem::drop(guard);
+                        crate::memory::switch_pml4(crate::memory::kernel_pml4_phys());
                         context_switch(
                             old_stack_ref,
                             idle_stack,
@@ -626,6 +628,10 @@ pub fn switch_task() {
                 new_kernel_stack_top: scheduler.metadata.tasks[next_index].kernel_stack_top,
                 new_user_rsp: scheduler.metadata.tasks[next_index].user_rsp,
                 new_user_gs: scheduler.metadata.tasks[next_index].gs_base,
+                new_pml4: scheduler.metadata.tasks[next_index]
+                    .address_space
+                    .as_ref()
+                    .map_or_else(crate::memory::kernel_pml4_phys, |space| space.pml4_phys()),
             };
 
             // From this point on, only CPU-local state and the already-claimed
@@ -638,6 +644,7 @@ pub fn switch_task() {
                 crate::gdt::set_tss_stack_cpu(cpu_index, plan.new_kernel_stack_top);
             }
             (*percpu).user_stack = plan.new_user_rsp;
+            crate::memory::switch_pml4(plan.new_pml4);
             crate::processor::wrmsr(
                 crate::processor::MSR_IA32_KERNEL_GS_BASE,
                 plan.new_user_gs,
@@ -879,8 +886,9 @@ pub fn reschedule_if_needed() {
 /// Reclaim resources owned by zombie tasks that are no longer running on any CPU.
 ///
 /// Task slots stay allocated so run-queue/current-task indices remain stable. This
-/// releases the per-task kernel stack and the task's reference to its program
-/// image. Allocations from the shared user heap are not tracked per task.
+/// releases the per-task kernel stack and the task's reference to its address
+/// space. Every switch loads the incoming CR3 before context_switch publishes
+/// the retirement, so no CPU still uses a released page table.
 fn reap_zombies(scheduler: &mut Scheduler) {
     let current_indices: [usize; crate::processor::MAX_AP_COUNT + 1] =
         core::array::from_fn(published_current_task);
@@ -921,7 +929,7 @@ fn reap_zombies(scheduler: &mut Scheduler) {
         unsafe {
             crate::memory::heap::free(task.kernel_stack_bottom as *mut u8);
         }
-        task.user_image = None;
+        task.address_space = None;
         task.kernel_stack_bottom = 0;
         task.kernel_stack_top = 0;
     }
@@ -1023,8 +1031,8 @@ unsafe extern "sysv64" fn context_switch(
     );
 }
 
-/// The program image of the task running on this CPU, if it has one.
-pub fn current_user_image() -> Option<Arc<crate::memory::UserImage>> {
+/// The address space of the task running on this CPU, if it has one.
+pub fn current_address_space() -> Option<Arc<crate::memory::AddressSpace>> {
     let _guard = SCHEDULER_LOCK.lock();
     unsafe {
         let scheduler = SCHEDULER.as_ref()?;
@@ -1033,7 +1041,7 @@ pub fn current_user_image() -> Option<Arc<crate::memory::UserImage>> {
             return None;
         }
         let index = (*percpu).current_task_index;
-        scheduler.metadata.tasks.get(index)?.user_image.clone()
+        scheduler.metadata.tasks.get(index)?.address_space.clone()
     }
 }
 

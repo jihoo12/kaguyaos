@@ -453,94 +453,6 @@ fn kernel_normal(boot_info: &BootInfo) -> ! {
         console::display::present();
     }
 
-    // ── User heap ─────────────────────────────────────────────────────────
-    // A heap separate from the kernel heap, with pages mapped PAGE_USER so
-    // that sys_alloc / sys_free / sys_realloc can hand out pointers that
-    // user-mode tasks can actually dereference. PAGE_NO_EXECUTE prevents the
-    // heap from being used to run injected code.
-    //
-    // IMPORTANT: we get the *physical* frames from the frame allocator (same
-    // as the kernel heap), but we map them at a fixed HIGH virtual address
-    // rather than identity-mapping them. init.kef's loader places the user
-    // task's code and stack at low virtual addresses (e.g. around
-    // 0x100000-ish, 16KB stack); identity-mapping the heap's physical frames
-    // (which can themselves be low addresses) would reuse the SAME virtual
-    // addresses as the task's code/stack and silently overwrite those page
-    // table entries, corrupting the stack. Using a high, dedicated virtual
-    // base avoids any collision regardless of where load_kef places things.
-    const USER_HEAP_VIRT_BASE: u64 = 0x0000_7000_0000_0000;
-    let user_heap_pages = 128; // 512 KiB
-    let user_heap_phys_start = allocator
-        .allocate_frame()
-        .expect("Failed to allocate user heap start");
-    let mut user_current_addr = user_heap_phys_start;
-
-    for _ in 1..user_heap_pages {
-        let next_addr = allocator
-            .allocate_frame()
-            .expect("Failed to allocate user heap");
-        if next_addr != user_current_addr + 4096 {
-            panic!("User heap memory allocation failed: memory not contiguous!");
-        }
-        user_current_addr = next_addr;
-    }
-
-    unsafe {
-        let pml4 = memory::get_table_mut(pml4_phys);
-        let flags = memory::PAGE_WRITABLE | memory::PAGE_USER | memory::PAGE_NO_EXECUTE;
-        for i in 0..user_heap_pages as u64 {
-            let phys = user_heap_phys_start + i * 4096;
-            let virt = USER_HEAP_VIRT_BASE + i * 4096;
-            memory::map_page(pml4, virt, phys, flags, &mut allocator);
-        }
-        memory::heap::init_user_heap(USER_HEAP_VIRT_BASE as usize, (user_heap_pages * 4096) as usize);
-        println!(
-            "User heap mapped at {:#x}-{:#x} (phys {:#x})",
-            USER_HEAP_VIRT_BASE,
-            USER_HEAP_VIRT_BASE + (user_heap_pages * 4096) as u64,
-            user_heap_phys_start,
-        );
-    }
-
-    // Initialize FAT filesystem & load init.kef
-    let fs_ready = fs::is_ready() && fs::read_boot_sector().is_ok();
-    if !fs_ready {
-        println!("FS: no recognized volume; leaving disk unchanged.");
-    }
-
-    let mut loaded = false;
-    if fs_ready {
-        match fs::read_file("init.kef") {
-            Ok(file_data) => {
-                let pml4 = unsafe { memory::get_table_mut(pml4_phys) };
-                match loader::load_kef(&file_data, &mut allocator, pml4) {
-                    Ok((entry_point, user_rsp, image)) => {
-                        println!("Loader: Successfully loaded init.kef. Entry={:#x}, RSP={:#x}", entry_point, user_rsp);
-                        process::add_new_user_task(
-                            entry_point,
-                            user_rsp,
-                            16384,
-                            0,
-                            0,
-                            Some(alloc::sync::Arc::new(image)),
-                        );
-                        loaded = true;
-                    }
-                    Err(e) => {
-                        println!("Loader: Failed to load init.kef: {}", e);
-                    }
-                }
-            }
-            Err(e) => {
-                println!("FS: Failed to read init.kef: {:?}", e);
-            }
-        }
-    }
-
-    if !loaded {
-        panic!("Failed to load user-mode init process. System halted.");
-    }
-
     unsafe {
         let stack_base = core::ptr::addr_of!(KERNEL_STACK) as u64;
         let stack_top = stack_base + 16384;
@@ -561,11 +473,51 @@ fn kernel_normal(boot_info: &BootInfo) -> ! {
         println!("Kernel stack base={:#x} top={:#x}", stack_base, stack_top);
         println!("TSS rsp0={:#x}", gdt::get_tss_stack());
 
-        // Commit the boot allocator's state so that exec syscalls start
-        // allocating from where the boot allocator left off, avoiding
-        // re-allocating already-used physical frames.
+        // Hand the rest of memory to the global frame pool. Address spaces,
+        // user pages and their page tables are allocated from it from here on.
         memory::commit_frame_allocator(&allocator);
+    }
 
+    // Initialize FAT filesystem & load init.kef
+    let fs_ready = fs::is_ready() && fs::read_boot_sector().is_ok();
+    if !fs_ready {
+        println!("FS: no recognized volume; leaving disk unchanged.");
+    }
+
+    let mut loaded = false;
+    if fs_ready {
+        match fs::read_file("init.kef") {
+            Ok(file_data) => {
+                let space = memory::AddressSpace::new().expect("out of memory for init address space");
+                match loader::load_kef(&file_data, &space, &[]) {
+                    Ok((entry_point, user_rsp, args)) => {
+                        println!("Loader: Successfully loaded init.kef. Entry={:#x}, RSP={:#x}", entry_point, user_rsp);
+                        process::add_new_user_task(
+                            entry_point,
+                            user_rsp,
+                            16384,
+                            args,
+                            0,
+                            Some(alloc::sync::Arc::new(space)),
+                        );
+                        loaded = true;
+                    }
+                    Err(e) => {
+                        println!("Loader: Failed to load init.kef: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                println!("FS: Failed to read init.kef: {:?}", e);
+            }
+        }
+    }
+
+    if !loaded {
+        panic!("Failed to load user-mode init process. System halted.");
+    }
+
+    unsafe {
         println!("Starting scheduler loop on BSP...");
         process::enter_bsp_scheduler_idle();
         core::arch::asm!("sti");

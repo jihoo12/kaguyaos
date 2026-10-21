@@ -26,9 +26,8 @@ pub fn run(info: &BootInfo) -> ! {
         crate::uefi::init_runtime_services(
             info.runtime_services as *mut crate::uefi::EFI_RUNTIME_SERVICES,
         );
-        crate::println!("[3/6] Allocating kernel and user heaps");
+        crate::println!("[3/6] Allocating kernel heap");
         const KERNEL_HEAP: u64 = 0xffff_9000_0000_0000;
-        const USER_HEAP: u64 = 0x0000_7000_0000_0000;
         map_buffer(
             pml4,
             &mut allocator,
@@ -37,14 +36,6 @@ pub fn run(info: &BootInfo) -> ! {
             memory::PAGE_NO_EXECUTE,
         );
         memory::heap::init(KERNEL_HEAP as usize, 128 * 4096);
-        map_buffer(
-            pml4,
-            &mut allocator,
-            USER_HEAP,
-            128,
-            memory::PAGE_USER | memory::PAGE_NO_EXECUTE,
-        );
-        memory::heap::init_user_heap(USER_HEAP as usize, 128 * 4096);
         crate::println!(
             "[4/6] Allocating GOP surface {}x{}",
             info.horizontal_resolution,
@@ -94,11 +85,11 @@ pub fn run(info: &BootInfo) -> ! {
         crate::println!("RAM filesystem: 8 MiB, changes disappear on reboot");
         crate::println!("[5/6] Loading embedded init.kef ({} bytes)", INIT.len());
         process::init();
-        let (entry, stack, image) =
-            loader::load_kef(INIT, &mut allocator, memory::get_table_mut(pml4))
-                .expect("embedded init.kef is invalid");
-        process::add_new_user_task(entry, stack, 16384, 0, 0, Some(alloc::sync::Arc::new(image)));
         memory::commit_frame_allocator(&allocator);
+        let space = memory::AddressSpace::new().expect("out of memory for init address space");
+        let (entry, stack, args) =
+            loader::load_kef(INIT, &space, &[]).expect("embedded init.kef is invalid");
+        process::add_new_user_task(entry, stack, 16384, args, 0, Some(alloc::sync::Arc::new(space)));
         crate::println!("[6/6] Entering ring 3 on BSP");
         crate::println!(
             "HARDWARE SHELL: USB polling enabled; no disks, network, APs or timer interrupts"

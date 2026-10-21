@@ -176,14 +176,14 @@ with tempfile.TemporaryDirectory(prefix='kaguya-qmp-') as tmp:
                     if 'Wrote 4 bytes' not in shell_command('write session temp'):
                         raise RuntimeError('Temporary session file creation failed')
                     print('RAM filesystem: seed, list, write, read, overwrite and delete passed')
-                    # The 512 KiB kernel heap holds one 16 KiB kernel stack per live task.
-                    loads = [re.search(r'\[kef\] loaded at phys=(0x[0-9a-f]+)', shell_command('ls'))
+                    # Each program gets its own page tables; exiting must return every frame.
+                    loads = [re.search(r'\[kef\] loaded .*, (\d+) frames in use', shell_command('ls'))
                              for _ in range(40)]
                     if None in loads:
-                        raise RuntimeError('Program load address missing from exec output')
+                        raise RuntimeError('Program frame usage missing from exec output')
                     if len({load.group(1) for load in loads}) != 1:
-                        raise RuntimeError(f'Exited program frames were not reused: {[l.group(1) for l in loads]}')
-                    print('Exec memory: 40 sequential programs reused the same frames')
+                        raise RuntimeError(f'Exited program frames were not reclaimed: {[l.group(1) for l in loads]}')
+                    print('Exec memory: 40 sequential programs used a constant number of frames')
                 if args.keyboard_stress:
                     baseline = (out / 'serial.log').read_text(errors='replace')
                     for key in ['shift-a', 'b', 'backspace', 'ret'] + ['h', 'e', 'l', 'p', 'ret'] * 30:

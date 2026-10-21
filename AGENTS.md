@@ -88,7 +88,8 @@ Never restore automatic formatting of unrecognized disks during boot.
 - No `unsafe` blocks where avoidable, but heavy use is expected (this is an OS kernel)
 - Prefer `core::arch::asm!` / `naked_asm!` for inline assembly
 - Interrupt-safe spinlocks: all locks disable interrupts (`cli`) on acquire
-- User pointers validated against address-space boundary (`< 0x8000_0000_0000`) and page-table mapped before kernel access
+- Each user task has its own PML4: slots 128–255 (`0x4000_0000_0000`–`0x8000_0000_0000`) are private, all other slots are copied from the kernel PML4 when the space is created, so add new kernel top-level mappings during boot only
+- User pointers must be mapped with `PAGE_USER` in the current address space (`memory::is_user_range_mapped`) before kernel access; the identity map is below `0x8000_0000_0000` but kernel-only
 - No external dependencies except `font8x8` (v0.3, no default features, unicode)
 - Comments are sparse — code is self-documenting where possible
 

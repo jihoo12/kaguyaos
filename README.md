@@ -37,7 +37,7 @@ kaguyaOS currently boots into userspace on an SMP system, runs a preemptive sche
 ### Storage and userspace
 
 - Custom KEF executable format
-- Separate user address space resources and 512 KiB user heap
+- Per-process page tables, private 512 KiB user heap and frame reclamation on exit
 - NX-enabled user mappings
 - NVMe controller driver using MMIO
 - FAT16 filesystem with create/read/write/delete/list/format
@@ -245,8 +245,9 @@ Networking remains an active subsystem. A later milestone is to add TCP and HTTP
 - IPv4 configuration currently assumes the QEMU user-networking environment.
 - DNS is a minimal single-query A-record resolver.
 - TCP, HTTP, and TLS are not implemented.
-- Exited programs return their kernel stack and code/stack frames, but allocations from the shared 512 KiB user heap are not tracked per task.
-- All user programs share one address space; reaping revokes user access only on the reaping CPU's TLB.
+- Each program has its own page tables (code at `0x4000_0000_0000`, a lazily mapped 512 KiB heap at `0x7000_0000_0000`, a 16 KiB stack below `0x7fff_ffff_0000`); everything is freed when it exits. The kernel and its identity map stay shared, without PCID or global pages.
+- The user heap allocator runs in the kernel but keeps its metadata in user-writable heap memory, so a program can corrupt it. Moving the allocator into userspace is pending.
+- KEF binaries are flat and unrelocated; code that stores absolute addresses (for example some `.rodata` jump tables or vtables) does not work.
 
 ---
 
@@ -391,8 +392,9 @@ python3 tools/gpu-smoke.py --hardware-shell --no-keyboard --output /tmp/kaguya-u
 python3 tools/gpu-smoke.py --hardware-shell --shutdown --output /tmp/kaguya-shutdown
 ```
 
-The default hardware-shell check also runs `ls` 40 times and requires every run to load at the
-same physical address, verifying that exited programs' frames and kernel stacks are reclaimed.
+The default hardware-shell check also runs `ls` 40 times and requires the frames in use reported
+at each load to stay constant, verifying that exited programs' page tables, pages and kernel
+stacks are reclaimed.
 The stress check exercises Shift/Backspace and 30 `help` commands to wrap the transfer
 and event rings. A mouse preceding the keyboard tests HID filtering; an additional
 mouse after the keyboard checks that enumeration stops. The empty-controller
