@@ -135,6 +135,16 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) -> bool {
                     &rx_buffer[udp_offset..ip_offset + total_length],
                 );
             }
+        } else if ip_header.dst_ip == my_ip && ip_header.protocol == crate::drivers::net::tcp::PROTOCOL {
+            let ihl = (ip_header.ver_ihl & 0x0F) as usize * 4;
+            let total_length = u16::from_be(ip_header.total_length) as usize;
+            if total_length >= ihl + 20 && bytes_received >= ip_offset + total_length {
+                crate::drivers::net::tcp::handle_incoming(
+                    ip_header.src_ip,
+                    ip_header.dst_ip,
+                    &rx_buffer[ip_offset + ihl..ip_offset + total_length],
+                );
+            }
         } else if ip_header.dst_ip == my_ip && ip_header.protocol == 1 {
             let ihl = (ip_header.ver_ihl & 0x0F) as usize * 4;
             let icmp_offset = ip_offset + ihl;

@@ -7,6 +7,8 @@
 //! writes may block, so they run after the table lock is released.
 
 use crate::fs::{self, FsError, FsResult};
+use crate::drivers::net::Endpoint;
+use crate::drivers::net::tcp::TcpSocket;
 use crate::drivers::net::udp::UdpSocket;
 use crate::pipe::{self, PipeReader, PipeWriter};
 use crate::sync::Spinlock;
@@ -30,6 +32,7 @@ pub const KIND_PIPE: usize = 2;
 pub const KIND_SOCKET: usize = 3;
 
 pub const SOCKET_UDP: usize = 1;
+pub const SOCKET_TCP: usize = 2;
 
 const MAX_FDS: usize = 32;
 
@@ -40,6 +43,7 @@ enum OpenFile {
     PipeRead(PipeReader),
     PipeWrite(PipeWriter),
     Udp(Arc<UdpSocket>),
+    Tcp(Arc<TcpSocket>),
 }
 
 #[derive(Clone)]
@@ -113,13 +117,26 @@ impl FileTable {
     }
 
     pub fn socket(&self, kind: usize) -> FsResult<usize> {
-        if kind != SOCKET_UDP {
-            return Err(FsError::InvalidArgument);
-        }
+        let file = match kind {
+            SOCKET_UDP => OpenFile::Udp(UdpSocket::new()),
+            SOCKET_TCP => OpenFile::Tcp(TcpSocket::new()),
+            _ => return Err(FsError::InvalidArgument),
+        };
         let mut fds = self.fds.lock();
         let fd = free_slot(&mut fds)?;
-        fds[fd] = Some(OpenFile::Udp(UdpSocket::new()));
+        fds[fd] = Some(file);
         Ok(fd)
+    }
+
+    /// Connect a socket; a TCP connect blocks until established or refused.
+    pub fn connect(&self, fd: usize, remote: Endpoint) -> FsResult<()> {
+        let file = self.fds.lock().get(fd).and_then(Option::as_ref).cloned();
+        match file {
+            Some(OpenFile::Udp(socket)) => socket.connect(remote),
+            Some(OpenFile::Tcp(socket)) => socket.connect(remote),
+            Some(_) => Err(FsError::InvalidArgument),
+            None => Err(FsError::BadDescriptor),
+        }
     }
 
     /// The UDP socket behind `fd`, held outside the table lock so callers may block.
@@ -136,7 +153,7 @@ impl FileTable {
             Some(OpenFile::Console) => Ok(KIND_CONSOLE),
             Some(OpenFile::Disk(_)) => Ok(KIND_FILE),
             Some(OpenFile::PipeRead(_) | OpenFile::PipeWrite(_)) => Ok(KIND_PIPE),
-            Some(OpenFile::Udp(_)) => Ok(KIND_SOCKET),
+            Some(OpenFile::Udp(_) | OpenFile::Tcp(_)) => Ok(KIND_SOCKET),
             None => Err(FsError::BadDescriptor),
         }
     }
@@ -165,6 +182,11 @@ impl FileTable {
                 drop(fds);
                 socket.recv_from(buf, None).map(|(n, _)| n)
             }
+            Some(OpenFile::Tcp(socket)) => {
+                let socket = socket.clone();
+                drop(fds);
+                socket.read(buf)
+            }
             _ => Err(FsError::BadDescriptor),
         }
     }
@@ -191,6 +213,11 @@ impl FileTable {
                 let socket = socket.clone();
                 drop(fds);
                 socket.send_to(None, data)
+            }
+            Some(OpenFile::Tcp(socket)) => {
+                let socket = socket.clone();
+                drop(fds);
+                socket.write(data)
             }
             _ => Err(FsError::BadDescriptor),
         }

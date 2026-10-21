@@ -663,10 +663,10 @@ struct SockAddr {
 }
 
 /// IPv4 addresses are packed as for net_send_ping: `a.b.c.d` is `a | b << 8 | c << 16 | d << 24`.
-fn endpoint(ip_packed: usize, port: usize) -> crate::fs::FsResult<crate::drivers::net::udp::Endpoint> {
+fn endpoint(ip_packed: usize, port: usize) -> crate::fs::FsResult<crate::drivers::net::Endpoint> {
     let port = u16::try_from(port).map_err(|_| crate::fs::FsError::InvalidArgument)?;
     let ip = u32::try_from(ip_packed).map_err(|_| crate::fs::FsError::InvalidArgument)?;
-    Ok(crate::drivers::net::udp::Endpoint { ip: ip.to_le_bytes(), port })
+    Ok(crate::drivers::net::Endpoint { ip: ip.to_le_bytes(), port })
 }
 
 fn sys_socket(kind: usize) -> isize {
@@ -683,7 +683,7 @@ fn sys_bind(fd: usize, port: usize) -> isize {
 fn sys_connect(fd: usize, ip_packed: usize, port: usize) -> isize {
     fd_result(
         endpoint(ip_packed, port)
-            .and_then(|peer| current_files()?.udp(fd)?.connect(peer))
+            .and_then(|peer| current_files()?.connect(fd, peer))
             .map(|()| 0),
     )
 }

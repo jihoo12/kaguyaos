@@ -101,7 +101,7 @@ Never restore automatic formatting of unrecognized disks during boot.
 | Memory | `src/memory/{mod,heap,address_space}.rs` | Frame pool, 4-level page tables, kernel heap, per-process address spaces |
 | Tasks | `src/process/mod.rs` | Cooperative round-robin, 100 Hz preemptive tick, SMP |
 | Syscalls | `src/syscall.rs` | 25 syscalls via AMD64 `syscall`/`sysret` |
-| Drivers | `src/drivers/{pci,nvme,xhci,keyboard}.rs`, `src/drivers/net/` | PCI enumeration, NVMe, xHCI USB, E1000, UDP sockets (`net/udp.rs`) |
+| Drivers | `src/drivers/{pci,nvme,xhci,keyboard}.rs`, `src/drivers/net/` | PCI enumeration, NVMe, xHCI USB, E1000, UDP and TCP client sockets (`net/udp.rs`, `net/tcp.rs`) |
 | Filesystem | `src/fs.rs`, `src/file.rs`, `src/pipe.rs` | FAT16, global spinlock; per-process fd tables; blocking pipes |
 | Console | `src/console/{mod,term}.rs` | VGA framebuffer, font8x8, cell-based terminal |
 | Userspace | `user/src/{init,std,ls,cat,write,rm,ping}.rs` | Shell, syscall wrappers, utilities |
