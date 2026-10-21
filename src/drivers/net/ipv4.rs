@@ -24,32 +24,53 @@ pub struct IcmpPacket {
     // Variable data (payload) can be appended after this.
 }
 
-/// Build and transmit one Ethernet + IPv4 packet.
+/// The address whose MAC an IPv4 packet for `dst_ip` is sent to.
 ///
-/// Routing is intentionally kept here so ICMP, UDP, and future IPv4 protocols
-/// share the same next-hop decision and ARP resolution.
+/// Routing is intentionally kept here so ICMP, UDP, TCP and future IPv4
+/// protocols share the same next-hop decision.
+pub fn next_hop(dst_ip: [u8; 4]) -> Option<[u8; 4]> {
+    const NETMASK: [u8; 4] = [255, 255, 255, 0];
+    const DEFAULT_GATEWAY: [u8; 4] = [10, 0, 2, 2];
+    let my_ip = super::get_ip_address()?;
+    let same_subnet = (0..4).all(|i| (my_ip[i] & NETMASK[i]) == (dst_ip[i] & NETMASK[i]));
+    Some(if same_subnet { dst_ip } else { DEFAULT_GATEWAY })
+}
+
+/// Build and transmit one Ethernet + IPv4 packet, blocking for up to a
+/// second while ARP resolves the next hop.
 pub unsafe fn transmit_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> bool { unsafe {
+    match next_hop(dst_ip).and_then(|hop| super::arp_resolve(hop)) {
+        Some(dst_mac) => transmit_to(dst_mac, dst_ip, protocol, payload),
+        None => false,
+    }
+}}
+
+/// Like transmit_ipv4, but never blocks: when the next hop is not in the ARP
+/// cache, request it and drop the packet. Safe from the RX and timer paths.
+pub unsafe fn transmit_ipv4_cached(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> bool { unsafe {
+    let Some(hop) = next_hop(dst_ip) else {
+        return false;
+    };
+    match super::arp_cache_lookup(hop) {
+        Some(dst_mac) => transmit_to(dst_mac, dst_ip, protocol, payload),
+        None => {
+            if let (Some(ip), Some(mac)) = (super::get_ip_address(), super::get_mac_address()) {
+                super::arp::send_arp_request(hop, ip, mac);
+            }
+            false
+        }
+    }
+}}
+
+unsafe fn transmit_to(dst_mac: [u8; 6], dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> bool { unsafe {
     if payload.len() > 1500 - 20 {
         return false;
     }
-
-    let my_ip = match super::get_ip_address() {
-        Some(ip) => ip,
-        None => return false,
+    let Some(my_ip) = super::get_ip_address() else {
+        return false;
     };
-    let my_mac = match super::get_mac_address() {
-        Some(mac) => mac,
-        None => return false,
-    };
-
-    const NETMASK: [u8; 4] = [255, 255, 255, 0];
-    const DEFAULT_GATEWAY: [u8; 4] = [10, 0, 2, 2];
-    let same_subnet =
-        (0..4).all(|i| (my_ip[i] & NETMASK[i]) == (dst_ip[i] & NETMASK[i]));
-    let next_hop = if same_subnet { dst_ip } else { DEFAULT_GATEWAY };
-    let dst_mac = match super::arp_resolve(next_hop) {
-        Some(mac) => mac,
-        None => return false,
+    let Some(my_mac) = super::get_mac_address() else {
+        return false;
     };
 
     let total_len = 20 + payload.len();

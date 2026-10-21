@@ -12,7 +12,15 @@ pub use driver::NetworkDriver;
 
 pub mod arp;
 pub mod dns;
+pub mod tcp;
 pub mod udp;
+
+/// An IPv4 address and port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Endpoint {
+    pub ip: [u8; 4],
+    pub port: u16,
+}
 
 // ── ARP cache ─────────────────────────────────────────────────────────────
 
@@ -255,6 +263,7 @@ pub unsafe fn poll() { unsafe {
     if !is_ready() {
         return;
     }
+    tcp::on_timer();
     let my_ip = match get_ip_address() {
         Some(ip) => ip,
         None => return,

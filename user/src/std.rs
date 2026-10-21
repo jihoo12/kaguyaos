@@ -504,6 +504,8 @@ pub fn spawn(filename: &str, args: &str, stdio: [usize; 3]) -> usize {
 // ── Network ─────────────────────────────────────────────────────────────────
 
 pub const SOCK_UDP: usize = 1;
+/// A TCP stream: `connect`, then `read`/`write`; `close` sends FIN.
+pub const SOCK_TCP: usize = 2;
 
 fn pack_ip(ip: [u8; 4]) -> usize {
     u32::from_le_bytes(ip) as usize
@@ -521,6 +523,7 @@ pub fn bind(fd: usize, port: u16) -> isize {
 
 /// Set the default destination. A connected UDP socket only receives from
 /// its peer and works with `read`/`write`. Binds an ephemeral port if needed.
+/// For TCP, blocks until the connection is established (-14 if refused).
 pub fn connect(fd: usize, ip: [u8; 4], port: u16) -> isize {
     unsafe { syscall3(39, fd, pack_ip(ip), port as usize) as isize }
 }

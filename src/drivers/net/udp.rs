@@ -7,6 +7,7 @@
 //! a timeout; sending may block briefly while ARP resolves the next hop.
 
 use super::{dns, get_ip_address, helper, ipv4};
+pub use super::Endpoint;
 use crate::fs::{FsError, FsResult};
 use crate::process;
 use crate::sync::Spinlock;
@@ -20,12 +21,6 @@ pub const MAX_PAYLOAD: usize = 1500 - 20 - HEADER_LEN;
 const QUEUE_DATAGRAMS: usize = 16;
 /// Ephemeral ports start above the kernel DNS client's fixed source port.
 const EPHEMERAL_FIRST: u16 = 50000;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Endpoint {
-    pub ip: [u8; 4],
-    pub port: u16,
-}
 
 struct Datagram {
     from: Endpoint,
@@ -138,7 +133,7 @@ impl UdpSocket {
         segment[2..4].copy_from_slice(&dest.port.to_be_bytes());
         segment[4..6].copy_from_slice(&(len as u16).to_be_bytes());
         segment[HEADER_LEN..len].copy_from_slice(data);
-        let checksum = match checksum(src_ip, dest.ip, &segment[..len]) {
+        let checksum = match helper::transport_checksum(src_ip, dest.ip, PROTOCOL, &segment[..len]) {
             0 => 0xFFFF,
             sum => sum,
         };
@@ -191,17 +186,6 @@ impl Drop for UdpSocket {
     }
 }
 
-/// UDP checksum over the IPv4 pseudo-header and `segment` (checksum field zero).
-fn checksum(src: [u8; 4], dst: [u8; 4], segment: &[u8]) -> u16 {
-    let mut buf = [0u8; 12 + HEADER_LEN + MAX_PAYLOAD];
-    buf[0..4].copy_from_slice(&src);
-    buf[4..8].copy_from_slice(&dst);
-    buf[9] = PROTOCOL;
-    buf[10..12].copy_from_slice(&(segment.len() as u16).to_be_bytes());
-    buf[12..12 + segment.len()].copy_from_slice(segment);
-    helper::calculate_checksum(&buf[..12 + segment.len()])
-}
-
 /// Deliver a UDP segment addressed to this host.
 pub fn handle_incoming(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
     if segment.len() < HEADER_LEN {
@@ -214,7 +198,7 @@ pub fn handle_incoming(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
         return;
     }
     let segment = &segment[..len];
-    if segment[6..8] != [0, 0] && checksum(src_ip, dst_ip, segment) != 0 {
+    if segment[6..8] != [0, 0] && helper::transport_checksum(src_ip, dst_ip, PROTOCOL, segment) != 0 {
         return;
     }
     if dst_port == dns::SRC_PORT {

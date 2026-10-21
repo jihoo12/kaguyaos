@@ -111,6 +111,8 @@ pub enum FsError {
     TimedOut,
     NetworkUnreachable,
     NotConnected,
+    ConnectionRefused,
+    ConnectionReset,
 }
 
 impl FsError {
@@ -129,6 +131,8 @@ impl FsError {
             FsError::TimedOut => -11,
             FsError::NetworkUnreachable => -12,
             FsError::NotConnected => -13,
+            FsError::ConnectionRefused => -14,
+            FsError::ConnectionReset => -15,
         }
     }
 }
