@@ -160,10 +160,17 @@ pub fn with_global_frame_allocator<R>(f: impl FnOnce(&mut FrameAllocator) -> R) 
 }
 
 /// Physically contiguous, identity-mapped frames owned by one user program
-/// (code run and guard+stack run). Returned to the recycle list on reap.
-#[derive(Debug, Clone, Copy)]
+/// (code run and guard+stack run). Tasks share it through an Arc; the frames
+/// are recycled when the last task using the image has been reaped.
+#[derive(Debug)]
 pub struct UserImage {
     pub runs: [(u64, usize); 2],
+}
+
+impl Drop for UserImage {
+    fn drop(&mut self) {
+        unsafe { release_user_image(get_table_mut(current_pml4_phys()), self) };
+    }
 }
 
 const RECYCLED_RUN_SLOTS: usize = 64;

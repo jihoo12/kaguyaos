@@ -1,6 +1,7 @@
 #![allow(static_mut_refs)]
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -38,8 +39,8 @@ pub struct Task {
     pub exit_code: usize,
     pub wake_tick: u64,
     pub waiting_for: usize,
-    /// Code/stack frames loaded for this program; recycled when reaped.
-    pub user_image: Option<crate::memory::UserImage>,
+    /// Code/stack frames of the program; shared with tasks it spawns.
+    pub user_image: Option<Arc<crate::memory::UserImage>>,
 }
 
 /// Scheduler metadata protected by SCHEDULER_LOCK.
@@ -269,7 +270,7 @@ pub fn add_new_user_task(
     stack_size: usize,
     rdi: u64,
     rsi: u64,
-    user_image: Option<crate::memory::UserImage>,
+    user_image: Option<Arc<crate::memory::UserImage>>,
 ) -> usize {
     let _guard = SCHEDULER_LOCK.lock();
     unsafe {
@@ -878,8 +879,8 @@ pub fn reschedule_if_needed() {
 /// Reclaim resources owned by zombie tasks that are no longer running on any CPU.
 ///
 /// Task slots stay allocated so run-queue/current-task indices remain stable. This
-/// releases the per-task kernel stack and the program's code/stack frames.
-/// Allocations from the shared user heap are not tracked per task.
+/// releases the per-task kernel stack and the task's reference to its program
+/// image. Allocations from the shared user heap are not tracked per task.
 fn reap_zombies(scheduler: &mut Scheduler) {
     let current_indices: [usize; crate::processor::MAX_AP_COUNT + 1] =
         core::array::from_fn(published_current_task);
@@ -919,11 +920,8 @@ fn reap_zombies(scheduler: &mut Scheduler) {
 
         unsafe {
             crate::memory::heap::free(task.kernel_stack_bottom as *mut u8);
-            if let Some(image) = task.user_image.take() {
-                let pml4 = crate::memory::get_table_mut(crate::memory::current_pml4_phys());
-                crate::memory::release_user_image(pml4, &image);
-            }
         }
+        task.user_image = None;
         task.kernel_stack_bottom = 0;
         task.kernel_stack_top = 0;
     }
@@ -1023,6 +1021,20 @@ unsafe extern "sysv64" fn context_switch(
         "ret", // Jumps to return address on top of new stack
         slots = const RETIRED_STACK_SLOTS,
     );
+}
+
+/// The program image of the task running on this CPU, if it has one.
+pub fn current_user_image() -> Option<Arc<crate::memory::UserImage>> {
+    let _guard = SCHEDULER_LOCK.lock();
+    unsafe {
+        let scheduler = SCHEDULER.as_ref()?;
+        let percpu = crate::processor::get_percpu_data();
+        if percpu.is_null() {
+            return None;
+        }
+        let index = (*percpu).current_task_index;
+        scheduler.metadata.tasks.get(index)?.user_image.clone()
+    }
 }
 
 // Helper to get current task id

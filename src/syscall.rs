@@ -349,7 +349,9 @@ fn sys_free(ptr: usize) {
 fn sys_add_task(entry: usize, user_rsp: usize) -> usize {
     // We assume stack size 16KB for new user tasks
     let stack_size = 16384;
-    crate::process::add_new_user_task(entry as u64, user_rsp as u64, stack_size, 0, 0, None)
+    // The new task may run code from the caller's image, so it shares it.
+    let image = crate::process::current_user_image();
+    crate::process::add_new_user_task(entry as u64, user_rsp as u64, stack_size, 0, 0, image)
 }
 
 fn sys_switch_task() {
@@ -590,7 +592,14 @@ fn sys_exec(filename_ptr: usize, filename_len: usize) -> usize {
     };
 
     // 3. Create the new user task with no args (shell uses this for exec)
-    crate::process::add_new_user_task(entry_point, user_rsp, 16384, 0, 0, Some(image))
+    crate::process::add_new_user_task(
+        entry_point,
+        user_rsp,
+        16384,
+        0,
+        0,
+        Some(alloc::sync::Arc::new(image)),
+    )
 }
 
 fn sys_exec2(filename_ptr: usize, filename_len: usize, args_ptr: usize, args_len: usize) -> usize {
@@ -630,7 +639,7 @@ fn sys_exec2(filename_ptr: usize, filename_len: usize, args_ptr: usize, args_len
         16384,
         args_ptr as u64,
         args_len as u64,
-        Some(image),
+        Some(alloc::sync::Arc::new(image)),
     )
 }
 

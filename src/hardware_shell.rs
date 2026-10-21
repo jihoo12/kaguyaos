@@ -97,7 +97,7 @@ pub fn run(info: &BootInfo) -> ! {
         let (entry, stack, image) =
             loader::load_kef(INIT, &mut allocator, memory::get_table_mut(pml4))
                 .expect("embedded init.kef is invalid");
-        process::add_new_user_task(entry, stack, 16384, 0, 0, Some(image));
+        process::add_new_user_task(entry, stack, 16384, 0, 0, Some(alloc::sync::Arc::new(image)));
         memory::commit_frame_allocator(&allocator);
         crate::println!("[6/6] Entering ring 3 on BSP");
         crate::println!(

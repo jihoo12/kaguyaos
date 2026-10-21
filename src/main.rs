@@ -516,7 +516,14 @@ fn kernel_normal(boot_info: &BootInfo) -> ! {
                 match loader::load_kef(&file_data, &mut allocator, pml4) {
                     Ok((entry_point, user_rsp, image)) => {
                         println!("Loader: Successfully loaded init.kef. Entry={:#x}, RSP={:#x}", entry_point, user_rsp);
-                        process::add_new_user_task(entry_point, user_rsp, 16384, 0, 0, Some(image));
+                        process::add_new_user_task(
+                            entry_point,
+                            user_rsp,
+                            16384,
+                            0,
+                            0,
+                            Some(alloc::sync::Arc::new(image)),
+                        );
                         loaded = true;
                     }
                     Err(e) => {
