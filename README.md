@@ -37,7 +37,8 @@ kaguyaOS currently boots into userspace on an SMP system, runs a preemptive sche
 ### Storage and userspace
 
 - Custom KEF executable format
-- Per-process page tables, private 512 KiB user heap and frame reclamation on exit
+- Per-process page tables and frame reclamation on exit
+- Userspace heap allocator on a `heap_grow` syscall (up to 256 MiB per process)
 - NX-enabled user mappings
 - NVMe controller driver using MMIO
 - FAT16 filesystem with create/read/write/delete/list/format
@@ -174,7 +175,8 @@ kaguyaos/
 │   │   └── mod.rs              # Interrupt-safe Spinlock
 │   ├── memory/
 │   │   ├── mod.rs              # Frame allocator and page tables
-│   │   └── heap.rs             # Kernel/user heap allocators
+│   │   ├── address_space.rs    # Per-process page tables and heap growth
+│   │   └── heap.rs             # Kernel heap allocator
 │   ├── console/
 │   │   ├── mod.rs              # Console writer and text viewport
 │   │   ├── framebuffer.rs      # Pixel/rectangle graphics primitives
@@ -245,9 +247,9 @@ Networking remains an active subsystem. A later milestone is to add TCP and HTTP
 - IPv4 configuration currently assumes the QEMU user-networking environment.
 - DNS is a minimal single-query A-record resolver.
 - TCP, HTTP, and TLS are not implemented.
-- Each program has its own page tables (code at `0x4000_0000_0000`, a lazily mapped 512 KiB heap at `0x7000_0000_0000`, a 16 KiB stack below `0x7fff_ffff_0000`); everything is freed when it exits. The kernel and its identity map stay shared, without PCID or global pages.
-- The user heap allocator runs in the kernel but keeps its metadata in user-writable heap memory, so a program can corrupt it. Moving the allocator into userspace is pending.
-- KEF binaries are flat and unrelocated; code that stores absolute addresses (for example some `.rodata` jump tables or vtables) does not work.
+- Each program has its own page tables (code at `0x4000_0000_0000`, a heap growing from `0x7000_0000_0000`, a 16 KiB stack below `0x7fff_ffff_0000`); everything is freed when it exits. The kernel and its identity map stay shared, without PCID or global pages.
+- KEF programs are linked at `0x4000_0000_0000` with resolved GOT entries and are not relocated at load time. Version 1 headers (`KEF\x01`, 32 bytes) record the file-backed size so only the declared `.bss` is zero-filled; legacy `KEF\0` images must store their whole image.
+- NVMe transfers use PRP2 or a single PRP list, so one command can cover at most 512 pages.
 
 ---
 

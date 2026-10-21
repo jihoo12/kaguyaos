@@ -98,7 +98,7 @@ Never restore automatic formatting of unrecognized disks during boot.
 | Layer | Key Files | Notes |
 |-------|-----------|-------|
 | Boot | `src/main.rs:efi_main()` → `kernel_main()` | UEFI entry, init sequence, scheduler loop |
-| Memory | `src/memory/{mod,heap}.rs` | Frame allocator, 4-level page tables, segregated free-list heap |
+| Memory | `src/memory/{mod,heap,address_space}.rs` | Frame pool, 4-level page tables, kernel heap, per-process address spaces |
 | Tasks | `src/process/mod.rs` | Cooperative round-robin, 100 Hz preemptive tick, SMP |
 | Syscalls | `src/syscall.rs` | 25 syscalls via AMD64 `syscall`/`sysret` |
 | Drivers | `src/drivers/{pci,nvme,xhci}.rs`, `src/drivers/net/` | PCI enumeration, NVMe, xHCI USB, E1000 |
@@ -110,11 +110,13 @@ Never restore automatic formatting of unrecognized disks during boot.
 
 - `src/main.rs` — Boot flow, kernel init, scheduler loop (619 lines)
 - `src/syscall.rs` — All 25 syscall handlers
-- `src/memory/heap.rs` — Kernel + user heap allocators
+- `src/memory/heap.rs` — Kernel heap allocator
+- `src/memory/address_space.rs` — Per-process page tables, `heap_grow`
+- `user/linker.ld` — Links programs at `USER_CODE_BASE` (`0x4000_0000_0000`); build with `--apply-dynamic-relocs`
 - `src/process/mod.rs` — Task struct, context switch, scheduler
 - `src/drivers/net/mod.rs` — Network stack (ARP, ICMP, ring buffer)
 - `user/src/init.rs` — Shell (PID 1)
-- `user/src/std.rs` — Userspace syscall wrappers (libkaguya)
+- `user/src/std.rs` — Userspace syscall wrappers and heap allocator (libkaguya)
 - `docs/syscall.md` — Syscall reference table
 - `tools/kef-tool/` — Host-side FAT16 image manipulation
 

@@ -410,56 +410,6 @@ static INNER_ALLOCATOR: Spinlock<SegregatedAllocator> = Spinlock::new(Segregated
 static ALLOCATOR: KernelAllocator = KernelAllocator;
 
 // ---------------------------------------------------------------------------
-// User-mode heap allocator
-// ---------------------------------------------------------------------------
-//
-// Each address space owns a separate SegregatedAllocator over its own heap
-// pages, which are mapped with PAGE_USER so the task can dereference pointers
-// it gets back from sys_alloc/sys_realloc. These helpers must not be used with
-// INNER_ALLOCATOR, whose pages are kernel-only. The allocator state lives in
-// user-writable memory and must only be used while that space is active.
-
-pub(crate) type UserAllocator = Spinlock<SegregatedAllocator>;
-
-/// Allocate from a user heap. Used by sys_alloc.
-pub unsafe fn user_heap_alloc(heap: &UserAllocator, layout: Layout) -> *mut u8 {
-    unsafe { heap.lock().alloc_aligned(layout.size(), layout.align()) }
-}
-
-/// Free a pointer previously returned by `user_heap_alloc`. Used by sys_free.
-pub unsafe fn user_heap_free(heap: &UserAllocator, ptr: *mut u8) {
-    if ptr.is_null() {
-        return;
-    }
-    unsafe { heap.lock().dealloc_aligned(ptr) };
-}
-
-/// Reallocate a pointer previously returned by `user_heap_alloc`. Used by sys_realloc.
-pub unsafe fn user_heap_realloc(
-    heap: &UserAllocator,
-    ptr: *mut u8,
-    layout: Layout,
-    new_size: usize,
-) -> *mut u8 {
-    let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
-    let new_ptr = unsafe { user_heap_alloc(heap, new_layout) };
-    if ptr.is_null() {
-        return new_ptr;
-    }
-
-    if !new_ptr.is_null() {
-        let old_cap = unsafe { heap.lock().capacity_of(ptr) };
-        let copy_size = new_size.min(old_cap);
-        unsafe {
-            ptr::copy_nonoverlapping(ptr, new_ptr, copy_size);
-            user_heap_free(heap, ptr);
-        }
-    }
-
-    new_ptr
-}
-
-// ---------------------------------------------------------------------------
 // Privilege-level detection & user-mode syscall stubs (unchanged)
 // ---------------------------------------------------------------------------
 
