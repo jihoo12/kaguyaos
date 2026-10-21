@@ -48,7 +48,8 @@ fn fail(message: &str) -> ! {
 struct Url<'a> {
     host: &'a str,
     port: u16,
-    path: &'a str,
+    /// Path and query, without any fragment. May be empty or start with '?'.
+    target: &'a str,
 }
 
 fn parse_url(url: &str) -> Result<Url<'_>, &'static str> {
@@ -61,10 +62,8 @@ fn parse_url(url: &str) -> Result<Url<'_>, &'static str> {
     } else {
         url
     };
-    let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
+    let rest = rest.split('#').next().unwrap_or("");
+    let (authority, target) = rest.split_at(rest.find(['/', '?']).unwrap_or(rest.len()));
     let (host, port) = match authority.rfind(':') {
         Some(i) => {
             let port = authority[i + 1..].parse::<u16>().map_err(|_| "bad port")?;
@@ -75,7 +74,138 @@ fn parse_url(url: &str) -> Result<Url<'_>, &'static str> {
     if host.is_empty() || port == 0 {
         return Err("missing host");
     }
-    Ok(Url { host, port, path })
+    Ok(Url { host, port, target })
+}
+
+/// ":port", or nothing for the default HTTP port.
+fn port_suffix(port: u16, buf: &mut [u8; 6]) -> &str {
+    if port == 80 {
+        return "";
+    }
+    let mut i = buf.len();
+    let mut value = port;
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    i -= 1;
+    buf[i] = b':';
+    unsafe { core::str::from_utf8_unchecked(&buf[i..]) }
+}
+
+struct UrlBuf {
+    bytes: [u8; MAX_URL],
+    len: usize,
+}
+
+impl UrlBuf {
+    fn new() -> Self {
+        Self { bytes: [0; MAX_URL], len: 0 }
+    }
+
+    fn push(&mut self, piece: &[u8]) {
+        if self.len + piece.len() > MAX_URL {
+            fail("URL too long");
+        }
+        self.bytes[self.len..self.len + piece.len()].copy_from_slice(piece);
+        self.len += piece.len();
+    }
+
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.bytes[..self.len]).unwrap_or_else(|_| fail("URL is not UTF-8"))
+    }
+}
+
+/// Append an absolute path with "." and ".." segments removed.
+fn push_normalized_path(out: &mut UrlBuf, path: &[u8]) {
+    let mut segments: [&[u8]; 64] = [&[]; 64];
+    let mut count = 0usize;
+    let mut directory = false;
+    let parts = path.strip_prefix(b"/").unwrap_or(path).split(|&b| b == b'/');
+    for segment in parts {
+        directory = matches!(segment, b"." | b"..");
+        match segment {
+            b"." => {}
+            b".." => count = count.saturating_sub(1),
+            _ => {
+                if count == segments.len() {
+                    fail("URL has too many path segments");
+                }
+                segments[count] = segment;
+                count += 1;
+            }
+        }
+    }
+    out.push(b"/");
+    for (i, segment) in segments[..count].iter().enumerate() {
+        if i > 0 {
+            out.push(b"/");
+        }
+        out.push(segment);
+    }
+    if directory && count > 0 {
+        out.push(b"/");
+    }
+}
+
+fn has_scheme(reference: &[u8]) -> bool {
+    let end = reference.iter().position(|&b| matches!(b, b'/' | b'?' | b'#')).unwrap_or(reference.len());
+    match reference[..end].iter().position(|&b| b == b':') {
+        Some(colon) => {
+            colon > 0
+                && reference[0].is_ascii_alphabetic()
+                && reference[..colon].iter().all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+        }
+        None => false,
+    }
+}
+
+/// Resolve a Location header against the URL that returned it.
+fn resolve(base: &Url, location: &[u8]) -> UrlBuf {
+    let mut out = UrlBuf::new();
+    if has_scheme(location) {
+        out.push(location);
+        return out;
+    }
+    if location.starts_with(b"//") {
+        out.push(b"http:");
+        out.push(location);
+        return out;
+    }
+
+    let mut port = [0u8; 6];
+    out.push(b"http://");
+    out.push(base.host.as_bytes());
+    out.push(port_suffix(base.port, &mut port).as_bytes());
+
+    let base_target = base.target.as_bytes();
+    let base_path = base_target.split(|&b| b == b'?').next().unwrap_or(&[]);
+    let base_path: &[u8] = if base_path.starts_with(b"/") { base_path } else { b"/" };
+    let location = location.split(|&b| b == b'#').next().unwrap_or(&[]);
+
+    let mut merged = UrlBuf::new();
+    match location.first() {
+        None => merged.push(if base_target.is_empty() { b"/" } else { base_target }),
+        Some(b'/') => merged.push(location),
+        Some(b'?') => {
+            merged.push(base_path);
+            merged.push(location);
+        }
+        Some(_) => {
+            let dir = base_path.iter().rposition(|&b| b == b'/').map_or(0, |i| i + 1);
+            merged.push(&base_path[..dir]);
+            merged.push(location);
+        }
+    }
+    let merged = &merged.bytes[..merged.len];
+    let query = merged.iter().position(|&b| b == b'?').unwrap_or(merged.len());
+    push_normalized_path(&mut out, &merged[..query]);
+    out.push(&merged[query..]);
+    out
 }
 
 fn parse_ip(s: &str) -> Option<[u8; 4]> {
@@ -152,8 +282,10 @@ fn fetch(url: &Url, next: &mut [u8; MAX_URL]) -> Outcome {
         _ => fail("cannot connect"),
     }
 
+    let mut port = [0u8; 6];
+    let slash = if url.target.starts_with('/') { "" } else { "/" };
     let parts = [
-        "GET ", url.path, " HTTP/1.0\r\nHost: ", url.host,
+        "GET ", slash, url.target, " HTTP/1.0\r\nHost: ", url.host, port_suffix(url.port, &mut port),
         "\r\nUser-Agent: kaguyaOS-wget\r\nAccept: */*\r\nConnection: close\r\n\r\n",
     ];
     for part in parts {
@@ -240,51 +372,18 @@ pub extern "C" fn _start(args_ptr: *const u8, args_len: usize) -> ! {
         std::terminate_task(1);
     }
 
-    let mut current = [0u8; MAX_URL];
-    current[..arg.len()].copy_from_slice(arg.as_bytes());
-    let mut current_len = arg.len();
+    let mut current = UrlBuf::new();
+    current.push(arg.as_bytes());
     for _ in 0..=MAX_REDIRECTS {
-        let text = core::str::from_utf8(&current[..current_len]).unwrap_or_else(|_| fail("bad redirect"));
-        let url = parse_url(text).unwrap_or_else(|message| fail(message));
+        let url = parse_url(current.as_str()).unwrap_or_else(|message| fail(message));
         let mut next = [0u8; MAX_URL];
         match fetch(&url, &mut next) {
             Outcome::Done(ok) => std::terminate_task(if ok { 0 } else { 1 }),
             Outcome::Redirect(len) => {
-                // A relative Location keeps the scheme, host and port.
-                if next[0] == b'/' {
-                    let mut joined = [0u8; MAX_URL];
-                    let mut n = 0;
-                    for piece in [b"http://".as_slice(), url.host.as_bytes(), b":"] {
-                        joined[n..n + piece.len()].copy_from_slice(piece);
-                        n += piece.len();
-                    }
-                    let mut port = [0u8; 5];
-                    let mut i = port.len();
-                    let mut value = url.port;
-                    loop {
-                        i -= 1;
-                        port[i] = b'0' + (value % 10) as u8;
-                        value /= 10;
-                        if value == 0 {
-                            break;
-                        }
-                    }
-                    let tail = [&port[i..], &next[..len]];
-                    for piece in tail {
-                        if n + piece.len() > MAX_URL {
-                            fail("redirect target too long");
-                        }
-                        joined[n..n + piece.len()].copy_from_slice(piece);
-                        n += piece.len();
-                    }
-                    current = joined;
-                    current_len = n;
-                } else {
-                    current = next;
-                    current_len = len;
-                }
+                let target = resolve(&url, &next[..len]);
+                current = target;
                 eprint("Redirected to ");
-                std::write(std::STDERR, &current[..current_len]);
+                eprint(current.as_str());
                 eprint("\n");
             }
         }
