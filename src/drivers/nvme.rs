@@ -168,6 +168,35 @@ static mut ADMIN_CQ_BUFFER: AlignedPage = AlignedPage([0; 4096]);
 static mut IDENTIFY_BUFFER: AlignedPage = AlignedPage([0; 4096]);
 static mut IO_SQ_BUFFER: AlignedPage = AlignedPage([0; 4096]);
 static mut IO_CQ_BUFFER: AlignedPage = AlignedPage([0; 4096]);
+/// PRP list for I/O spanning more than two pages. Callers serialize I/O
+/// (FS_LOCK), and each command completes before the next is submitted.
+static mut PRP_LIST: AlignedPage = AlignedPage([0; 4096]);
+
+const LBA_SIZE: u64 = 512;
+const PAGE: u64 = 4096;
+
+/// Describe a physically contiguous, identity-mapped buffer with PRP entries.
+/// PRP1 may start mid-page; every later page must be named by PRP2 or by the
+/// PRP list it points to. Returns false if the buffer needs more than one list.
+unsafe fn set_prps(cmd: &mut NvmeSQEntry, buffer: u64, count: u32) -> bool {
+    let end = buffer + count as u64 * LBA_SIZE;
+    let first_page = buffer & !(PAGE - 1);
+    let pages = (end - first_page).div_ceil(PAGE);
+    cmd.prp1 = buffer;
+    cmd.prp2 = match pages {
+        0 | 1 => 0,
+        2 => first_page + PAGE,
+        n if n - 1 <= PAGE / 8 => unsafe {
+            let list = addr_of_mut!(PRP_LIST).cast::<u64>();
+            for i in 1..n {
+                list.add(i as usize - 1).write_volatile(first_page + i * PAGE);
+            }
+            list as u64
+        },
+        _ => return false,
+    };
+    true
+}
 
 // ============================================================================
 // Helper Functions
@@ -200,7 +229,8 @@ pub unsafe fn nvme_submit_command(q_ptr: *mut NvmeQueue, cmd: &NvmeSQEntry) {
     }
 }
 
-pub unsafe fn nvme_wait_for_completion(q_ptr: *mut NvmeQueue, cid: u16) {
+/// Wait for `cid` and return its status field (0 on success).
+pub unsafe fn nvme_wait_for_completion(q_ptr: *mut NvmeQueue, cid: u16) -> u16 {
     unsafe {
         let q = &mut *q_ptr;
         loop {
@@ -220,7 +250,7 @@ pub unsafe fn nvme_wait_for_completion(q_ptr: *mut NvmeQueue, cid: u16) {
 
                     // Ring Head Doorbell
                     write_volatile(q.doorbell_head, q.head as u32);
-                    return;
+                    return entry.status >> 1;
                 } else {
                     // Consume other completions
                     q.head += 1;
@@ -428,7 +458,9 @@ pub unsafe fn nvme_read(nsid: u32, lba: u64, buffer: *mut u8, count: u32) -> i32
     cmd.opcode = NVME_OP_READ;
     cmd.command_id = 100;
     cmd.nsid = nsid;
-    cmd.prp1 = buffer as u64;
+    if count == 0 || !unsafe { set_prps(&mut cmd, buffer as u64, count) } {
+        return -1;
+    }
     cmd.cdw10 = lba as u32;
     cmd.cdw11 = (lba >> 32) as u32;
     cmd.cdw12 = (count - 1) & 0xFFFF;
@@ -437,7 +469,9 @@ pub unsafe fn nvme_read(nsid: u32, lba: u64, buffer: *mut u8, count: u32) -> i32
         let ctx_ptr = addr_of_mut!(NVME_CTX);
         let q_ptr = addr_of_mut!((*ctx_ptr).io_queue);
         nvme_submit_command(q_ptr, &cmd);
-        nvme_wait_for_completion(q_ptr, 100);
+        if nvme_wait_for_completion(q_ptr, 100) != 0 {
+            return -1;
+        }
     }
 
     0
@@ -451,7 +485,9 @@ pub unsafe fn nvme_write(nsid: u32, lba: u64, buffer: *mut u8, count: u32) -> i3
     cmd.opcode = NVME_OP_WRITE;
     cmd.command_id = 101;
     cmd.nsid = nsid;
-    cmd.prp1 = buffer as u64;
+    if count == 0 || !unsafe { set_prps(&mut cmd, buffer as u64, count) } {
+        return -1;
+    }
     cmd.cdw10 = lba as u32;
     cmd.cdw11 = (lba >> 32) as u32;
     cmd.cdw12 = (count - 1) & 0xFFFF;
@@ -460,7 +496,9 @@ pub unsafe fn nvme_write(nsid: u32, lba: u64, buffer: *mut u8, count: u32) -> i3
         let ctx_ptr = addr_of_mut!(NVME_CTX);
         let q_ptr = addr_of_mut!((*ctx_ptr).io_queue);
         nvme_submit_command(q_ptr, &cmd);
-        nvme_wait_for_completion(q_ptr, 101);
+        if nvme_wait_for_completion(q_ptr, 101) != 0 {
+            return -1;
+        }
     }
 
     0
