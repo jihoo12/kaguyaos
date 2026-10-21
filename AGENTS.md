@@ -49,7 +49,7 @@ These boot disposable QEMU snapshots, exercise shell input and capture screensho
 Other verification is manual:
 
 1. Run `./build_insert_run.sh`
-2. In QEMU shell, test commands: `ls`, `cat`, `write`, `rm`, `exec`, `ping`, `shutdown`, plus pipes and redirection (`ls | cat`, `ls > f`, `cat < f`, `>>`)
+2. In QEMU shell, test commands: `ls`, `cat`, `write`, `rm`, `exec`, `ping`, `shutdown`, plus pipes and redirection (`ls | cat`, `ls > f`, `cat < f`, `>>`) and `wget example.com > page.html`
 3. Check serial output for kernel panics or errors
 
 First physical-hardware milestone uses a separate diagnostic build:
@@ -104,7 +104,7 @@ Never restore automatic formatting of unrecognized disks during boot.
 | Drivers | `src/drivers/{pci,nvme,xhci,keyboard}.rs`, `src/drivers/net/` | PCI enumeration, NVMe, xHCI USB, E1000, UDP and TCP client sockets (`net/udp.rs`, `net/tcp.rs`) |
 | Filesystem | `src/fs.rs`, `src/file.rs`, `src/pipe.rs` | FAT16, global spinlock; per-process fd tables; blocking pipes |
 | Console | `src/console/{mod,term}.rs` | VGA framebuffer, font8x8, cell-based terminal |
-| Userspace | `user/src/{init,std,ls,cat,write,rm,ping}.rs` | Shell, syscall wrappers, utilities |
+| Userspace | `user/src/{init,std,ls,cat,write,rm,ping,wget}.rs` | Shell, syscall wrappers, utilities |
 
 ## Key Files
 
