@@ -303,13 +303,11 @@ pub extern "C" fn _start(_args_ptr: *const u8, _args_len: usize) -> ! {
         cmd_len = 0;
 
         loop {
-            std::poll_xhci();
-            let key = std::read_key() as u8;
-
-            if key == 0 {
-                std::yield_task();
+            let mut key = [0u8; 1];
+            if std::read(std::STDIN, &mut key) != 1 {
                 continue;
             }
+            let key = key[0];
 
             if key == KEY_ENTER {
                 std::print("\n");

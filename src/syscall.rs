@@ -46,7 +46,7 @@ pub(crate) static mut KERNEL_GS_BASE: KernelGsBase = KernelGsBase {
     scratch: 0,
 };
 
-pub(crate) static XHCI_LOCK: crate::sync::Spinlock<()> = crate::sync::Spinlock::new(());
+use crate::drivers::keyboard::XHCI_LOCK;
 
 pub unsafe fn get_global_gs_base() -> u64 {
     core::ptr::addr_of_mut!(KERNEL_GS_BASE) as u64

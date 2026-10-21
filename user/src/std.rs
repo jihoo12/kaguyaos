@@ -130,6 +130,7 @@ pub fn print(s: &str) {
     write(STDOUT, s.as_bytes());
 }
 
+/// Non-blocking; prefer `read(STDIN, ..)`, which sleeps until a key arrives.
 pub fn read_key() -> usize {
     unsafe { syscall0(8) }
 }
@@ -352,8 +353,8 @@ pub fn get_task_exit_code(task_id: usize) -> usize {
 // ── File descriptors ─────────────────────────────────────────────────────────
 //
 // Every process starts with the console on STDIN, STDOUT and STDERR. Reading
-// STDIN never blocks: it returns 0 when no key is buffered. Errors are the
-// negative filesystem codes.
+// the console blocks until a key is pressed; it has no end of input. Errors
+// are the negative filesystem codes.
 
 pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;

@@ -119,7 +119,10 @@ impl FileTable {
     pub fn read(&self, fd: usize, buf: &mut [u8]) -> FsResult<usize> {
         let mut fds = self.fds.lock();
         match fds.get_mut(fd).and_then(Option::as_mut) {
-            Some(OpenFile::Console) => Ok(read_console(buf)),
+            Some(OpenFile::Console) => {
+                drop(fds);
+                Ok(crate::drivers::keyboard::read_blocking(buf))
+            }
             Some(OpenFile::Disk(file)) if file.flags & O_READ != 0 => {
                 let n = fs::read_at(file.id, file.offset, buf)?;
                 file.offset += n as u64;
@@ -195,23 +198,4 @@ fn free_slot(fds: &mut Vec<Option<OpenFile>>) -> FsResult<usize> {
         }
         None => Err(FsError::TooManyOpenFiles),
     }
-}
-
-/// Non-blocking: returns 0 when no key is buffered.
-fn read_console(buf: &mut [u8]) -> usize {
-    let _guard = crate::syscall::XHCI_LOCK.lock();
-    unsafe {
-        crate::drivers::xhci::process_events();
-    }
-    let mut n = 0;
-    while n < buf.len() {
-        match crate::drivers::xhci::get_key() {
-            Some(key) => {
-                buf[n] = key;
-                n += 1;
-            }
-            None => break,
-        }
-    }
-    n
 }
