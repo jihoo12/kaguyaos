@@ -37,7 +37,7 @@ Every process has its own address space. All pointer arguments must be mapped us
 
 ## File descriptors
 
-Each process has up to 32 descriptors. fds 0, 1 and 2 start as the console; `exec`/`exec2` give the child a fresh table, `spawn` copies three chosen descriptors into the child's fds 0–2, and `add_task` threads share their creator's table. A process's descriptors are closed as soon as it terminates. `print` in `user/src/std.rs` writes to fd 1, so program output follows redirection. Errors are negative codes: `-2` invalid argument, `-5` disk or 4 GiB size limit reached, `-6` file not found (including a descriptor whose file was deleted or replaced), `-7` bad descriptor or wrong access mode, `-8` table full, `-9` broken pipe.
+Each process has up to 32 descriptors. fds 0, 1 and 2 start as the console; `exec`/`exec2` give the child a fresh table, `spawn` copies three chosen descriptors into the child's fds 0–2, and `add_task` threads share their creator's table. A process's descriptors are closed as soon as it terminates. `print` in `user/src/std.rs` writes to fd 1, so program output follows redirection. Errors are negative codes: `-2` invalid argument, `-5` disk or 4 GiB size limit reached, `-6` file not found (including a descriptor whose file was deleted or replaced), `-7` bad descriptor or wrong access mode, `-8` table full, `-9` broken pipe, `-10` address in use, `-11` timed out, `-12` network unreachable (no NIC, no address, or ARP failed), `-13` not connected/bound.
 
 | # | Name | Arguments | Return | Description |
 |---|------|-----------|--------|-------------|
@@ -48,7 +48,7 @@ Each process has up to 32 descriptors. fds 0, 1 and 2 start as the console; `exe
 | 33 | `seek` | `RDI=fd, RSI=offset (signed), RDX=whence` | `offset` | Set the offset relative to `0`=start, `1`=current, `2`=end. Only valid on files |
 | 34 | `pipe` | `RDI=fds_ptr` (`[usize; 2]`, 8-byte aligned) | `0` | Create a 4 KiB pipe; stores the read end, then the write end. Reads block while it is empty and return 0 once every write end is closed; writes block while it is full and return `-9` once every read end is closed |
 | 35 | `spawn` | `RDI=name_ptr, RSI=name_len, RDX=args_ptr, R10=args_len, R8=stdio_ptr` (`[usize; 3]`, 8-byte aligned) | `task_id` | Like `exec2`, but the child's fds 0, 1 and 2 copy the caller's descriptors listed at `stdio_ptr`. Returns `usize::MAX` on failure. A copied file keeps its own offset |
-| 36 | `fd_kind` | `RDI=fd` | `kind` | `0` console, `1` file, `2` pipe, or `-7` if unused |
+| 36 | `fd_kind` | `RDI=fd` | `kind` | `0` console, `1` file, `2` pipe, `3` socket, or `-7` if unused |
 
 ## Filesystem (FAT16 on NVMe)
 
@@ -69,8 +69,15 @@ Each process has up to 32 descriptors. fds 0, 1 and 2 start as the console; `exe
 
 ## Network
 
+Sockets are descriptors. IPv4 addresses are packed as for `net_send_ping` (`a.b.c.d` → `a | b<<8 | c<<16 | d<<24`); ports are host byte order. A UDP socket is bound on first use if `bind` was not called (ephemeral ports start at 50000; 49152 belongs to the kernel DNS client). A connected UDP socket accepts datagrams only from its peer and supports `read`/`write`, so it works with pipes and redirection. Each socket queues at most 16 datagrams; more are dropped. Payloads are limited to 1472 bytes (no IP fragmentation).
+
 | # | Name | Arguments | Return | Description |
 |---|------|-----------|--------|-------------|
+| 37 | `socket` | `RDI=kind` | `fd` | `1` = UDP |
+| 38 | `bind` | `RDI=fd, RSI=port` | `port` | Bind a local port; `0` picks an ephemeral one. Returns the bound port |
+| 39 | `connect` | `RDI=fd, RSI=ip_packed, RDX=port` | `0` | Set the default peer and filter incoming datagrams to it |
+| 40 | `sendto` | `RDI=fd, RSI=buf_ptr, RDX=len, R10=ip_packed, R8=port` | `bytes` | Send one datagram; ip and port both `0` mean the connected peer |
+| 41 | `recvfrom` | `RDI=fd, RSI=buf_ptr, RDX=len, R10=addr_ptr, R8=timeout_ms` | `bytes` | Block for one datagram, truncated to `len`. `addr_ptr` (optional, 4-byte aligned) receives `{ ip: [u8; 4], port: u16, _reserved: u16 }`. `timeout_ms` of `0` waits forever, otherwise `-11` on timeout |
 | 23 | `net_send_ping` | `RDI=dst_ip_packed` | `seq` | Send ICMP Echo Request (returns sequence number, 0 on failure) |
 | 24 | `net_recv_ping` | `RDI=buf_ptr, RSI=buf_len` | `bytes` | Receive ICMP Echo Reply (non-blocking, returns bytes copied) |
 

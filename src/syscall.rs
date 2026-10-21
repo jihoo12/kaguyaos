@@ -314,6 +314,26 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_fd_kind(fd) -> kind
             sys_fd_kind(arg1) as usize
         }
+        37 => {
+            // sys_socket(kind) -> fd
+            sys_socket(arg1) as usize
+        }
+        38 => {
+            // sys_bind(fd, port) -> bound port
+            sys_bind(arg1, arg2) as usize
+        }
+        39 => {
+            // sys_connect(fd, ip_packed, port) -> 0
+            sys_connect(arg1, arg2, arg3) as usize
+        }
+        40 => {
+            // sys_sendto(fd, buf_ptr, buf_len, ip_packed, port) -> bytes_sent
+            sys_sendto(arg1, arg2, arg3, arg4, arg5) as usize
+        }
+        41 => {
+            // sys_recvfrom(fd, buf_ptr, buf_len, addr_ptr, timeout_ms) -> bytes_received
+            sys_recvfrom(arg1, arg2, arg3, arg4, arg5) as usize
+        }
         _ => {
             // Unknown syscall
             let _ = crate::println!("Unknown syscall: {}", id);
@@ -630,6 +650,86 @@ fn sys_pipe(fds_ptr: usize) -> isize {
 
 fn sys_fd_kind(fd: usize) -> isize {
     fd_result(current_files().and_then(|files| files.kind(fd)))
+}
+
+// ── Sockets ─────────────────────────────────────────────────────────────────
+
+/// Written by recvfrom: the sender's address.
+#[repr(C)]
+struct SockAddr {
+    ip: [u8; 4],
+    port: u16,
+    _reserved: u16,
+}
+
+/// IPv4 addresses are packed as for net_send_ping: `a.b.c.d` is `a | b << 8 | c << 16 | d << 24`.
+fn endpoint(ip_packed: usize, port: usize) -> crate::fs::FsResult<crate::drivers::net::udp::Endpoint> {
+    let port = u16::try_from(port).map_err(|_| crate::fs::FsError::InvalidArgument)?;
+    let ip = u32::try_from(ip_packed).map_err(|_| crate::fs::FsError::InvalidArgument)?;
+    Ok(crate::drivers::net::udp::Endpoint { ip: ip.to_le_bytes(), port })
+}
+
+fn sys_socket(kind: usize) -> isize {
+    fd_result(current_files().and_then(|files| files.socket(kind)))
+}
+
+fn sys_bind(fd: usize, port: usize) -> isize {
+    let Ok(port) = u16::try_from(port) else {
+        return crate::fs::FsError::InvalidArgument.code() as isize;
+    };
+    fd_result(current_files().and_then(|files| files.udp(fd)).and_then(|socket| socket.bind(port)))
+}
+
+fn sys_connect(fd: usize, ip_packed: usize, port: usize) -> isize {
+    fd_result(
+        endpoint(ip_packed, port)
+            .and_then(|peer| current_files()?.udp(fd)?.connect(peer))
+            .map(|()| 0),
+    )
+}
+
+fn sys_sendto(fd: usize, buf_ptr: usize, buf_len: usize, ip_packed: usize, port: usize) -> isize {
+    if buf_len != 0 && !user_range_ok(buf_ptr, buf_len) {
+        return crate::fs::FsError::InvalidArgument.code() as isize;
+    }
+    let data: &[u8] = if buf_len == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, buf_len) }
+    };
+    let dest = if ip_packed == 0 && port == 0 {
+        Ok(None)
+    } else {
+        endpoint(ip_packed, port).map(Some)
+    };
+    fd_result(dest.and_then(|dest| current_files()?.udp(fd)?.send_to(dest, data)))
+}
+
+fn sys_recvfrom(fd: usize, buf_ptr: usize, buf_len: usize, addr_ptr: usize, timeout_ms: usize) -> isize {
+    if buf_len != 0 && !user_range_ok(buf_ptr, buf_len) {
+        return crate::fs::FsError::InvalidArgument.code() as isize;
+    }
+    if addr_ptr != 0 && (!user_range_ok(addr_ptr, core::mem::size_of::<SockAddr>()) || addr_ptr % 4 != 0) {
+        return crate::fs::FsError::InvalidArgument.code() as isize;
+    }
+    let buf: &mut [u8] = if buf_len == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) }
+    };
+    // The PIT runs at 100 Hz.
+    let timeout = (timeout_ms != 0).then(|| (timeout_ms as u64).div_ceil(10));
+    let result = current_files()
+        .and_then(|files| files.udp(fd))
+        .and_then(|socket| socket.recv_from(buf, timeout));
+    fd_result(result.map(|(n, from)| {
+        if addr_ptr != 0 {
+            unsafe {
+                *(addr_ptr as *mut SockAddr) = SockAddr { ip: from.ip, port: from.port, _reserved: 0 };
+            }
+        }
+        n
+    }))
 }
 
 fn sys_get_task_status(task_id: usize) -> usize {

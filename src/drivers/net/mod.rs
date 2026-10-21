@@ -12,6 +12,7 @@ pub use driver::NetworkDriver;
 
 pub mod arp;
 pub mod dns;
+pub mod udp;
 
 // ── ARP cache ─────────────────────────────────────────────────────────────
 

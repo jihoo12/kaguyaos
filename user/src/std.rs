@@ -406,6 +406,7 @@ pub fn pipe() -> Option<(usize, usize)> {
 pub const FD_CONSOLE: isize = 0;
 pub const FD_FILE: isize = 1;
 pub const FD_PIPE: isize = 2;
+pub const FD_SOCKET: isize = 3;
 
 /// What `fd` refers to: FD_CONSOLE, FD_FILE or FD_PIPE, or negative if unused.
 pub fn fd_kind(fd: usize) -> isize {
@@ -501,6 +502,56 @@ pub fn spawn(filename: &str, args: &str, stdio: [usize; 3]) -> usize {
 }
 
 // ── Network ─────────────────────────────────────────────────────────────────
+
+pub const SOCK_UDP: usize = 1;
+
+fn pack_ip(ip: [u8; 4]) -> usize {
+    u32::from_le_bytes(ip) as usize
+}
+
+/// Create a socket and return its descriptor, or negative on error.
+pub fn socket(kind: usize) -> isize {
+    unsafe { syscall1(37, kind) as isize }
+}
+
+/// Bind to `port` (0 picks a free ephemeral port). Returns the bound port.
+pub fn bind(fd: usize, port: u16) -> isize {
+    unsafe { syscall2(38, fd, port as usize) as isize }
+}
+
+/// Set the default destination. A connected UDP socket only receives from
+/// its peer and works with `read`/`write`. Binds an ephemeral port if needed.
+pub fn connect(fd: usize, ip: [u8; 4], port: u16) -> isize {
+    unsafe { syscall3(39, fd, pack_ip(ip), port as usize) as isize }
+}
+
+/// Send one datagram. Returns bytes sent.
+pub fn send_to(fd: usize, data: &[u8], ip: [u8; 4], port: u16) -> isize {
+    unsafe { syscall5(40, fd, data.as_ptr() as usize, data.len(), pack_ip(ip), port as usize) as isize }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SockAddr {
+    pub ip: [u8; 4],
+    pub port: u16,
+    _reserved: u16,
+}
+
+/// Receive one datagram (truncated to `buf`) and its sender. Waits at most
+/// `timeout_ms` (0 waits forever); returns -11 on timeout.
+pub fn recv_from(fd: usize, buf: &mut [u8], from: &mut SockAddr, timeout_ms: usize) -> isize {
+    unsafe {
+        syscall5(
+            41,
+            fd,
+            buf.as_mut_ptr() as usize,
+            buf.len(),
+            from as *mut SockAddr as usize,
+            timeout_ms,
+        ) as isize
+    }
+}
 
 /// Send an ICMP Echo Request to the given IP address.
 /// `dst_ip` is `[a,b,c,d]` in host byte order.

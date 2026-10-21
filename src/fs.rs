@@ -107,6 +107,10 @@ pub enum FsError {
     BadDescriptor,
     TooManyOpenFiles,
     BrokenPipe,
+    AddressInUse,
+    TimedOut,
+    NetworkUnreachable,
+    NotConnected,
 }
 
 impl FsError {
@@ -121,6 +125,10 @@ impl FsError {
             FsError::BadDescriptor => -7,
             FsError::TooManyOpenFiles => -8,
             FsError::BrokenPipe => -9,
+            FsError::AddressInUse => -10,
+            FsError::TimedOut => -11,
+            FsError::NetworkUnreachable => -12,
+            FsError::NotConnected => -13,
         }
     }
 }

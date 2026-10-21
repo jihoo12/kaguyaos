@@ -129,8 +129,9 @@ pub unsafe fn handle_incoming_packets(my_ip: [u8; 4], my_mac: [u8; 6]) -> bool {
             let udp_offset = ip_offset + ihl;
             let total_length = u16::from_be(ip_header.total_length) as usize;
             if total_length >= ihl + 8 && bytes_received >= ip_offset + total_length {
-                crate::drivers::net::dns::handle_udp(
+                crate::drivers::net::udp::handle_incoming(
                     ip_header.src_ip,
+                    ip_header.dst_ip,
                     &rx_buffer[udp_offset..ip_offset + total_length],
                 );
             }
