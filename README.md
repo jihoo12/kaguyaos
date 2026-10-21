@@ -248,7 +248,7 @@ Networking remains an active subsystem. A later milestone is to add TCP and HTTP
 - DNS is a minimal single-query A-record resolver.
 - TCP, HTTP, and TLS are not implemented.
 - Each program has its own page tables (code at `0x4000_0000_0000`, a heap growing from `0x7000_0000_0000`, a 16 KiB stack below `0x7fff_ffff_0000`); everything is freed when it exits. The kernel and its identity map stay shared, without PCID or global pages.
-- KEF programs are linked at `0x4000_0000_0000` with resolved GOT entries and are not relocated at load time; trailing `.bss` is zero-filled by the loader.
+- KEF programs are linked at `0x4000_0000_0000` with resolved GOT entries and are not relocated at load time. Version 1 headers (`KEF\x01`, 32 bytes) record the file-backed size so only the declared `.bss` is zero-filled; legacy `KEF\0` images must store their whole image.
 - NVMe transfers use PRP2 or a single PRP list, so one command can cover at most 512 pages.
 
 ---
