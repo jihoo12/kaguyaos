@@ -57,6 +57,7 @@ fn cmd_help() {
     println("  cat <file>        Show file contents");
     println("  write <file> <msg> Write msg to a file");
     println("  rm <file>         Delete a file");
+    println("  wget <url>        Download an http:// URL to stdout");
     println("  exec <file> [args] Execute a KEF binary");
     println("  a | b             Pipe a's output into b");
     println("  cmd > f, >> f, < f Redirect output (replace/append) or input");
@@ -134,6 +135,7 @@ fn resolve<'a>(stage: &Stage<'a>) -> Option<(&'a str, usize)> {
         "write" => "write.kef",
         "rm" => "rm.kef",
         "ping" => "ping.kef",
+        "wget" => "wget.kef",
         "exec" if stage.word_count > 1 => return Some((stage.words[1], 2)),
         _ => return None,
     };
