@@ -66,20 +66,9 @@ impl AddressSpace {
     }
 
     fn map(&self, virt: u64, entry: u64) -> bool {
-        if !(USER_SPACE_START..USER_SPACE_END).contains(&virt) {
+        let Some(table) = self.leaf_table(virt) else {
             return false;
-        }
-        let mut table = unsafe { get_table_mut(self.pml4) };
-        for shift in [39, 30, 21] {
-            let idx = ((virt >> shift) & 0x1FF) as usize;
-            if table.entries[idx] & PAGE_PRESENT == 0 {
-                let Some(frame) = alloc_frame() else {
-                    return false;
-                };
-                table.entries[idx] = frame | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
-            }
-            table = unsafe { get_table_mut(table.entries[idx] & !0xFFF) };
-        }
+        };
         let idx = ((virt >> 12) & 0x1FF) as usize;
         if table.entries[idx] & PAGE_PRESENT != 0 {
             return false;
@@ -88,9 +77,28 @@ impl AddressSpace {
         true
     }
 
+    /// The page table covering `virt`, creating intermediate tables as needed.
+    fn leaf_table(&self, virt: u64) -> Option<&mut PageTable> {
+        if !(USER_SPACE_START..USER_SPACE_END).contains(&virt) {
+            return None;
+        }
+        let mut table = unsafe { get_table_mut(self.pml4) };
+        for shift in [39, 30, 21] {
+            let idx = ((virt >> shift) & 0x1FF) as usize;
+            if table.entries[idx] & PAGE_PRESENT == 0 {
+                table.entries[idx] = alloc_frame()? | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
+            }
+            table = unsafe { get_table_mut(table.entries[idx] & !0xFFF) };
+        }
+        Some(table)
+    }
+
     /// Extend the heap by `bytes` (rounded up to pages) of zeroed memory and
     /// return the previous end. The kernel never reads heap contents; the
     /// allocator lives in userspace.
+    ///
+    /// All or nothing: page tables and frames are reserved before any page is
+    /// mapped, so a failure never leaves pages behind or needs an unmap.
     pub fn grow_heap(&self, bytes: u64) -> Option<u64> {
         let mut end = self.heap_end.lock();
         let old = *end;
@@ -99,10 +107,40 @@ impl AddressSpace {
         if new > USER_HEAP_LIMIT {
             return None;
         }
-        while *end < new {
-            self.map_new_page(*end, true, false)?;
-            *end += PAGE_SIZE;
+
+        let mut virt = old;
+        while virt < new {
+            self.leaf_table(virt)?;
+            virt += PAGE_SIZE;
         }
+
+        // Chain reserved frames through their first word.
+        let mut frames = 0u64;
+        let mut virt = old;
+        while virt < new {
+            let Some(frame) = alloc_frame() else {
+                while frames != 0 {
+                    let next = unsafe { *(frames as *const u64) };
+                    free_frame(frames);
+                    frames = next;
+                }
+                return None;
+            };
+            unsafe { *(frame as *mut u64) = frames };
+            frames = frame;
+            virt += PAGE_SIZE;
+        }
+
+        let mut virt = old;
+        while virt < new {
+            let frame = frames;
+            frames = unsafe { *(frame as *const u64) };
+            unsafe { *(frame as *mut u64) = 0 };
+            let mapped = self.map(virt, frame | PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE | PAGE_NO_EXECUTE);
+            debug_assert!(mapped);
+            virt += PAGE_SIZE;
+        }
+        *end = new;
         Some(old)
     }
 }
