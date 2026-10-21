@@ -1,22 +1,27 @@
 ENTRY(_start)
 
+/* Programs run at USER_CODE_BASE in their own address space, so link them
+ * there: absolute addresses (GOT entries, jump tables) are then correct
+ * without runtime relocation. The 16-byte header sits just below it. */
+USER_CODE_BASE = 0x400000000000;
+
 SECTIONS
 {
-    . = 0x0;
+    . = USER_CODE_BASE - 0x10;
 
     .header : {
         /* Magic: "KEF\0" */
         BYTE(0x4B); BYTE(0x45); BYTE(0x46); BYTE(0x00);
-        /* entry_offset: offset of _start from the start of the code segment (0x10) */
-        LONG(_start - 0x10);
+        /* entry_offset: offset of _start from the start of the code segment */
+        LONG(_start - USER_CODE_BASE);
         /* code_offset: 0x10 */
         LONG(0x10);
         /* code_size */
-        LONG(_code_end - 0x10);
+        LONG(_code_end - USER_CODE_BASE);
     }
 
     /* Code segment starts at file offset 16 (0x10) */
-    . = 0x10;
+    . = USER_CODE_BASE;
 
     .text : {
         _code_start = .;

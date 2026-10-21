@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 mkdir -p target/hardware-shell/esp/EFI/BOOT
 for program in init ls cat write rm; do
     rustc --target x86_64-unknown-none -C linker-flavor=ld.lld -C linker=rust-lld \
-        -C link-arg=-Tuser/linker.ld -C link-arg=--oformat=binary -O \
+        -C link-arg=-Tuser/linker.ld -C link-arg=--oformat=binary -C link-arg=--apply-dynamic-relocs -O \
         -o "target/hardware-shell/$program.kef" "user/src/$program.rs"
 done
 export KAGUYA_PROGRAM_DIR="$PWD/target/hardware-shell"
