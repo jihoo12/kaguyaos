@@ -430,6 +430,9 @@ fn write_dir_entry_unlocked(index: usize, entry: &FatDirEntry) -> FsResult<()> {
     if index >= ROOT_DIR_ENTRIES {
         return Err(FsError::InvalidArgument);
     }
+    if entry.in_use == 0 {
+        retire_slot_unlocked(index);
+    }
     let sector = index / DIR_ENTRIES_PER_SECTOR;
     let slot = index % DIR_ENTRIES_PER_SECTOR;
     let lba = ROOT_DIR_START_LBA + sector as u64;
@@ -513,6 +516,9 @@ fn format_unlocked() -> FsResult<()> {
     write_fat_entry_unlocked(1, FAT_ENTRY_EOC)?; // reserved
 
     // 3. Zero the root directory
+    for slot in 0..ROOT_DIR_ENTRIES {
+        retire_slot_unlocked(slot);
+    }
     for i in 0..ROOT_DIR_SECTORS as u64 {
         write_block_unlocked(ROOT_DIR_START_LBA + i, &zero_buf)?;
     }
@@ -656,10 +662,30 @@ fn delete_file_unlocked(name: &str) -> FsResult<()> {
 // ============================================================================
 // Offset-based file access (unlocked)
 //
-// Open files are identified by their directory slot plus name. Every access
-// re-reads the entry, so a handle whose file was deleted or replaced reports
-// FileNotFound instead of touching another file's clusters.
+// An open file is identified by its directory slot and the slot's generation,
+// which changes whenever the slot is freed. A handle whose file was deleted or
+// replaced, even by a same-named file in the same slot, reports FileNotFound
+// instead of touching another file's clusters. Generations live only in
+// memory because handles do not survive a reboot.
 // ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileId {
+    slot: usize,
+    generation: u32,
+}
+
+static mut SLOT_GENERATIONS: [u32; ROOT_DIR_ENTRIES] = [0; ROOT_DIR_ENTRIES];
+
+fn retire_slot_unlocked(slot: usize) {
+    unsafe {
+        SLOT_GENERATIONS[slot] = SLOT_GENERATIONS[slot].wrapping_add(1);
+    }
+}
+
+fn file_id_unlocked(slot: usize) -> FileId {
+    FileId { slot, generation: unsafe { SLOT_GENERATIONS[slot] } }
+}
 
 const CLUSTER_BYTES: usize = SECTORS_PER_CLUSTER as usize * BLOCK_SIZE;
 
@@ -668,14 +694,12 @@ fn is_data_cluster(cluster: u16) -> bool {
     cluster >= 2 && cluster < FAT_ENTRY_RESERVED
 }
 
-fn entry_name(entry: &FatDirEntry) -> &[u8] {
-    let len = entry.name.iter().position(|&b| b == 0).unwrap_or(entry.name.len());
-    &entry.name[..len]
-}
-
-fn open_entry_unlocked(slot: usize, name: &str) -> FsResult<FatDirEntry> {
-    let entry = read_dir_entry_unlocked(slot)?;
-    if entry.in_use != 1 || entry_name(&entry) != name.as_bytes() {
+fn open_entry_unlocked(id: FileId) -> FsResult<FatDirEntry> {
+    if file_id_unlocked(id.slot) != id {
+        return Err(FsError::FileNotFound);
+    }
+    let entry = read_dir_entry_unlocked(id.slot)?;
+    if entry.in_use != 1 {
         return Err(FsError::FileNotFound);
     }
     Ok(entry)
@@ -697,7 +721,7 @@ fn walk_chain_unlocked(first: u16, steps: u64) -> FsResult<(u16, u16)> {
     Ok((prev, cluster))
 }
 
-fn open_file_unlocked(name: &str, create: bool, truncate: bool) -> FsResult<usize> {
+fn open_file_unlocked(name: &str, create: bool, truncate: bool) -> FsResult<FileId> {
     read_boot_sector_unlocked()?;
     match find_file_unlocked(name)? {
         Some((slot, mut entry)) => {
@@ -710,7 +734,7 @@ fn open_file_unlocked(name: &str, create: bool, truncate: bool) -> FsResult<usiz
                     free_cluster_chain_unlocked(old_chain)?;
                 }
             }
-            Ok(slot)
+            Ok(file_id_unlocked(slot))
         }
         None if create => {
             let slot = find_free_dir_slot_unlocked()?.ok_or(FsError::NoSpace)?;
@@ -723,14 +747,14 @@ fn open_file_unlocked(name: &str, create: bool, truncate: bool) -> FsResult<usiz
             };
             entry.name[..name.len()].copy_from_slice(name.as_bytes());
             write_dir_entry_unlocked(slot, &entry)?;
-            Ok(slot)
+            Ok(file_id_unlocked(slot))
         }
         None => Err(FsError::FileNotFound),
     }
 }
 
-fn read_at_unlocked(slot: usize, name: &str, offset: u64, buf: &mut [u8]) -> FsResult<usize> {
-    let entry = open_entry_unlocked(slot, name)?;
+fn read_at_unlocked(id: FileId, offset: u64, buf: &mut [u8]) -> FsResult<usize> {
+    let entry = open_entry_unlocked(id)?;
     let size = entry.size as u64;
     if offset >= size || buf.is_empty() {
         return Ok(0);
@@ -762,12 +786,11 @@ fn read_at_unlocked(slot: usize, name: &str, offset: u64, buf: &mut [u8]) -> FsR
 /// offset actually used and the number of bytes written; a write cut short by
 /// a full disk keeps the bytes that reached it.
 fn write_at_unlocked(
-    slot: usize,
-    name: &str,
+    id: FileId,
     offset: Option<u64>,
     data: &[u8],
 ) -> FsResult<(u64, usize)> {
-    let mut entry = open_entry_unlocked(slot, name)?;
+    let mut entry = open_entry_unlocked(id)?;
     let size = entry.size as u64;
     let offset = offset.unwrap_or(size);
     if data.is_empty() {
@@ -828,7 +851,7 @@ fn write_at_unlocked(
     if written > 0 {
         entry.size = size.max(reached) as u32;
     }
-    write_dir_entry_unlocked(slot, &entry)?;
+    write_dir_entry_unlocked(id.slot, &entry)?;
     match result {
         Ok(()) => Ok((offset, data.len())),
         Err(_) if written > 0 => Ok((offset, written as usize)),
@@ -836,8 +859,8 @@ fn write_at_unlocked(
     }
 }
 
-fn file_size_unlocked(slot: usize, name: &str) -> FsResult<u64> {
-    Ok(open_entry_unlocked(slot, name)?.size as u64)
+fn file_size_unlocked(id: FileId) -> FsResult<u64> {
+    Ok(open_entry_unlocked(id)?.size as u64)
 }
 
 fn list_files_unlocked() -> FsResult<alloc::vec::Vec<PublicFileEntry>> {
@@ -916,25 +939,25 @@ pub fn list_files() -> FsResult<alloc::vec::Vec<PublicFileEntry>> {
     list_files_unlocked()
 }
 
-/// Look up (and optionally create or truncate) `name`; returns its directory slot.
-pub fn open_file(name: &str, create: bool, truncate: bool) -> FsResult<usize> {
+/// Look up (and optionally create or truncate) `name`.
+pub fn open_file(name: &str, create: bool, truncate: bool) -> FsResult<FileId> {
     let _guard = FS_LOCK.lock();
     open_file_unlocked(name, create, truncate)
 }
 
-pub fn read_at(slot: usize, name: &str, offset: u64, buf: &mut [u8]) -> FsResult<usize> {
+pub fn read_at(id: FileId, offset: u64, buf: &mut [u8]) -> FsResult<usize> {
     let _guard = FS_LOCK.lock();
-    read_at_unlocked(slot, name, offset, buf)
+    read_at_unlocked(id, offset, buf)
 }
 
-pub fn write_at(slot: usize, name: &str, offset: Option<u64>, data: &[u8]) -> FsResult<(u64, usize)> {
+pub fn write_at(id: FileId, offset: Option<u64>, data: &[u8]) -> FsResult<(u64, usize)> {
     let _guard = FS_LOCK.lock();
-    write_at_unlocked(slot, name, offset, data)
+    write_at_unlocked(id, offset, data)
 }
 
-pub fn file_size(slot: usize, name: &str) -> FsResult<u64> {
+pub fn file_size(id: FileId) -> FsResult<u64> {
     let _guard = FS_LOCK.lock();
-    file_size_unlocked(slot, name)
+    file_size_unlocked(id)
 }
 
 // ============================================================================

@@ -6,7 +6,6 @@
 
 use crate::fs::{self, FsError, FsResult};
 use crate::sync::Spinlock;
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -29,8 +28,7 @@ enum OpenFile {
 }
 
 struct DiskFile {
-    name: String,
-    slot: usize,
+    id: fs::FileId,
     offset: u64,
     flags: usize,
 }
@@ -64,10 +62,9 @@ impl FileTable {
             }
             None => return Err(FsError::TooManyOpenFiles),
         };
-        let slot = fs::open_file(name, flags & O_CREATE != 0, flags & O_TRUNC != 0)?;
+        let id = fs::open_file(name, flags & O_CREATE != 0, flags & O_TRUNC != 0)?;
         fds[fd] = Some(OpenFile::Disk(DiskFile {
-            name: String::from(name),
-            slot,
+            id,
             offset: 0,
             flags,
         }));
@@ -79,7 +76,7 @@ impl FileTable {
         match fds.get_mut(fd).and_then(Option::as_mut) {
             Some(OpenFile::Console) => Ok(read_console(buf)),
             Some(OpenFile::Disk(file)) if file.flags & O_READ != 0 => {
-                let n = fs::read_at(file.slot, &file.name, file.offset, buf)?;
+                let n = fs::read_at(file.id, file.offset, buf)?;
                 file.offset += n as u64;
                 Ok(n)
             }
@@ -91,12 +88,12 @@ impl FileTable {
         let mut fds = self.fds.lock();
         match fds.get_mut(fd).and_then(Option::as_mut) {
             Some(OpenFile::Console) => {
-                crate::print!("{}", String::from_utf8_lossy(data));
+                crate::print!("{}", alloc::string::String::from_utf8_lossy(data));
                 Ok(data.len())
             }
             Some(OpenFile::Disk(file)) if file.flags & O_WRITE != 0 => {
                 let offset = if file.flags & O_APPEND != 0 { None } else { Some(file.offset) };
-                let (start, n) = fs::write_at(file.slot, &file.name, offset, data)?;
+                let (start, n) = fs::write_at(file.id, offset, data)?;
                 file.offset = start + n as u64;
                 Ok(n)
             }
@@ -123,7 +120,7 @@ impl FileTable {
         let base = match whence {
             SEEK_SET => 0,
             SEEK_CUR => file.offset,
-            SEEK_END => fs::file_size(file.slot, &file.name)?,
+            SEEK_END => fs::file_size(file.id)?,
             _ => return Err(FsError::InvalidArgument),
         };
         let target = base
