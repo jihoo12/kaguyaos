@@ -171,15 +171,10 @@ extern "sysv64" fn syscall_dispatcher_impl(
             sys_print(arg1, arg2);
             0
         }
-        1 => {
-            // sys_alloc(size, align)
-            sys_alloc(arg1, arg2)
-        }
-        2 => {
-            // sys_free(ptr)
-            sys_free(arg1);
-            0
-        }
+        // 1 (alloc), 2 (free) and 10 (realloc) are retired: the allocator now
+        // runs in userspace on top of heap_grow, so the kernel never follows
+        // user-writable heap metadata. They fail safely for stale binaries.
+        1 | 2 | 10 => 0,
         3 => {
             // sys_add_task(entry, user_rsp)
             sys_add_task(arg1, arg2)
@@ -213,10 +208,6 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_clear()
             sys_clear();
             0
-        }
-        10 => {
-            // sys_realloc(ptr, size, align)
-            sys_realloc(arg1, arg2, arg3)
         }
         11 => {
             // sys_fsformat() -> i32
@@ -287,6 +278,10 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_dns_resolve(name_ptr, name_len) -> packed IPv4 or 0
             sys_dns_resolve(arg1, arg2)
         }
+        28 => {
+            // sys_heap_grow(bytes) -> previous heap end, or 0
+            sys_heap_grow(arg1)
+        }
         _ => {
             // Unknown syscall
             let _ = crate::println!("Unknown syscall: {}", id);
@@ -295,7 +290,6 @@ extern "sysv64" fn syscall_dispatcher_impl(
     }
 }
 
-use core::alloc::Layout;
 use core::slice;
 use core::str;
 
@@ -321,51 +315,10 @@ fn sys_print(ptr: usize, len: usize) {
     }
 }
 
-fn sys_alloc(size: usize, align: usize) -> usize {
-    // We expect valid alignment from userspace (power of 2)
-    // If align is 0, default to 8.
-    let align = if align == 0 { 8 } else { align };
-    let Ok(layout) = Layout::from_size_align(size, align) else {
-        return 0;
-    };
-    let Some(space) = crate::process::current_address_space() else {
-        return 0;
-    };
-    match space.heap() {
-        Some(heap) => unsafe { crate::memory::heap::user_heap_alloc(heap, layout) as usize },
-        None => 0,
-    }
-}
-
-fn sys_realloc(ptr: usize, size: usize, align: usize) -> usize {
-    let align = if align == 0 { 8 } else { align };
-    let Ok(layout) = Layout::from_size_align(size, align) else {
-        return 0;
-    };
-    let Some(space) = crate::process::current_address_space() else {
-        return 0;
-    };
-    if ptr != 0 && !space.heap_contains(ptr as u64) {
-        return 0;
-    }
-    match space.heap() {
-        Some(heap) => unsafe {
-            crate::memory::heap::user_heap_realloc(heap, ptr as *mut u8, layout, size) as usize
-        },
-        None => 0,
-    }
-}
-
-fn sys_free(ptr: usize) {
-    let Some(space) = crate::process::current_address_space() else {
-        return;
-    };
-    if !space.heap_contains(ptr as u64) {
-        return;
-    }
-    if let Some(heap) = space.heap() {
-        unsafe { crate::memory::heap::user_heap_free(heap, ptr as *mut u8) };
-    }
+fn sys_heap_grow(bytes: usize) -> usize {
+    crate::process::current_address_space()
+        .and_then(|space| space.grow_heap(bytes as u64))
+        .map_or(0, |old_end| old_end as usize)
 }
 
 fn sys_add_task(entry: usize, user_rsp: usize) -> usize {

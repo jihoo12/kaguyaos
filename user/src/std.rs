@@ -29,7 +29,7 @@ unsafe fn syscall1(id: usize, arg1: usize) -> usize {
     core::arch::asm!(
         "syscall",
         in("rax") id,
-        in("rdi") arg1,
+        inout("rdi") arg1 => _,
         lateout("rax") ret,
         out("rcx") _,
         out("r11") _,
@@ -49,8 +49,8 @@ unsafe fn syscall2(id: usize, arg1: usize, arg2: usize) -> usize {
     core::arch::asm!(
         "syscall",
         in("rax") id,
-        in("rdi") arg1,
-        in("rsi") arg2,
+        inout("rdi") arg1 => _,
+        inout("rsi") arg2 => _,
         lateout("rax") ret,
         out("rcx") _,
         out("r11") _,
@@ -69,10 +69,10 @@ unsafe fn syscall4(id: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize
     core::arch::asm!(
         "syscall",
         in("rax") id,
-        in("rdi") arg1,
-        in("rsi") arg2,
-        in("rdx") arg3,
-        in("r10") arg4,
+        inout("rdi") arg1 => _,
+        inout("rsi") arg2 => _,
+        inout("rdx") arg3 => _,
+        inout("r10") arg4 => _,
         lateout("rax") ret,
         out("rcx") _,
         out("r11") _,
@@ -118,37 +118,166 @@ pub fn clear() {
 }
 
 // ── Memory ───────────────────────────────────────────────────────────────────
+//
+// First-fit allocator over pages obtained from heap_grow; the kernel only maps
+// memory and never reads it. Every block starts with its size (header
+// included, a multiple of 16). Free blocks also hold the next free block and
+// stay sorted by address so neighbours coalesce. The word before each returned
+// pointer holds its block start, which also covers over-aligned requests.
+
+use core::sync::atomic::{AtomicBool, Ordering};
+
+const BLOCK_ALIGN: usize = 16;
+const HEADER: usize = 16;
+const MIN_SPLIT: usize = 32;
+const MIN_GROW: usize = 64 * 1024;
+
+#[repr(C)]
+struct FreeBlock {
+    size: usize,
+    next: *mut FreeBlock,
+}
+
+static HEAP_LOCK: AtomicBool = AtomicBool::new(false);
+static mut FREE_LIST: *mut FreeBlock = core::ptr::null_mut();
+
+fn heap_lock() {
+    while HEAP_LOCK
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        yield_task();
+    }
+}
+
+fn heap_unlock() {
+    HEAP_LOCK.store(false, Ordering::Release);
+}
+
+/// Extend the process heap by at least `bytes`. Returns the start of the new
+/// memory, or null if the kernel refused.
+pub fn heap_grow(bytes: usize) -> *mut u8 {
+    unsafe { syscall1(28, bytes) as *mut u8 }
+}
+
+unsafe fn insert_free(start: usize, size: usize) {
+    let mut prev: *mut FreeBlock = core::ptr::null_mut();
+    let mut next = FREE_LIST;
+    while !next.is_null() && (next as usize) < start {
+        prev = next;
+        next = (*next).next;
+    }
+    let node = if !prev.is_null() && prev as usize + (*prev).size == start {
+        (*prev).size += size;
+        prev
+    } else {
+        let node = start as *mut FreeBlock;
+        (*node).size = size;
+        if prev.is_null() {
+            FREE_LIST = node;
+        } else {
+            (*prev).next = node;
+        }
+        node
+    };
+    if !next.is_null() && node as usize + (*node).size == next as usize {
+        (*node).size += (*next).size;
+        (*node).next = (*next).next;
+    } else {
+        (*node).next = next;
+    }
+}
+
+unsafe fn take_free(need: usize) -> usize {
+    let mut prev: *mut FreeBlock = core::ptr::null_mut();
+    let mut block = FREE_LIST;
+    while !block.is_null() {
+        let size = (*block).size;
+        if size >= need {
+            let replacement = if size - need >= MIN_SPLIT {
+                let rest = (block as usize + need) as *mut FreeBlock;
+                (*rest).size = size - need;
+                (*rest).next = (*block).next;
+                (*block).size = need;
+                rest
+            } else {
+                (*block).next
+            };
+            if prev.is_null() {
+                FREE_LIST = replacement;
+            } else {
+                (*prev).next = replacement;
+            }
+            return block as usize;
+        }
+        prev = block;
+        block = (*block).next;
+    }
+    0
+}
 
 /// Allocate `size` bytes with `align` alignment. Returns null on failure.
 pub fn alloc(size: usize, align: usize) -> *mut u8 {
-    unsafe { syscall2(1, size, align) as *mut u8 }
+    let align = if align == 0 { 8 } else { align };
+    if !align.is_power_of_two() {
+        return core::ptr::null_mut();
+    }
+    let extra = if align > BLOCK_ALIGN { align } else { 0 };
+    let need = match size.checked_add(HEADER + extra + BLOCK_ALIGN - 1) {
+        Some(n) => n & !(BLOCK_ALIGN - 1),
+        None => return core::ptr::null_mut(),
+    };
+    heap_lock();
+    let mut start = unsafe { take_free(need) };
+    if start == 0 {
+        let grow = if need > MIN_GROW { need } else { MIN_GROW };
+        let base = heap_grow(grow) as usize;
+        if base != 0 {
+            let grown = (grow + 4095) & !4095;
+            unsafe {
+                insert_free(base, grown);
+                start = take_free(need);
+            }
+        }
+    }
+    heap_unlock();
+    if start == 0 {
+        return core::ptr::null_mut();
+    }
+    let ptr = (start + HEADER + align - 1) & !(align - 1);
+    unsafe { *((ptr - 8) as *mut usize) = start };
+    ptr as *mut u8
 }
 
 /// Free a pointer previously returned by `alloc`.
 pub fn free(ptr: *mut u8) {
-    unsafe { syscall1(2, ptr as usize); }
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let start = *((ptr as usize - 8) as *const usize);
+        let size = *(start as *const usize);
+        heap_lock();
+        insert_free(start, size);
+        heap_unlock();
+    }
 }
 
 /// Realloc a pointer to a new size/align. Returns null on failure.
 pub fn realloc(ptr: *mut u8, size: usize, align: usize) -> *mut u8 {
-    unsafe {
-        let ret: usize;
-        core::arch::asm!(
-            "syscall",
-            in("rax") 10usize,
-            in("rdi") ptr as usize,
-            in("rsi") size,
-            in("rdx") align,
-            lateout("rax") ret,
-            out("rcx") _,
-            out("r11") _,
-            out("r10") _,
-            out("r8") _,
-            out("r9") _,
-            options(nostack, preserves_flags)
-        );
-        ret as *mut u8
+    if ptr.is_null() {
+        return alloc(size, align);
     }
+    let new_ptr = alloc(size, align);
+    if !new_ptr.is_null() {
+        unsafe {
+            let start = *((ptr as usize - 8) as *const usize);
+            let capacity = start + *(start as *const usize) - ptr as usize;
+            core::ptr::copy_nonoverlapping(ptr, new_ptr, if size < capacity { size } else { capacity });
+        }
+        free(ptr);
+    }
+    new_ptr
 }
 
 // ── Task management ──────────────────────────────────────────────────────────
