@@ -302,6 +302,18 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_seek(fd, offset, whence) -> new offset
             sys_seek(arg1, arg2 as isize, arg3) as usize
         }
+        34 => {
+            // sys_pipe(fds_ptr) -> 0
+            sys_pipe(arg1) as usize
+        }
+        35 => {
+            // sys_spawn(filename_ptr, filename_len, args_ptr, args_len, stdio_ptr) -> task_id
+            sys_spawn(arg1, arg2, arg3, arg4, arg5)
+        }
+        36 => {
+            // sys_fd_kind(fd) -> kind
+            sys_fd_kind(arg1) as usize
+        }
         _ => {
             // Unknown syscall
             let _ = crate::println!("Unknown syscall: {}", id);
@@ -606,6 +618,20 @@ fn sys_seek(fd: usize, offset: isize, whence: usize) -> isize {
     fd_result(current_files().and_then(|files| files.seek(fd, offset as i64, whence)))
 }
 
+fn sys_pipe(fds_ptr: usize) -> isize {
+    if !user_range_ok(fds_ptr, core::mem::size_of::<[usize; 2]>()) || fds_ptr % 8 != 0 {
+        return crate::fs::FsError::InvalidArgument.code() as isize;
+    }
+    fd_result(current_files().and_then(|files| files.pipe()).map(|(read_fd, write_fd)| {
+        unsafe { *(fds_ptr as *mut [usize; 2]) = [read_fd, write_fd] };
+        0
+    }))
+}
+
+fn sys_fd_kind(fd: usize) -> isize {
+    fd_result(current_files().and_then(|files| files.kind(fd)))
+}
+
 fn sys_get_task_status(task_id: usize) -> usize {
     crate::process::get_task_status(task_id)
 }
@@ -619,23 +645,56 @@ fn sys_run_ap_scheduler() -> ! {
 }
 
 fn sys_exec(filename_ptr: usize, filename_len: usize) -> usize {
-    exec_program(filename_ptr, filename_len, &[])
+    exec_program(filename_ptr, filename_len, &[], crate::file::FileTable::with_console())
 }
 
 fn sys_exec2(filename_ptr: usize, filename_len: usize, args_ptr: usize, args_len: usize) -> usize {
-    if args_ptr == 0 || args_len == 0 {
-        return exec_program(filename_ptr, filename_len, &[]);
-    }
-    if !user_range_ok(args_ptr, args_len) {
+    let Some(args) = exec_args(args_ptr, args_len) else {
+        return usize::MAX;
+    };
+    exec_program(filename_ptr, filename_len, args, crate::file::FileTable::with_console())
+}
+
+/// Like exec2, but the child's fds 0, 1 and 2 copy the caller's descriptors
+/// listed in the `[usize; 3]` at `stdio_ptr`.
+fn sys_spawn(
+    filename_ptr: usize,
+    filename_len: usize,
+    args_ptr: usize,
+    args_len: usize,
+    stdio_ptr: usize,
+) -> usize {
+    let Some(args) = exec_args(args_ptr, args_len) else {
+        return usize::MAX;
+    };
+    if !user_range_ok(stdio_ptr, core::mem::size_of::<[usize; 3]>()) || stdio_ptr % 8 != 0 {
         return usize::MAX;
     }
-    let args = unsafe { core::slice::from_raw_parts(args_ptr as *const u8, args_len) };
-    exec_program(filename_ptr, filename_len, args)
+    let stdio = unsafe { *(stdio_ptr as *const [usize; 3]) };
+    match current_files().and_then(|files| files.inherit(stdio)) {
+        Ok(files) => exec_program(filename_ptr, filename_len, args, files),
+        Err(_) => usize::MAX,
+    }
+}
+
+fn exec_args(args_ptr: usize, args_len: usize) -> Option<&'static [u8]> {
+    if args_ptr == 0 || args_len == 0 {
+        return Some(&[]);
+    }
+    if !user_range_ok(args_ptr, args_len) {
+        return None;
+    }
+    Some(unsafe { core::slice::from_raw_parts(args_ptr as *const u8, args_len) })
 }
 
 /// Load a KEF into a new address space. `args` is copied into the child's
 /// stack because the caller's memory is not visible there.
-fn exec_program(filename_ptr: usize, filename_len: usize, args: &[u8]) -> usize {
+fn exec_program(
+    filename_ptr: usize,
+    filename_len: usize,
+    args: &[u8],
+    files: alloc::sync::Arc<crate::file::FileTable>,
+) -> usize {
     if filename_ptr == 0 || filename_len == 0 || filename_len > 255 {
         return usize::MAX;
     }
@@ -668,7 +727,7 @@ fn exec_program(filename_ptr: usize, filename_len: usize, args: &[u8]) -> usize 
         args_ptr,
         args.len() as u64,
         Some(alloc::sync::Arc::new(space)),
-        Some(crate::file::FileTable::with_console()),
+        Some(files),
     )
 }
 

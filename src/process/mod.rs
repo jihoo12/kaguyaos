@@ -892,9 +892,10 @@ pub fn reschedule_if_needed() {
 /// Reclaim resources owned by zombie tasks that are no longer running on any CPU.
 ///
 /// Task slots stay allocated so run-queue/current-task indices remain stable. This
-/// releases the per-task kernel stack and the task's references to its address
-/// space and file table. Every switch loads the incoming CR3 before context_switch publishes
-/// the retirement, so no CPU still uses a released page table.
+/// releases the per-task kernel stack and the task's reference to its address
+/// space; terminate_task already released the file table. Every switch loads
+/// the incoming CR3 before context_switch publishes the retirement, so no CPU
+/// still uses a released page table.
 fn reap_zombies(scheduler: &mut Scheduler) {
     let current_indices: [usize; crate::processor::MAX_AP_COUNT + 1] =
         core::array::from_fn(published_current_task);
@@ -936,13 +937,17 @@ fn reap_zombies(scheduler: &mut Scheduler) {
             crate::memory::heap::free(task.kernel_stack_bottom as *mut u8);
         }
         task.address_space = None;
-        task.files = None;
         task.kernel_stack_bottom = 0;
         task.kernel_stack_top = 0;
     }
 }
 
 pub fn terminate_task(exit_code: usize) {
+    // Close descriptors before becoming a zombie, outside SCHEDULER_LOCK:
+    // dropping a pipe end wakes its peers, and they should see EOF now
+    // rather than whenever the zombie is reaped.
+    drop(take_current_files());
+
     let guard = SCHEDULER_LOCK.lock();
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_mut() {
@@ -1063,6 +1068,29 @@ pub fn current_files() -> Option<Arc<crate::file::FileTable>> {
         }
         let index = (*percpu).current_task_index;
         scheduler.metadata.tasks.get(index)?.files.clone()
+    }
+}
+
+fn take_current_files() -> Option<Arc<crate::file::FileTable>> {
+    let _guard = SCHEDULER_LOCK.lock();
+    unsafe {
+        let scheduler = SCHEDULER.as_mut()?;
+        let percpu = crate::processor::get_percpu_data();
+        if percpu.is_null() {
+            return None;
+        }
+        let index = (*percpu).current_task_index;
+        scheduler.metadata.tasks.get_mut(index)?.files.take()
+    }
+}
+
+/// Drop the generation counter of a wait key that will never be used again.
+pub fn forget_wait_key(wait_key: usize) {
+    let _guard = SCHEDULER_LOCK.lock();
+    unsafe {
+        if let Some(scheduler) = SCHEDULER.as_mut() {
+            scheduler.metadata.event_generations.retain(|(key, _)| *key != wait_key);
+        }
     }
 }
 

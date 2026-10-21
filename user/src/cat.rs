@@ -19,9 +19,26 @@ fn println(s: &str) {
     std::print("\n");
 }
 
+/// Copy STDIN to STDOUT until end of input.
+fn copy_stdin() -> ! {
+    let mut buf = [0u8; 512];
+    loop {
+        let n = std::read(std::STDIN, &mut buf);
+        if n <= 0 {
+            std::terminate_task(if n == 0 { 0 } else { 1 });
+        }
+        if std::write(std::STDOUT, &buf[..n as usize]) < 0 {
+            std::terminate_task(1);
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(args_ptr: *const u8, args_len: usize) -> ! {
     if args_len == 0 {
+        if std::fd_kind(std::STDIN) != std::FD_CONSOLE {
+            copy_stdin();
+        }
         println("Usage: cat <filename>");
         std::terminate_task(1);
     }
@@ -70,7 +87,10 @@ pub extern "C" fn _start(args_ptr: *const u8, args_len: usize) -> ! {
             println("(binary, cannot display)");
             break;
         }
-        std::write(std::STDOUT, data);
+        if std::write(std::STDOUT, data) < 0 {
+            std::close(fd);
+            std::terminate_task(1);
+        }
         total += n;
     }
     if total == 0 {

@@ -106,6 +106,7 @@ pub enum FsError {
     FileNotFound,
     BadDescriptor,
     TooManyOpenFiles,
+    BrokenPipe,
 }
 
 impl FsError {
@@ -119,6 +120,7 @@ impl FsError {
             FsError::FileNotFound => -6,
             FsError::BadDescriptor => -7,
             FsError::TooManyOpenFiles => -8,
+            FsError::BrokenPipe => -9,
         }
     }
 }
