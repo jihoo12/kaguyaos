@@ -550,8 +550,17 @@ pub fn switch_task() {
                             crate::processor::MSR_IA32_KERNEL_GS_BASE,
                             0,
                         );
-                        let retired_stack_bottom =
-                            scheduler.metadata.tasks[current_index].kernel_stack_bottom;
+                        // Only a zombie's stack is retired. A blocked task
+                        // resumes on this stack, and a stale entry would both
+                        // fill the bounded table and let its eventual zombie
+                        // be reaped before it switches away.
+                        let retired_stack_bottom = if scheduler.metadata.tasks[current_index].status
+                            == TaskStatus::Zombie
+                        {
+                            scheduler.metadata.tasks[current_index].kernel_stack_bottom
+                        } else {
+                            0
+                        };
                         core::mem::drop(guard);
                         crate::memory::switch_pml4(crate::memory::kernel_pml4_phys());
                         context_switch(
