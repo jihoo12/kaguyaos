@@ -1,5 +1,15 @@
 #![allow(dead_code)]
 
+#[cfg(feature = "jihoo-kernel")]
+#[path = "jihoo/fat.rs"]
+mod fat;
+#[cfg(feature = "jihoo-kernel")]
+use fat::{
+    alloc_cluster_unlocked, find_file_unlocked, find_free_dir_slot_unlocked,
+    free_cluster_chain_unlocked, read_dir_entry_unlocked, read_fat_entry_unlocked,
+    walk_chain_unlocked, write_dir_entry_unlocked, write_fat_entry_unlocked,
+};
+
 #[cfg(not(feature = "hardware-shell"))]
 use crate::drivers::nvme;
 
@@ -337,6 +347,7 @@ fn cluster_to_lba(cluster: u16) -> u64 {
 }
 
 /// Read the FAT entry for the given cluster.
+#[cfg(not(feature = "jihoo-kernel"))]
 fn read_fat_entry_unlocked(cluster: u16) -> FsResult<u16> {
     // Each FAT sector holds BLOCK_SIZE/2 = 256 u16 entries.
     let entries_per_sector = (BLOCK_SIZE / 2) as u32;
@@ -357,6 +368,7 @@ fn read_fat_entry_unlocked(cluster: u16) -> FsResult<u16> {
 }
 
 /// Write the FAT entry for the given cluster.
+#[cfg(not(feature = "jihoo-kernel"))]
 fn write_fat_entry_unlocked(cluster: u16, value: u16) -> FsResult<()> {
     let entries_per_sector = (BLOCK_SIZE / 2) as u32;
     let sector_index = (cluster as u32) / entries_per_sector;
@@ -379,10 +391,12 @@ fn write_fat_entry_unlocked(cluster: u16, value: u16) -> FsResult<()> {
 
 /// Find and allocate one free cluster in the FAT, returning its index.
 /// Sets the new cluster's FAT entry to EOC.
+#[cfg(not(feature = "jihoo-kernel"))]
 fn alloc_cluster_unlocked() -> FsResult<u16> {
     // Clusters are numbered starting at 2 by FAT convention.
-    // Maximum usable cluster = 2 + TOTAL_CLUSTERS - 1.
-    let max_cluster = (2u32 + TOTAL_CLUSTERS - 1) as u16;
+    // Bound the data region by the number of entries the FAT can address.
+    let max_cluster =
+        (TOTAL_CLUSTERS as u64 + 1).min(FAT_SECTORS as u64 * (BLOCK_SIZE / 2) as u64 - 1) as u16;
 
     for cluster in 2u16..=max_cluster {
         let entry = read_fat_entry_unlocked(cluster)?;
@@ -396,6 +410,7 @@ fn alloc_cluster_unlocked() -> FsResult<u16> {
 
 /// Follow the FAT chain starting at `first_cluster` and free every cluster
 /// (set their FAT entries back to FAT_ENTRY_FREE).
+#[cfg(not(feature = "jihoo-kernel"))]
 fn free_cluster_chain_unlocked(first_cluster: u16) -> FsResult<()> {
     let mut current = first_cluster;
     loop {
@@ -423,6 +438,7 @@ fn free_cluster_chain_unlocked(first_cluster: u16) -> FsResult<()> {
 const DIR_ENTRIES_PER_SECTOR: usize = BLOCK_SIZE / 32; // 16
 
 /// Read the directory entry at the given index (0-based).
+#[cfg(not(feature = "jihoo-kernel"))]
 fn read_dir_entry_unlocked(index: usize) -> FsResult<FatDirEntry> {
     if index >= ROOT_DIR_ENTRIES {
         return Err(FsError::InvalidArgument);
@@ -440,6 +456,7 @@ fn read_dir_entry_unlocked(index: usize) -> FsResult<FatDirEntry> {
 }
 
 /// Write a directory entry at the given index.
+#[cfg(not(feature = "jihoo-kernel"))]
 fn write_dir_entry_unlocked(index: usize, entry: &FatDirEntry) -> FsResult<()> {
     if index >= ROOT_DIR_ENTRIES {
         return Err(FsError::InvalidArgument);
@@ -463,6 +480,7 @@ fn write_dir_entry_unlocked(index: usize, entry: &FatDirEntry) -> FsResult<()> {
 
 /// Search the root directory for a file by name.
 /// Returns `(index, FatDirEntry)` if found.
+#[cfg(not(feature = "jihoo-kernel"))]
 fn find_file_unlocked(name: &str) -> FsResult<Option<(usize, FatDirEntry)>> {
     let name_bytes = name.as_bytes();
     if name_bytes.is_empty() || name_bytes.len() > 21 {
@@ -485,6 +503,7 @@ fn find_file_unlocked(name: &str) -> FsResult<Option<(usize, FatDirEntry)>> {
 }
 
 /// Find the first free directory slot.
+#[cfg(not(feature = "jihoo-kernel"))]
 fn find_free_dir_slot_unlocked() -> FsResult<Option<usize>> {
     for i in 0..ROOT_DIR_ENTRIES {
         let entry = read_dir_entry_unlocked(i)?;
@@ -722,6 +741,7 @@ fn open_entry_unlocked(id: FileId) -> FsResult<FatDirEntry> {
 /// Follow the chain `steps` clusters from `first`. Returns the cluster before
 /// the result (0 if none) and the result, which is not a data cluster when the
 /// chain ends first.
+#[cfg(not(feature = "jihoo-kernel"))]
 fn walk_chain_unlocked(first: u16, steps: u64) -> FsResult<(u16, u16)> {
     let mut prev = 0;
     let mut cluster = first;

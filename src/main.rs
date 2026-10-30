@@ -85,6 +85,10 @@ mod pic;
 #[cfg(feature = "jihoo-kernel")]
 #[path = "jihoo/pic.rs"]
 mod pic;
+#[cfg(not(feature = "jihoo-kernel"))]
+mod pipe;
+#[cfg(feature = "jihoo-kernel")]
+#[path = "jihoo/pipe.rs"]
 mod pipe;
 mod processor;
 mod process;

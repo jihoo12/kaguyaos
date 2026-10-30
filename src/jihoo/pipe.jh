@@ -1,0 +1,63 @@
+struct State {
+    data: *u8
+    head: u64
+    length: u64
+    readers: u64
+    writers: u64
+}
+
+const CAPACITY: u64 = 4096
+
+export fn jihoo_pipe_init(state: *State, data: *u8) {
+    unsafe { *state = State { data, head: 0, length: 0, readers: 1, writers: 1 } }
+}
+
+export fn jihoo_pipe_read(state: *State, output: *u8, length: u64) -> i64 {
+    if length == 0 { return 0 }
+    unsafe {
+        if state.length == 0 { return if state.writers == 0 { 0 } else { -1 } }
+        let count = if length < state.length { length } else { state.length }
+        let available = CAPACITY - state.head
+        let first = if count < available { count } else { available }
+        mem_copy(output, state.data + state.head as i64, first as i64)
+        if count > first { mem_copy(output + first as i64, state.data, (count - first) as i64) }
+        state.head = (state.head + count) % CAPACITY
+        state.length -= count
+        count as i64
+    }
+}
+
+export fn jihoo_pipe_write(state: *State, input: *u8, length: u64) -> i64 {
+    if length == 0 { return 0 }
+    unsafe {
+        if state.readers == 0 { return -2 }
+        let available = CAPACITY - state.length
+        if available == 0 { return -1 }
+        let count = if length < available { length } else { available }
+        let tail = (state.head + state.length) % CAPACITY
+        let first = if count < CAPACITY - tail { count } else { CAPACITY - tail }
+        mem_copy(state.data + tail as i64, input, first as i64)
+        if count > first { mem_copy(state.data, input + first as i64, (count - first) as i64) }
+        state.length += count
+        count as i64
+    }
+}
+
+export fn jihoo_pipe_clone(state: *State, writer: bool) {
+    unsafe {
+        if writer { state.writers += 1 }
+        else { state.readers += 1 }
+    }
+}
+
+export fn jihoo_pipe_close(state: *State, writer: bool) -> bool {
+    unsafe {
+        if writer {
+            state.writers -= 1
+            state.writers == 0
+        } else {
+            state.readers -= 1
+            state.readers == 0
+        }
+    }
+}

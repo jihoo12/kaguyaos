@@ -275,6 +275,11 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
                     large = shell_command(f'wget {base}/large', timeout=30)
                     if large.count('jihoo-large-body') != 600:
                         raise RuntimeError('HTTP streaming body read failed')
+                    shell_command(f'wget {base}/large | cat | cat > piped', timeout=30)
+                    piped = shell_command('cat piped', timeout=30)
+                    if piped.count('jihoo-large-body') != 600 or 'jihoo-large-body\n' * 600 not in piped:
+                        raise RuntimeError('HTTP body through bounded pipes failed')
+                    shell_command('rm piped')
                     if 'exit code 1' not in shell_command(f'wget {base}/missing'):
                         raise RuntimeError('HTTP error status did not fail')
                     if 'body shorter than Content-Length' not in shell_command(f'wget {base}/short'):
@@ -285,7 +290,7 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
                     final = (out / 'serial.log').read_text(errors='replace')
                     if any(marker in final for marker in ['EXCEPTION OCCURRED', 'panicked', 'panic:']):
                         raise RuntimeError('Userspace or kernel panic during network checks')
-                    print('Network: gateway ping, HTTP streaming, redirects, output and error cases passed')
+                    print('Network: gateway ping, HTTP streaming, bounded pipes, redirects, output and error cases passed')
                 if args.keyboard_stress:
                     baseline = (out / 'serial.log').read_text(errors='replace')
                     for key in ['shift-a', 'b', 'backspace', 'ret'] + ['h', 'e', 'l', 'p', 'ret'] * 30:

@@ -70,6 +70,8 @@ Rechecked with compiler commit `84d4a54a0de4a8c12f7584ee390e64083ac3a8b8`
   redirects with queries, file output, HTTP errors, truncated responses,
   HTTPS rejection, and guest shutdown pass. The local fixture does not
   exercise DNS hostname resolution.
+- A 10,200-byte HTTP body also passes through `wget | cat | cat > piped`
+  and file readback, exercising 4 KiB pipes in both kernels.
 
 The checks exposed an existing Rust-kernel failure with eight concurrent
 programs: kernel-stack allocation failure was unchecked. That path now
@@ -79,8 +81,14 @@ the shell's advertised eight-stage pipeline limit.
 [Jihoo issue #19](https://github.com/jihoolang/jihoo/issues/19) is fixed and
 its minimal reproducer and controls pass with the new compiler. The kernel
 heap allocator and boot-time frame allocation are now connected through
-`jihoo-kernel`. The next stage adds frame recycling, boot/kernel page-table
+`jihoo-kernel`. The kernel also uses jihoo frame recycling, boot/kernel page-table
 mapping, user-range checks, and PCI configuration/scanning/discovery, with
 host edge-case tests and QEMU regression checks. See
 [the kernel README](../../src/jihoo/README.md) for tested coverage and the
 remaining Rust kernel work. The default build remains Rust.
+
+The kernel feature additionally selects jihoo pipe buffering/end counts and FAT
+entry/cluster/root-directory helpers. Descriptor ownership and scheduling
+waits remain in Rust bridges, as do the filesystem's higher-level file
+operations and formatting policy. Disk regressions use disposable copies
+and QEMU snapshots; unrecognized disks are not automatically formatted.

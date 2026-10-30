@@ -3,12 +3,14 @@
 import checksum
 import address_space
 import framebuffer
+import fat
 import frame
 import heap
 import loader
 import pic
 import paging
 import pci
+import pipe
 import sync
 
 extern fn kaguya_kernel_panic(message: *u8, length: u64) -> never

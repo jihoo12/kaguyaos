@@ -1,0 +1,147 @@
+const FAT_START: u64 = 1
+const FAT_ENTRIES: u64 = 16384
+const ROOT_START: u64 = 65
+const ROOT_ENTRIES: u64 = 256
+
+export fn jihoo_fat_read(cluster: u16, output: *u16, context: *u8,
+                         read: fnptr(*u8, u64, *u8) -> i32) -> i32 {
+    if cluster as u64 >= FAT_ENTRIES { return -2 }
+    var sector: [u8; 512] = unsafe { zeroed([u8; 512]) }
+    unsafe {
+        let status = read(context, FAT_START + cluster as u64 / 256, &sector[0])
+        if status != 0 { return status }
+        let offset = (cluster as i64 % 256) * 2
+        *output = sector[offset] as u16 | (sector[offset + 1] as u16 << 8)
+    }
+    0
+}
+
+export fn jihoo_fat_write(cluster: u16, value: u16, context: *u8,
+                          read: fnptr(*u8, u64, *u8) -> i32,
+                          write: fnptr(*u8, u64, *u8) -> i32) -> i32 {
+    if cluster as u64 >= FAT_ENTRIES { return -2 }
+    var sector: [u8; 512] = unsafe { zeroed([u8; 512]) }
+    unsafe {
+        let lba = FAT_START + cluster as u64 / 256
+        let status = read(context, lba, &sector[0])
+        if status != 0 { return status }
+        let offset = (cluster as i64 % 256) * 2
+        sector[offset] = value as u8
+        sector[offset + 1] = (value >> 8) as u8
+        write(context, lba, &sector[0])
+    }
+}
+
+export fn jihoo_fat_alloc(data_clusters: u32, output: *u16, context: *u8,
+                          read: fnptr(*u8, u64, *u8) -> i32,
+                          write: fnptr(*u8, u64, *u8) -> i32) -> i32 {
+    let limit = data_clusters as u64 + 1
+    let last = if limit < FAT_ENTRIES - 1 { limit } else { FAT_ENTRIES - 1 }
+    var cluster: u64 = 2
+    while cluster <= last {
+        var entry: u16 = 0
+        let status = jihoo_fat_read(cluster as u16, &entry, context, read)
+        if status != 0 { return status }
+        if entry == 0 {
+            let status = jihoo_fat_write(cluster as u16, 0xffff, context, read, write)
+            if status != 0 { return status }
+            unsafe { *output = cluster as u16 }
+            return 0
+        }
+        cluster += 1
+    }
+    -5
+}
+
+export fn jihoo_fat_free(first: u16, context: *u8,
+                         read: fnptr(*u8, u64, *u8) -> i32,
+                         write: fnptr(*u8, u64, *u8) -> i32) -> i32 {
+    var cluster = first
+    while cluster >= 2 && cluster < 0xfff0 {
+        var next: u16 = 0
+        let status = jihoo_fat_read(cluster, &next, context, read)
+        if status != 0 { return status }
+        let status = jihoo_fat_write(cluster, 0, context, read, write)
+        if status != 0 { return status }
+        cluster = next
+    }
+    0
+}
+
+export fn jihoo_fat_walk(first: u16, steps: u64, previous: *u16, output: *u16,
+                         context: *u8, read: fnptr(*u8, u64, *u8) -> i32) -> i32 {
+    var cluster = first
+    var prev: u16 = 0
+    var i: u64 = 0
+    while i < steps {
+        if cluster < 2 || cluster >= 0xfff0 { return -3 }
+        prev = cluster
+        let status = jihoo_fat_read(prev, &cluster, context, read)
+        if status != 0 { return status }
+        i += 1
+    }
+    unsafe {
+        *previous = prev
+        *output = cluster
+    }
+    0
+}
+
+export fn jihoo_dir_read(index: u64, output: *u8, context: *u8,
+                         read: fnptr(*u8, u64, *u8) -> i32) -> i32 {
+    if index >= ROOT_ENTRIES { return -2 }
+    var sector: [u8; 512] = unsafe { zeroed([u8; 512]) }
+    unsafe {
+        let status = read(context, ROOT_START + index / 16, &sector[0])
+        if status != 0 { return status }
+        mem_copy(output, &sector[((index % 16) * 32) as i64], 32)
+    }
+    0
+}
+
+export fn jihoo_dir_write(index: u64, input: *u8, context: *u8,
+                          read: fnptr(*u8, u64, *u8) -> i32,
+                          write: fnptr(*u8, u64, *u8) -> i32) -> i32 {
+    if index >= ROOT_ENTRIES { return -2 }
+    var sector: [u8; 512] = unsafe { zeroed([u8; 512]) }
+    unsafe {
+        let lba = ROOT_START + index / 16
+        let status = read(context, lba, &sector[0])
+        if status != 0 { return status }
+        mem_copy(&sector[((index % 16) * 32) as i64], input, 32)
+        write(context, lba, &sector[0])
+    }
+}
+
+export fn jihoo_dir_find(name: *u8, length: u64, output: *u8, context: *u8,
+                         read: fnptr(*u8, u64, *u8) -> i32) -> i32 {
+    if length == 0 || length > 21 { return -2 }
+    var entry: [u8; 32] = unsafe { zeroed([u8; 32]) }
+    for index in 0..256 {
+        let status = jihoo_dir_read(index as u64, &entry[0], context, read)
+        if status != 0 { return status }
+        if entry[28] != 1 { continue }
+        var size: i64 = 0
+        while size < 22 && entry[size] != 0 { size += 1 }
+        if size as u64 != length { continue }
+        var same = true
+        for i in 0..size {
+            unsafe { if entry[i] != name[i] { same = false } }
+        }
+        if same {
+            unsafe { mem_copy(output, &entry[0], 32) }
+            return index as i32
+        }
+    }
+    256
+}
+
+export fn jihoo_dir_free(context: *u8, read: fnptr(*u8, u64, *u8) -> i32) -> i32 {
+    var entry: [u8; 32] = unsafe { zeroed([u8; 32]) }
+    for index in 0..256 {
+        let status = jihoo_dir_read(index as u64, &entry[0], context, read)
+        if status != 0 { return status }
+        if entry[28] == 0 { return index as i32 }
+    }
+    256
+}

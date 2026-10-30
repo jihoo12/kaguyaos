@@ -20,6 +20,10 @@ The feature currently selects jihoo implementations of:
   range permission checks.
 - PCI configuration reads/writes, multifunction bus scanning, MMIO BAR0
   decoding, and indexed read-only xHCI discovery.
+- Pipe ring-buffer reads/writes, bounded-capacity transitions, and counted
+  reader/writer ends.
+- FAT entry reads/writes, bounded cluster allocation, chain walking/freeing,
+  root-directory entry reads/writes, filename lookup, and free-slot search.
 
 The bridge uses the UEFI calling convention. `arch.S` implements port I/O,
 interrupt flag operations, and pause instructions. Frame allocation and
@@ -30,6 +34,14 @@ frame source through a synchronous C callback; CR3 and TLB instructions
 remain Rust assembly. Existing
 display locks and dirty-region tracking surround drawing operations.
 Without the feature, the Rust reference implementations remain active.
+
+Pipe buffers and end counts are protected by the existing interrupt-safe
+lock. Rust owns their backing memory and `Arc` handles, snapshots the event
+generation before inspecting the ring, and releases the pipe lock before
+waiting or waking tasks. FAT helpers use synchronous block-I/O callbacks
+under the existing filesystem lock. Packed directory records cross the ABI
+as 32 raw bytes; no packed jihoo struct layout is assumed. Slot generations
+and high-level file operations remain Rust.
 
 The port uses `-mno-red-zone -mgeneral-regs-only`, a custom panic handler,
 and volatile device accesses. It does not use Linux syscalls or UEFI boot
@@ -50,6 +62,8 @@ bash tools/test-jihoo-heap.sh
 bash tools/test-jihoo-frames.sh
 bash tools/test-jihoo-paging.sh
 bash tools/test-jihoo-pci.sh
+bash tools/test-jihoo-pipe.sh
+bash tools/test-jihoo-fat.sh
 ```
 
 The scripts build the current adjacent compiler unless `JIHOO_BIN` is set.
@@ -82,6 +96,21 @@ the actual jihoo implementations through native C ABI objects at `-O0` and
   multifunction scanning and callbacks, indexed xHCI discovery through bus
   255, C device-record layout, absent-device results, and no configuration
   data writes during discovery.
+- Pipes: both the Rust reference and the actual Rust/jihoo bridge pass the
+  same host contract for short/empty transfers, clone/close counts, EOF,
+  BrokenPipe, partial writes after reader closure, full/empty blocking,
+  streaming across ring wraps, concurrent writers, and a close between the
+  state check and sleep. A condition-variable scheduler substitute tests
+  generation-based waiting and wait-key cleanup. Another 20,000 operations
+  compare the jihoo ring with a `VecDeque` model and check boundary canaries.
+- FAT: both filesystem variants run against an 8 MiB RAM disk at each
+  optimization level, covering offset reads, append, sparse zero-filled
+  gaps, truncate, stale handles, 21-byte UTF-8 names, a full root directory,
+  full-disk failures and partial writes, and unchanged unrecognized volumes.
+  Separate callback fixtures check FAT/sector boundaries, allocation at the
+  final addressable entry, chain traversal and cyclic-chain release, injected
+  read/write errors, exact packed directory bytes, and unchanged output on
+  failed reads. These tests do not access host disks.
 
 See [the userspace README](../../user/jihoo/README.md) for smoke commands.
 QEMU boot, framebuffer updates, shell input, gateway ping, and HTTP
@@ -117,6 +146,18 @@ python3 tools/gpu-smoke.py --kernel-image target/rust-reference-check/x86_64-unk
 Prepare the disposable disk using the userspace instructions first. The
 recorded comparison used a separate copy, `/tmp/kaguya-jihoo-memory-nvme.img`.
 
+The pipe/FAT stage passed diskless shell I/O, eight-stage pipelines, forty
+sequential exec/frame-reclamation checks, normal NVMe boot, ping, HTTP and
+shutdown checks. The network fixture now also streams a 10,200-byte body
+through `wget | cat | cat > piped`, exceeding each pipe's 4 KiB capacity,
+then reads the file back and compares the full repeated body. Saving the
+output avoids interleaved diagnostics from concurrent processes in the
+serial log. Both the jihoo and default Rust kernels pass this fixture.
+Current artifacts are in
+`/tmp/kaguya-jihoo-fat-shell`, `/tmp/kaguya-jihoo-fat-network`, and
+`/tmp/kaguya-rust-fat-network`; normal boots use a snapshot of the disposable
+copy `/tmp/kaguya-jihoo-fat-nvme.img`.
+
 Host tests check allocator edge cases; QEMU checks the UEFI ABI, boot,
 locking, and integration with real kernel allocations. Physical hardware,
 concurrent allocator stress on multiple CPUs, and the ring-3 compatibility
@@ -148,8 +189,17 @@ Empty ranges consistently succeed. Mapping over a huge leaf fails before
 following it as a table. These are kernel correctness fixes, not compiler
 problems.
 
-Scheduling, syscall dispatch, files/pipes, FAT16, PCI device registration
-and storage/USB/network driver state machines still require migration.
+The FAT allocator also had an existing capacity bug: its upper bound could
+truncate to `u16` and scan beyond the actual 16,384-entry FAT on the normal
+1 GiB image. Both implementations now clamp allocation to the data region
+and the table's addressable entries, reporting `NoSpace` at capacity.
+This does not change the on-disk layout or enable automatic formatting.
+
+Scheduling, syscall dispatch, file descriptor tables, high-level FAT16
+create/read/write/format operations, PCI device registration and
+storage/USB/network driver state machines still require migration.
+Pipe ownership/locking and scheduler waits, filesystem slot generations,
+and block-I/O backends remain in Rust bridges.
 Rust ABI bridges, address-space bookkeeping, frame-source objects, CR3/TLB
 assembly, boot assembly, and UEFI setup also remain. This is not a completed
 kernel port.
