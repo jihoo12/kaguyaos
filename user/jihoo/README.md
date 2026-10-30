@@ -79,6 +79,8 @@ the shell's advertised eight-stage pipeline limit.
 [Jihoo issue #19](https://github.com/jihoolang/jihoo/issues/19) is fixed and
 its minimal reproducer and controls pass with the new compiler. The kernel
 heap allocator and boot-time frame allocation are now connected through
-`jihoo-kernel`, with host edge-case tests and QEMU regression checks. See
+`jihoo-kernel`. The next stage adds frame recycling, boot/kernel page-table
+mapping, user-range checks, and PCI configuration/scanning/discovery, with
+host edge-case tests and QEMU regression checks. See
 [the kernel README](../../src/jihoo/README.md) for tested coverage and the
 remaining Rust kernel work. The default build remains Rust.

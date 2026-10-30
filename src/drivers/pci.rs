@@ -1,4 +1,7 @@
+#[cfg(not(feature = "jihoo-kernel"))]
 use crate::io::{inl, outl};
+#[cfg(feature = "jihoo-kernel")]
+pub use crate::jihoo::pci::{find_xhci, mmio_bar0, read_config_8, read_config_16, read_config_32, write_config_32};
 use crate::println;
 
 pub const PCI_CONFIG_ADDRESS: u16 = 0xCF8;
@@ -16,6 +19,7 @@ pub const PCI_CLASS_NETWORK: u8 = 0x02;
 pub const PCI_SUBCLASS_ETHERNET: u8 = 0x00;
 
 #[derive(Debug, Clone, Copy)]
+#[repr(C)]
 pub struct PciDevice {
     pub bus: u8,
     pub device: u8,
@@ -57,6 +61,7 @@ pub fn get_ethernet_device() -> Option<PciDevice> {
 }
 
 /// Decode the physical MMIO base address for a device's BAR0.
+#[cfg(not(feature = "jihoo-kernel"))]
 pub fn mmio_bar0(device: &PciDevice) -> u64 {
     let mut base = (device.bar0 as u64) & 0xFFFF_FFF0;
     let bar_type = (device.bar0 >> 1) & 0x3;
@@ -66,6 +71,15 @@ pub fn mmio_bar0(device: &PciDevice) -> u64 {
     base
 }
 
+#[cfg(feature = "jihoo-kernel")]
+unsafe fn scan_bus() {
+    extern "C" fn visit(bus: u8, device: u8, function: u8) {
+        unsafe { check_function(bus, device, function) };
+    }
+    unsafe { crate::jihoo::pci::jihoo_pci_scan(visit) };
+}
+
+#[cfg(not(feature = "jihoo-kernel"))]
 unsafe fn scan_bus() {
     for bus in 0..256 {
         for dev in 0..32 {
@@ -76,6 +90,7 @@ unsafe fn scan_bus() {
     }
 }
 
+#[cfg(not(feature = "jihoo-kernel"))]
 unsafe fn check_device(bus: u8, dev: u8) {
     let vendor_id = unsafe { read_config_16(bus, dev, 0, 0x00) };
     if vendor_id == 0xFFFF {
@@ -226,6 +241,7 @@ unsafe fn check_function(bus: u8, dev: u8, func: u8) {
     }
 }
 
+#[cfg(not(feature = "jihoo-kernel"))]
 pub unsafe fn read_config_32(bus: u8, dev: u8, func: u8, offset: u8) -> u32 {
     let address = ((bus as u32) << 16)
         | ((dev as u32) << 11)
@@ -238,11 +254,13 @@ pub unsafe fn read_config_32(bus: u8, dev: u8, func: u8, offset: u8) -> u32 {
     }
 }
 
+#[cfg(not(feature = "jihoo-kernel"))]
 pub unsafe fn read_config_16(bus: u8, dev: u8, func: u8, offset: u8) -> u16 {
     let val = unsafe { read_config_32(bus, dev, func, offset) };
     (val >> ((offset & 2) * 8)) as u16
 }
 
+#[cfg(not(feature = "jihoo-kernel"))]
 pub unsafe fn read_config_8(bus: u8, dev: u8, func: u8, offset: u8) -> u8 {
     let val = unsafe { read_config_32(bus, dev, func, offset) };
     (val >> ((offset & 3) * 8)) as u8
@@ -280,6 +298,7 @@ pub unsafe fn piix3_pirq_route(pirq: u8) -> Option<u8> {
     }
 }
 
+#[cfg(not(feature = "jihoo-kernel"))]
 pub unsafe fn write_config_32(bus: u8, dev: u8, func: u8, offset: u8, val: u32) {
     let address = ((bus as u32) << 16)
         | ((dev as u32) << 11)
@@ -294,6 +313,7 @@ pub unsafe fn write_config_32(bus: u8, dev: u8, func: u8, offset: u8, val: u32) 
 
 /// Read-only xHCI discovery for diskless hardware bring-up. Other PCI devices
 /// are never enabled or registered with their drivers by this path.
+#[cfg(not(feature = "jihoo-kernel"))]
 pub fn find_xhci(index: usize) -> Option<PciDevice> {
     let mut found = 0;
     for bus in 0..=255u8 {

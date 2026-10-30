@@ -9,8 +9,7 @@ pub use address_space::AddressSpace;
 
 use crate::BootInfo;
 #[cfg(not(feature = "jihoo-kernel"))]
-use crate::uefi::EFI_CONVENTIONAL_MEMORY;
-use crate::uefi::EFI_MEMORY_DESCRIPTOR;
+use crate::uefi::{EFI_CONVENTIONAL_MEMORY, EFI_MEMORY_DESCRIPTOR};
 use core::arch::asm;
 
 pub const PAGE_SIZE: u64 = 4096;
@@ -161,70 +160,14 @@ pub unsafe fn store_boot_info(
     }
 }
 
-/// Frames handed out after boot: a free list of released frames, refilled
-/// from the boot bump allocator committed by `commit_frame_allocator`.
-/// Free frames are identity-mapped, so each stores the next free address.
-struct FrameState {
-    bump: Option<FrameAllocator>,
-    free_head: u64,
-    free_count: usize,
-    in_use: usize,
-}
-
-static FRAMES: crate::sync::Spinlock<FrameState> = crate::sync::Spinlock::new(FrameState {
-    bump: None,
-    free_head: 0,
-    free_count: 0,
-    in_use: 0,
-});
+#[cfg(not(feature = "jihoo-kernel"))]
+mod frame;
+#[cfg(feature = "jihoo-kernel")]
+#[path = "../jihoo/frame.rs"]
+mod frame;
+pub use frame::{alloc_frame, commit_frame_allocator, frames_in_use, free_frame};
 
 unsafe impl Send for FrameAllocator {}
-
-/// Hand the boot allocator's remaining memory to the global frame pool.
-/// The boot allocator must not be used afterwards.
-pub fn commit_frame_allocator(alloc: &FrameAllocator) {
-    FRAMES.lock().bump = Some(FrameAllocator {
-        memory_map: alloc.memory_map,
-        memory_map_size: alloc.memory_map_size,
-        descriptor_size: alloc.descriptor_size,
-        descriptor_version: alloc.descriptor_version,
-        current_descriptor_index: alloc.current_descriptor_index,
-        current_page_offset: alloc.current_page_offset,
-    });
-}
-
-/// Allocate one zeroed frame from the global pool.
-pub fn alloc_frame() -> Option<u64> {
-    let frame = {
-        let mut state = FRAMES.lock();
-        let frame = if state.free_head != 0 {
-            let frame = state.free_head;
-            state.free_head = unsafe { *(frame as *const u64) };
-            state.free_count -= 1;
-            frame
-        } else {
-            state.bump.as_mut()?.allocate_frame()?
-        };
-        state.in_use += 1;
-        frame
-    };
-    unsafe { core::ptr::write_bytes(frame as *mut u8, 0, PAGE_SIZE as usize) };
-    Some(frame)
-}
-
-/// Return a frame obtained from `alloc_frame` to the global pool.
-pub fn free_frame(frame: u64) {
-    let mut state = FRAMES.lock();
-    unsafe { *(frame as *mut u64) = state.free_head };
-    state.free_head = frame;
-    state.free_count += 1;
-    state.in_use -= 1;
-}
-
-/// Frames currently allocated from the global pool.
-pub fn frames_in_use() -> usize {
-    FRAMES.lock().in_use
-}
 
 /// Source of page-table frames for `map_page`.
 pub trait FrameSource {
@@ -252,9 +195,10 @@ pub struct PageTable {
 
 impl PageTable {
     pub fn zero(&mut self) {
-        for i in 0..512 {
-            self.entries[i] = 0;
-        }
+        #[cfg(feature = "jihoo-kernel")]
+        unsafe { paging::jihoo_page_zero(self.entries.as_mut_ptr()) };
+        #[cfg(not(feature = "jihoo-kernel"))]
+        self.entries.fill(0);
     }
 }
 
@@ -270,139 +214,16 @@ pub fn current_pml4_phys() -> u64 {
     cr3
 }
 
-/// Maps a virtual address to a physical address.
-pub unsafe fn map_page(
-    pml4: &mut PageTable,
-    virt_addr: u64,
-    phys_addr: u64,
-    flags: u64,
-    allocator: &mut impl FrameSource,
-) {
-    let pml4_idx = ((virt_addr >> 39) & 0x1FF) as usize;
-    let pdp_idx = ((virt_addr >> 30) & 0x1FF) as usize;
-    let pd_idx = ((virt_addr >> 21) & 0x1FF) as usize;
-    let pt_idx = ((virt_addr >> 12) & 0x1FF) as usize;
+#[cfg(not(feature = "jihoo-kernel"))]
+mod paging;
+#[cfg(feature = "jihoo-kernel")]
+#[path = "../jihoo/paging.rs"]
+mod paging;
+pub use paging::{is_user_range_mapped, map_page};
 
-    // 1. Get PDPT
-    if (pml4.entries[pml4_idx] & PAGE_PRESENT) == 0 {
-        let frame = allocator.allocate_frame().expect("OOM allocating PDPT");
-        let table = unsafe { get_table_mut(frame) };
-        table.zero();
-        pml4.entries[pml4_idx] = frame | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
-    }
-    let pdpt_phys = pml4.entries[pml4_idx] & !0xFFF;
-    let pdpt = unsafe { get_table_mut(pdpt_phys) };
-
-    // 2. Get PD
-    if (pdpt.entries[pdp_idx] & PAGE_PRESENT) == 0 {
-        let frame = allocator.allocate_frame().expect("OOM allocating PD");
-        let table = unsafe { get_table_mut(frame) };
-        table.zero();
-        pdpt.entries[pdp_idx] = frame | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
-    }
-    let pd_phys = pdpt.entries[pdp_idx] & !0xFFF;
-    let pd = unsafe { get_table_mut(pd_phys) };
-
-    // 3. Get PT
-    if (pd.entries[pd_idx] & PAGE_PRESENT) == 0 {
-        let frame = allocator.allocate_frame().expect("OOM allocating PT");
-        let table = unsafe { get_table_mut(frame) };
-        table.zero();
-        pd.entries[pd_idx] = frame | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
-    }
-    let pt_phys = pd.entries[pd_idx] & !0xFFF;
-    let pt = unsafe { get_table_mut(pt_phys) };
-
-    // 4. Map Page
-    pt.entries[pt_idx] = phys_addr | flags | PAGE_PRESENT;
-
-    // 5. Flush TLB entry for this virtual address
-    unsafe {
-        core::arch::asm!("invlpg [{}]", in(reg) virt_addr, options(nostack, preserves_flags));
-    }
-}
-
-/// Check whether every page in the virtual address range [start, start + len)
-/// is present in the current page tables.  Returns true if all pages are mapped.
+/// Check that every page is present, including large-page mappings.
 pub fn is_range_mapped(pml4: &PageTable, start: u64, len: u64) -> bool {
-    if len == 0 {
-        return true;
-    }
-    let end = start + len;
-    let mut addr = start & !0xFFF; // page-align down
-
-    while addr < end {
-        if !is_page_mapped(pml4, addr) {
-            return false;
-        }
-        addr += PAGE_SIZE;
-    }
-    true
-}
-
-fn is_page_mapped(pml4: &PageTable, virt_addr: u64) -> bool {
-    let pml4_idx = ((virt_addr >> 39) & 0x1FF) as usize;
-    let pdp_idx = ((virt_addr >> 30) & 0x1FF) as usize;
-    let pd_idx = ((virt_addr >> 21) & 0x1FF) as usize;
-    let pt_idx = ((virt_addr >> 12) & 0x1FF) as usize;
-
-    if (pml4.entries[pml4_idx] & PAGE_PRESENT) == 0 {
-        return false;
-    }
-    let pdpt = unsafe { get_table_mut(pml4.entries[pml4_idx] & !0xFFF) };
-
-    if (pdpt.entries[pdp_idx] & PAGE_PRESENT) == 0 {
-        return false;
-    }
-    let pd = unsafe { get_table_mut(pdpt.entries[pdp_idx] & !0xFFF) };
-
-    // Check for huge page (1GB or 2MB)
-    if (pd.entries[pd_idx] & PAGE_PRESENT) == 0 {
-        return false;
-    }
-    if (pd.entries[pd_idx] & (1 << 7)) != 0 {
-        return true; // 2MB page
-    }
-
-    let pt = unsafe { get_table_mut(pd.entries[pd_idx] & !0xFFF) };
-    (pt.entries[pt_idx] & PAGE_PRESENT) != 0
-}
-
-/// Check that every page in [start, start + len) is mapped user-accessible.
-/// User pointers must pass this so they cannot name kernel identity mappings.
-pub fn is_user_range_mapped(pml4: &PageTable, start: u64, len: u64) -> bool {
-    let Some(end) = start.checked_add(len) else {
-        return false;
-    };
-    let mut addr = start & !0xFFF;
-    while addr < end {
-        if !is_user_page(pml4, addr) {
-            return false;
-        }
-        addr += PAGE_SIZE;
-    }
-    true
-}
-
-fn is_user_page(pml4: &PageTable, virt_addr: u64) -> bool {
-    let indices = [
-        ((virt_addr >> 39) & 0x1FF) as usize,
-        ((virt_addr >> 30) & 0x1FF) as usize,
-        ((virt_addr >> 21) & 0x1FF) as usize,
-        ((virt_addr >> 12) & 0x1FF) as usize,
-    ];
-    let mut table = pml4;
-    for (level, idx) in indices.into_iter().enumerate() {
-        let entry = table.entries[idx];
-        if entry & (PAGE_PRESENT | PAGE_USER) != PAGE_PRESENT | PAGE_USER {
-            return false;
-        }
-        if level == 3 || entry & (1 << 7) != 0 {
-            return true;
-        }
-        table = unsafe { get_table_mut(entry & !0xFFF) };
-    }
-    false
+    paging::is_range_mapped(pml4, start, len)
 }
 
 static KERNEL_PML4: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -420,48 +241,55 @@ pub unsafe fn switch_pml4(pml4_phys: u64) {
 }
 
 pub unsafe fn init_paging(boot_info: &BootInfo, allocator: &mut FrameAllocator) -> u64 {
-    // 1. Allocate PML4
-    let pml4_phys = allocator.allocate_frame().expect("Failed to allocate PML4");
-    let pml4 = unsafe { get_table_mut(pml4_phys) };
-    pml4.zero();
+    #[cfg(feature = "jihoo-kernel")]
+    let pml4_phys = unsafe { paging::build_paging(boot_info, allocator) };
+    #[cfg(not(feature = "jihoo-kernel"))]
+    let pml4_phys = {
+        // 1. Allocate PML4
+        let pml4_phys = allocator.allocate_frame().expect("Failed to allocate PML4");
+        let pml4 = unsafe { get_table_mut(pml4_phys) };
+        pml4.zero();
 
-    // 2. Identity Map Regions
-    let num_descriptors = allocator.memory_map_size / allocator.descriptor_size;
+        // 2. Identity Map Regions
+        let num_descriptors = allocator.memory_map_size / allocator.descriptor_size;
 
-    for i in 0..num_descriptors {
-        let offset = i * allocator.descriptor_size;
-        let descriptor_ptr =
-            unsafe { allocator.memory_map.add(offset) } as *const EFI_MEMORY_DESCRIPTOR;
-        let descriptor = unsafe { &*descriptor_ptr };
+        for i in 0..num_descriptors {
+            let offset = i * allocator.descriptor_size;
+            let descriptor_ptr =
+                unsafe { allocator.memory_map.add(offset) } as *const EFI_MEMORY_DESCRIPTOR;
+            let descriptor = unsafe { &*descriptor_ptr };
 
-        match descriptor.Type {
-            crate::uefi::EFI_CONVENTIONAL_MEMORY
-            | crate::uefi::EFI_LOADER_CODE
-            | crate::uefi::EFI_LOADER_DATA
-            | crate::uefi::EFI_BOOT_SERVICES_CODE
-            | crate::uefi::EFI_BOOT_SERVICES_DATA
-            | crate::uefi::EFI_RUNTIME_SERVICES_CODE
-            | crate::uefi::EFI_RUNTIME_SERVICES_DATA
-            | crate::uefi::EFI_ACPI_RECLAIM_MEMORY
-            | crate::uefi::EFI_ACPI_MEMORY_NVS
-            | crate::uefi::EFI_MEMORY_MAPPED_IO
-            | crate::uefi::EFI_MEMORY_MAPPED_IO_PORT_SPACE => {
-                let start = descriptor.PhysicalStart;
-                let end = start + (descriptor.NumberOfPages * PAGE_SIZE);
-                for addr in (start..end).step_by(PAGE_SIZE as usize) {
-                    unsafe { map_page(pml4, addr, addr, PAGE_WRITABLE, allocator) };
+            match descriptor.Type {
+                crate::uefi::EFI_CONVENTIONAL_MEMORY
+                | crate::uefi::EFI_LOADER_CODE
+                | crate::uefi::EFI_LOADER_DATA
+                | crate::uefi::EFI_BOOT_SERVICES_CODE
+                | crate::uefi::EFI_BOOT_SERVICES_DATA
+                | crate::uefi::EFI_RUNTIME_SERVICES_CODE
+                | crate::uefi::EFI_RUNTIME_SERVICES_DATA
+                | crate::uefi::EFI_ACPI_RECLAIM_MEMORY
+                | crate::uefi::EFI_ACPI_MEMORY_NVS
+                | crate::uefi::EFI_MEMORY_MAPPED_IO
+                | crate::uefi::EFI_MEMORY_MAPPED_IO_PORT_SPACE => {
+                    let start = descriptor.PhysicalStart;
+                    let end = start + (descriptor.NumberOfPages * PAGE_SIZE);
+                    for addr in (start..end).step_by(PAGE_SIZE as usize) {
+                        unsafe { map_page(pml4, addr, addr, PAGE_WRITABLE, allocator) };
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
-    }
 
-    // 3. Map Framebuffer
-    let fb_base = boot_info.framebuffer_base;
-    let fb_size = boot_info.framebuffer_size as u64;
-    for addr in (fb_base..(fb_base + fb_size)).step_by(PAGE_SIZE as usize) {
-        unsafe { map_page(pml4, addr, addr, PAGE_WRITABLE, allocator) };
-    }
+        // 3. Map Framebuffer
+        let fb_base = boot_info.framebuffer_base;
+        let fb_size = boot_info.framebuffer_size as u64;
+        for addr in (fb_base..(fb_base + fb_size)).step_by(PAGE_SIZE as usize) {
+            unsafe { map_page(pml4, addr, addr, PAGE_WRITABLE, allocator) };
+        }
+
+        pml4_phys
+    };
 
     // 4. Load CR3
     unsafe { asm!("mov cr3, {}", in(reg) pml4_phys) };

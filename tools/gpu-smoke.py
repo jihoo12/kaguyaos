@@ -26,6 +26,7 @@ parser.add_argument('--hardware-shell', action='store_true', help='Test diskless
 parser.add_argument('--shell-io', action='store_true', help='Check diskless shell pipes, redirection and exec arguments')
 parser.add_argument('--network', action='store_true', help='Check ping and wget against a local HTTP fixture')
 parser.add_argument('--disk-image', type=Path, help='Use a prepared NVMe image instead of nvme.img')
+parser.add_argument('--kernel-image', type=Path, help='Use an alternate EFI artifact for this boot mode')
 parser.add_argument('--hardware-test', action='store_true', help='Test the isolated diagnostic EFI without NVMe, USB or network devices')
 parser.add_argument('--backend', choices=['virtio', 'gop'], default='virtio')
 parser.add_argument('--output', type=Path, default=Path('/tmp/kaguya-gpu-smoke'))
@@ -87,7 +88,7 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
     kernel = 'target/hardware-test/build/x86_64-unknown-uefi/debug/os.efi' if args.hardware_test else 'target/x86_64-unknown-uefi/debug/os.efi'
     if args.hardware_shell:
         kernel = 'target/hardware-shell/build/x86_64-unknown-uefi/debug/os.efi'
-    shutil.copyfile(root / kernel, boot / 'BOOTX64.EFI')
+    shutil.copyfile(args.kernel_image.resolve() if args.kernel_image else root / kernel, boot / 'BOOTX64.EFI')
     qmp = tmp / 'qmp.sock'
     if isolated:
         args.backend = 'gop'

@@ -1,3 +1,5 @@
+pub mod pci;
+
 unsafe extern "C" {
     fn jihoo_checksum(data: *const u8, length: usize) -> u16;
     fn jihoo_transport_checksum(

@@ -1,10 +1,61 @@
-struct Descriptor {
-    kind: u32
-    padding: u32
-    physical_start: u64
-    virtual_start: u64
-    pages: u64
-    attributes: u64
+pub struct Descriptor {
+    pub kind: u32
+    pub padding: u32
+    pub physical_start: u64
+    pub virtual_start: u64
+    pub pages: u64
+    pub attributes: u64
+}
+
+static POOL_MAP: *u8 = null
+static POOL_SIZE: u64 = 0
+static POOL_STRIDE: u64 = 0
+static POOL_INDEX: u64 = 0
+static POOL_OFFSET: u64 = 0
+static FREE_HEAD: u64 = 0
+static IN_USE: u64 = 0
+
+export fn jihoo_pool_commit(memory_map: *u8, map_size: u64, stride: u64,
+                           descriptor_index: u64, page_offset: u64) {
+    unsafe {
+        POOL_MAP = memory_map
+        POOL_SIZE = map_size
+        POOL_STRIDE = stride
+        POOL_INDEX = descriptor_index
+        POOL_OFFSET = page_offset
+    }
+}
+
+export fn jihoo_pool_alloc() -> u64 {
+    unsafe {
+        var frame: u64 = 0
+        if FREE_HEAD != 0 {
+            frame = FREE_HEAD
+            FREE_HEAD = *(frame as *u64)
+        } else {
+            if POOL_STRIDE == 0 { return 0 }
+            frame = jihoo_boot_frame_alloc(POOL_MAP, POOL_SIZE, POOL_STRIDE, &POOL_INDEX, &POOL_OFFSET)
+            if frame == 0 { return 0 }
+        }
+        IN_USE += 1
+        frame
+    }
+}
+
+export fn jihoo_pool_free(frame: u64) {
+    unsafe {
+        *(frame as *u64) = FREE_HEAD
+        FREE_HEAD = frame
+        IN_USE -= 1
+    }
+}
+
+export fn jihoo_pool_in_use() -> u64 {
+    unsafe { IN_USE }
+}
+
+export fn jihoo_frame_zero(frame: u64) {
+    unsafe { mem_fill(frame as *u8, 0, 4096) }
 }
 
 export fn jihoo_boot_frame_alloc(memory_map: *u8, map_size: u64, stride: u64,

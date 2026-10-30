@@ -15,11 +15,19 @@ The feature currently selects jihoo implementations of:
 - Process page-table creation, user-page mapping, heap mapping, and teardown.
 - Kernel heap allocation, free lists, large-block splitting/coalescing, and reallocation.
 - Boot-time single and contiguous frame allocation from the UEFI memory map.
+- Global frame recycling, allocation counts, and full-page zeroing.
+- Boot identity-map construction, kernel page-table mapping, and mapped/user
+  range permission checks.
+- PCI configuration reads/writes, multifunction bus scanning, MMIO BAR0
+  decoding, and indexed read-only xHCI discovery.
 
 The bridge uses the UEFI calling convention. `arch.S` implements port I/O,
 interrupt flag operations, and pause instructions. Frame allocation and
-kernel panic reporting call into the remaining Rust kernel. The global frame
-pool and its lock remain Rust; its boot-map allocation now calls jihoo. Existing
+kernel panic reporting call through Rust ABI bridges. Frame-pool state and
+recycling are jihoo; the Rust bridge holds the interrupt-safe lock and
+releases it before zeroing an allocated frame. Kernel mapping passes its
+frame source through a synchronous C callback; CR3 and TLB instructions
+remain Rust assembly. Existing
 display locks and dirty-region tracking surround drawing operations.
 Without the feature, the Rust reference implementations remain active.
 
@@ -40,11 +48,13 @@ With compiler commit `84d4a54a0de4a8c12f7584ee390e64083ac3a8b8`:
 nix build path:../jihoo#jihoo --no-link --print-out-paths
 bash tools/test-jihoo-heap.sh
 bash tools/test-jihoo-frames.sh
+bash tools/test-jihoo-paging.sh
+bash tools/test-jihoo-pci.sh
 ```
 
 The scripts build the current adjacent compiler unless `JIHOO_BIN` is set.
-Do not assume `../jihoo/out/jihoo` matches the checkout. Both host tests run
-the actual jihoo allocator code through native C ABI objects at `-O0` and
+Do not assume `../jihoo/out/jihoo` matches the checkout. Host tests run
+the actual jihoo implementations through native C ABI objects at `-O0` and
 `-O2`, with the kernel's register and red-zone options:
 
 - Heap: all ten size classes, live-data preservation, free-list reuse,
@@ -56,6 +66,22 @@ the actual jihoo allocator code through native C ABI objects at `-O0` and
 - Frames: 40-, 48-, and 64-byte firmware descriptor strides, reserved and
   empty descriptors, physical address zero, exhaustion, zero-count requests,
   and contiguous runs across descriptors and after gaps. The map is read-only.
+  Pool tests also cover pre-commit failure, handoff of a partially used boot
+  descriptor, LIFO reuse, preserved live-page contents, whole-page zeroing,
+  and unchanged allocation counts after OOM.
+- Paging: callback-based table allocation and zeroing, table reuse across
+  mapping boundaries, leaf flags, permission failure at each level, 1 GiB
+  and 2 MiB leaves, NX address masking, invalid PML4 huge-page flags,
+  noncanonical addresses, range overflow, the highest canonical page, and
+  retry after partial table-allocation failure. Range results are compared
+  with the Rust reference as well as explicit expectations. Boot fixtures
+  check UEFI memory-type filtering, empty descriptors, framebuffer tails,
+  read-only firmware maps, and OOM during identity-map construction.
+- PCI: mocked configuration ports check byte/word/dword extraction, maximum
+  bus/device/function/offset addressing, writes, 32/64-bit BAR decoding,
+  multifunction scanning and callbacks, indexed xHCI discovery through bus
+  255, C device-record layout, absent-device results, and no configuration
+  data writes during discovery.
 
 See [the userspace README](../../user/jihoo/README.md) for smoke commands.
 QEMU boot, framebuffer updates, shell input, gateway ping, and HTTP
@@ -71,6 +97,25 @@ executions with constant frame usage), normal NVMe boot, virtio display,
 gateway ping, local HTTP streaming/redirect/error fixtures, and guest shutdown.
 Disk checks used `/tmp/kaguya-jihoo-nvme.img`, a copy of `nvme.img`, with QEMU
 `-snapshot`. No unrecognized disk is formatted automatically.
+
+The frame-pool, paging/boot-map, and PCI ports are also covered by the same
+diskless and normal-network regressions. PCI device selection, logging,
+registration and enabling remain Rust; the diskless discovery function
+only reads configuration registers.
+The default Rust kernel also passed the normal NVMe/virtio/network/shutdown
+regression with the same jihoo userspace disk. Current artifacts are in
+`/tmp/kaguya-jihoo-memory-shell`, `/tmp/kaguya-jihoo-memory-network`, and
+`/tmp/kaguya-rust-memory-network`.
+
+An alternate EFI can be selected without replacing the normal artifact:
+
+```sh
+cargo build --target x86_64-unknown-uefi --target-dir target/rust-reference-check
+python3 tools/gpu-smoke.py --kernel-image target/rust-reference-check/x86_64-unknown-uefi/debug/os.efi --network --disk-image /tmp/kaguya-jihoo-nvme.img --shutdown --output /tmp/kaguya-rust-memory-network
+```
+
+Prepare the disposable disk using the userspace instructions first. The
+recorded comparison used a separate copy, `/tmp/kaguya-jihoo-memory-nvme.img`.
 
 Host tests check allocator edge cases; QEMU checks the UEFI ABI, boot,
 locking, and integration with real kernel allocations. Physical hardware,
@@ -95,11 +140,19 @@ explicit `u64` result fixes these errors. They are not new compiler bugs.
 `heap.jh` and its locked Rust `GlobalAlloc` bridge are now selected only by
 `jihoo-kernel`; the default allocator remains the Rust reference.
 
-Next memory work includes the global recycled-frame pool, kernel page-table
-walking/mapping and user-pointer permission checks. Scheduling, syscall
-dispatch, files/pipes, FAT16, PCI discovery and storage/USB/network driver
-state machines still require migration. Rust ABI bridges, boot assembly,
-and UEFI setup also remain. This is not a completed kernel port.
+During the range-check port, existing Rust boundary problems were fixed in
+both implementations: noncanonical aliases are rejected, range iteration
+cannot wrap past the highest page, NX is masked before following a table
+pointer, 1 GiB leaves are recognized, and a PML4 huge-page flag is rejected.
+Empty ranges consistently succeed. Mapping over a huge leaf fails before
+following it as a table. These are kernel correctness fixes, not compiler
+problems.
+
+Scheduling, syscall dispatch, files/pipes, FAT16, PCI device registration
+and storage/USB/network driver state machines still require migration.
+Rust ABI bridges, address-space bookkeeping, frame-source objects, CR3/TLB
+assembly, boot assembly, and UEFI setup also remain. This is not a completed
+kernel port.
 
 If a new language/compiler problem appears, reduce it, compare control
 cases, file an issue in `jihoolang/jihoo` with `gh`, and stop migration.

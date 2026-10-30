@@ -1,0 +1,95 @@
+import frame
+
+const PRESENT: u64 = 1
+const USER: u64 = 4
+const HUGE: u64 = 128
+const FRAME_MASK: u64 = 0x000ffffffffff000
+
+export fn jihoo_page_zero(table: *u64) {
+    unsafe { mem_fill(table as *u8, 0, 4096) }
+}
+
+export fn jihoo_paging_init(memory_map: *u8, map_size: u64, stride: u64,
+                           framebuffer: u64, framebuffer_size: u64,
+                           context: *u8, allocate: fnptr(*u8) -> u64) -> u64 {
+    unsafe {
+        let root = allocate(context)
+        if root == 0 { return 0 }
+        jihoo_page_zero(root as *u64)
+        let count = map_size / stride
+        var i: u64 = 0
+        while i < count {
+            let descriptor = (memory_map + (i * stride) as i64) as *frame.Descriptor
+            let kind = descriptor.kind
+            if (kind >= 1 && kind <= 7) || (kind >= 9 && kind <= 12) {
+                var address = descriptor.physical_start
+                let end = address + descriptor.pages * 4096
+                while address < end {
+                    if !jihoo_page_map(root as *u64, address, address, 2, context, allocate) { return 0 }
+                    address += 4096
+                }
+            }
+            i += 1
+        }
+        var address = framebuffer
+        let end = framebuffer + framebuffer_size
+        while address < end {
+            if !jihoo_page_map(root as *u64, address, address, 2, context, allocate) { return 0 }
+            address += 4096
+        }
+        root
+    }
+}
+
+export fn jihoo_page_map(root: *u64, address: u64, physical: u64, flags: u64,
+                        context: *u8, allocate: fnptr(*u8) -> u64) -> bool {
+    unsafe {
+        var table = root
+        for shift in [39, 30, 21] {
+            let index = ((address >> shift) & 511) as i64
+            if table[index] & PRESENT == 0 {
+                let frame = allocate(context)
+                if frame == 0 { return false }
+                jihoo_page_zero(frame as *u64)
+                table[index] = frame | PRESENT | USER | 2
+            } else {
+                if table[index] & HUGE != 0 { return false }
+            }
+            table = (table[index] & FRAME_MASK) as *u64
+        }
+        table[((address >> 12) & 511) as i64] = physical | flags | PRESENT
+        true
+    }
+}
+
+unsafe fn page_present(root: *u64, address: u64, required: u64) -> bool {
+    var table = root
+    for shift in [39, 30, 21, 12] {
+        let entry = table[((address >> shift) & 511) as i64]
+        if entry & required != required { return false }
+        if shift == 12 { return true }
+        if entry & HUGE != 0 { return shift != 39 }
+        table = (entry & FRAME_MASK) as *u64
+    }
+    false
+}
+
+export fn jihoo_range_mapped(root: *u64, start: u64, length: u64, user: bool) -> bool {
+    if length == 0 { return true }
+    if length > 0xffffffffffffffff - start { return false }
+    let end = start + length
+    let region = start >> 47
+    if region != 0 && region != 0x1ffff { return false }
+    if (end - 1) >> 47 != region { return false }
+    let required: u64 = if user { PRESENT | USER } else { PRESENT }
+    var address = start & !4095
+    let last = (end - 1) & !4095
+    unsafe {
+        while true {
+            if !page_present(root, address, required) { return false }
+            if address == last { return true }
+            address += 4096
+        }
+    }
+    false
+}

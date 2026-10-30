@@ -14,6 +14,95 @@ unsafe extern "C" {
         offset: *mut u64,
         count: usize,
     ) -> u64;
+    fn jihoo_pool_commit(map: *const u8, size: usize, stride: usize, index: usize, offset: u64);
+    fn jihoo_pool_alloc() -> u64;
+    fn jihoo_pool_free(frame: u64);
+    fn jihoo_pool_in_use() -> usize;
+    fn jihoo_frame_zero(frame: u64);
+}
+
+#[repr(C, align(4096))]
+#[derive(Clone)]
+struct Page([u8; 4096]);
+
+fn pool_test() {
+    let mut backing = vec![Page([0xd1; 4096]); 11];
+    let base = backing[1].0.as_mut_ptr() as u64;
+    let mut map = [0u8; 80];
+    map[40..44].copy_from_slice(&7u32.to_le_bytes());
+    map[48..56].copy_from_slice(&base.to_le_bytes());
+    map[64..72].copy_from_slice(&9u64.to_le_bytes());
+    unsafe {
+        assert_eq!(jihoo_pool_alloc(), 0, "pool is unavailable before commit");
+        assert_eq!(jihoo_pool_in_use(), 0);
+        jihoo_pool_commit(map.as_ptr(), map.len(), 40, 1, 2);
+        let mut live = Vec::new();
+        for i in 2..9 {
+            let frame = jihoo_pool_alloc();
+            assert_eq!(frame, base + i * 4096);
+            jihoo_frame_zero(frame);
+            let page = std::slice::from_raw_parts_mut(frame as *mut u8, 4096);
+            assert!(page.iter().all(|&b| b == 0));
+            page.fill(i as u8);
+            live.push(frame);
+            assert_eq!(jihoo_pool_in_use(), live.len());
+        }
+        for _ in 0..3 {
+            assert_eq!(jihoo_pool_alloc(), 0);
+            assert_eq!(jihoo_pool_in_use(), 7, "OOM must not change accounting");
+        }
+        for &i in &[1, 5, 3] {
+            jihoo_pool_free(live[i]);
+        }
+        assert_eq!(jihoo_pool_in_use(), 4);
+        for &i in &[3, 5, 1] {
+            let frame = jihoo_pool_alloc();
+            assert_eq!(
+                frame, live[i],
+                "free frames must be reused before the bump source"
+            );
+            jihoo_frame_zero(frame);
+            let page = std::slice::from_raw_parts_mut(frame as *mut u8, 4096);
+            assert!(
+                page.iter().all(|&b| b == 0),
+                "reused page and next pointer must be cleared"
+            );
+            page.fill((i + 2) as u8);
+        }
+        assert_eq!(jihoo_pool_in_use(), 7);
+        for (i, &frame) in live.iter().enumerate() {
+            let page = std::slice::from_raw_parts(frame as *const u8, 4096);
+            assert!(
+                page.iter().all(|&b| b == (i + 2) as u8),
+                "live frame corrupted"
+            );
+        }
+        for &frame in &live {
+            jihoo_pool_free(frame);
+        }
+        assert_eq!(jihoo_pool_in_use(), 0);
+        for &expected in live.iter().rev() {
+            let frame = jihoo_pool_alloc();
+            assert_eq!(frame, expected);
+            jihoo_frame_zero(frame);
+            assert!(
+                std::slice::from_raw_parts(frame as *const u8, 4096)
+                    .iter()
+                    .all(|&b| b == 0)
+            );
+        }
+        for &frame in &live {
+            jihoo_pool_free(frame);
+        }
+        assert_eq!(jihoo_pool_in_use(), 0);
+    }
+    for i in [0, 1, 2, 10] {
+        assert!(
+            backing[i].0.iter().all(|&b| b == 0xd1),
+            "guard or boot-owned frame overwritten"
+        );
+    }
+    println!("jihoo frame pool: boot handoff, zeroing, LIFO reuse, OOM and accounting passed");
 }
 
 fn main() {
@@ -109,4 +198,5 @@ fn main() {
     println!(
         "jihoo boot frames: descriptor strides, reserved/empty/zero pages, exhaustion and contiguous runs passed"
     );
+    pool_test();
 }
