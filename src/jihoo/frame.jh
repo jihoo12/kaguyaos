@@ -1,0 +1,46 @@
+struct Descriptor {
+    kind: u32
+    padding: u32
+    physical_start: u64
+    virtual_start: u64
+    pages: u64
+    attributes: u64
+}
+
+export fn jihoo_boot_frame_alloc(memory_map: *u8, map_size: u64, stride: u64,
+                                descriptor_index: *u64, page_offset: *u64) -> u64 {
+    unsafe {
+        let count = map_size / stride
+        while *descriptor_index < count {
+            let descriptor = (memory_map + (*descriptor_index * stride) as i64) as *Descriptor
+            if descriptor.kind == 7 {
+                if *page_offset < descriptor.pages {
+                    let address = descriptor.physical_start + *page_offset * 4096
+                    *page_offset += 1
+                    if address > 0 { return address }
+                }
+            }
+            *descriptor_index += 1
+            *page_offset = 0
+        }
+        0
+    }
+}
+
+export fn jihoo_boot_frames_alloc(memory_map: *u8, map_size: u64, stride: u64,
+                                 descriptor_index: *u64, page_offset: *u64, count: u64) -> u64 {
+    if count == 0 { return 0 }
+    var start = jihoo_boot_frame_alloc(memory_map, map_size, stride, descriptor_index, page_offset)
+    if start == 0 { return 0 }
+    var found: u64 = 1
+    while found < count {
+        let next = jihoo_boot_frame_alloc(memory_map, map_size, stride, descriptor_index, page_offset)
+        if next == 0 { return 0 }
+        if next == start + found * 4096 { found += 1 }
+        else {
+            start = next
+            found = 1
+        }
+    }
+    start
+}

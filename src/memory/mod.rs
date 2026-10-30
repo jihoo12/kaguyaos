@@ -1,10 +1,16 @@
 pub mod address_space;
+#[cfg(not(feature = "jihoo-kernel"))]
+pub mod heap;
+#[cfg(feature = "jihoo-kernel")]
+#[path = "../jihoo/heap.rs"]
 pub mod heap;
 
 pub use address_space::AddressSpace;
 
 use crate::BootInfo;
-use crate::uefi::{EFI_CONVENTIONAL_MEMORY, EFI_MEMORY_DESCRIPTOR};
+#[cfg(not(feature = "jihoo-kernel"))]
+use crate::uefi::EFI_CONVENTIONAL_MEMORY;
+use crate::uefi::EFI_MEMORY_DESCRIPTOR;
 use core::arch::asm;
 
 pub const PAGE_SIZE: u64 = 4096;
@@ -14,6 +20,25 @@ pub const PAGE_WRITABLE: u64 = 1 << 1;
 pub const PAGE_USER: u64 = 1 << 2;
 pub const PAGE_CACHE_DISABLE: u64 = 1 << 4;
 pub const PAGE_NO_EXECUTE: u64 = 1 << 63;
+
+#[cfg(feature = "jihoo-kernel")]
+unsafe extern "C" {
+    fn jihoo_boot_frame_alloc(
+        memory_map: *const u8,
+        map_size: usize,
+        stride: usize,
+        descriptor_index: *mut usize,
+        page_offset: *mut u64,
+    ) -> u64;
+    fn jihoo_boot_frames_alloc(
+        memory_map: *const u8,
+        map_size: usize,
+        stride: usize,
+        descriptor_index: *mut usize,
+        page_offset: *mut u64,
+        count: usize,
+    ) -> u64;
+}
 
 /// A simple physical frame allocator using UEFI memory map.
 pub struct FrameAllocator {
@@ -41,6 +66,22 @@ impl FrameAllocator {
     }
 
     /// Boot-time allocation; skipped fragments remain reserved (no frame free list).
+    #[cfg(feature = "jihoo-kernel")]
+    pub fn allocate_contiguous(&mut self, count: usize) -> Option<u64> {
+        let frame = unsafe {
+            jihoo_boot_frames_alloc(
+                self.memory_map,
+                self.memory_map_size,
+                self.descriptor_size,
+                &mut self.current_descriptor_index,
+                &mut self.current_page_offset,
+                count,
+            )
+        };
+        if frame == 0 { None } else { Some(frame) }
+    }
+
+    #[cfg(not(feature = "jihoo-kernel"))]
     pub fn allocate_contiguous(&mut self, count: usize) -> Option<u64> {
         if count == 0 { return None; }
         let mut start = self.allocate_frame()?;
@@ -53,6 +94,21 @@ impl FrameAllocator {
         Some(start)
     }
 
+    #[cfg(feature = "jihoo-kernel")]
+    pub fn allocate_frame(&mut self) -> Option<u64> {
+        let frame = unsafe {
+            jihoo_boot_frame_alloc(
+                self.memory_map,
+                self.memory_map_size,
+                self.descriptor_size,
+                &mut self.current_descriptor_index,
+                &mut self.current_page_offset,
+            )
+        };
+        if frame == 0 { None } else { Some(frame) }
+    }
+
+    #[cfg(not(feature = "jihoo-kernel"))]
     pub fn allocate_frame(&mut self) -> Option<u64> {
         let num_descriptors = self.memory_map_size / self.descriptor_size;
 

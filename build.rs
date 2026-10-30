@@ -56,6 +56,7 @@ fn main() {
             "-target",
             "x86_64-unknown-windows",
             "-ffreestanding",
+            "-fno-pic",
             "-c",
             "src/jihoo/arch.S",
             "-o",

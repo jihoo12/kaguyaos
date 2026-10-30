@@ -3,6 +3,8 @@
 import checksum
 import address_space
 import framebuffer
+import frame
+import heap
 import loader
 import pic
 import sync

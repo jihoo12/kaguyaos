@@ -75,7 +75,7 @@ unsafe fn free_large(payload: *u8) {
 }
 
 unsafe fn alloc_small(bucket: i64) -> *u8 {
-    let total = 8 + CLASSES[bucket]
+    let total = CLASSES[bucket] + 8
     let head = FREE[bucket]
     if head != null {
         FREE[bucket] = *(head as **u8)
@@ -115,7 +115,7 @@ export fn jihoo_heap_alloc(size: u64, alignment: u64) -> *u8 {
         let address = raw as u64
         let candidate = address + 16
         let remainder = candidate % alignment
-        let padding = if remainder == 0 { 0 } else { alignment - remainder }
+        let padding: u64 = if remainder == 0 { 0 } else { alignment - remainder }
         let aligned = candidate + padding
         *((aligned - 16) as *u64) = 0xffffffffffffffff
         *((aligned - 8) as *u64) = address - HEADER

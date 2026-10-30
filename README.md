@@ -11,7 +11,7 @@ An experimental jihoo migration includes all seven userspace programs and
 selected kernel components behind the `jihoo-kernel` Cargo feature. The
 default build still uses Rust. See the [userspace port](user/jihoo/README.md)
 and [kernel port](src/jihoo/README.md) for build commands, verification,
-remaining Rust components, and the current compiler issue.
+remaining Rust components, and compiler regression checks.
 
 ---
 
