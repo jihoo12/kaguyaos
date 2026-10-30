@@ -1,0 +1,61 @@
+#![freestanding]
+
+import kaguya as os
+
+fn copy_stdin() -> never {
+    var bytes: [u8; 512] = [0; 512]
+    loop {
+        let n = unsafe { os.read_fd(os.STDIN, &bytes[0], 512) }
+        if n <= 0 { os.exit(if n == 0 { 0 } else { 1 }) }
+        let text = unsafe { make_str(&bytes[0], n) }
+        if os.write_fd(os.STDOUT, text) < 0 { os.exit(1) }
+    }
+}
+
+export fn kaguya_main(args: *u8, count: i64) -> never {
+    if count == 0 {
+        if os.call(36, os.STDIN, 0, 0, 0, 0) != 0 { copy_stdin() }
+        os.println("Usage: cat <filename>")
+        os.exit(1)
+    }
+    let name = os.trim_start(unsafe { make_str(args, count) })
+    if name.len == 0 {
+        os.println("Usage: cat <filename>")
+        os.exit(1)
+    }
+    let fd = os.open(name, os.O_READ)
+    if fd < 0 {
+        os.print("Error: ")
+        os.print(name)
+        os.println(" not found")
+        os.exit(1)
+    }
+    var bytes: [u8; 512] = [0; 512]
+    var total = 0
+    loop {
+        let n = unsafe { os.read_fd(fd, &bytes[0], 512) }
+        if n < 0 {
+            os.println("Error: read failed")
+            os.close(fd)
+            os.exit(1)
+        }
+        if n == 0 { break }
+        let text = unsafe { make_str(&bytes[0], n) }
+        var binary = false
+        for byte in text {
+            if byte == 0 { binary = true }
+        }
+        if binary {
+            os.println("(binary, cannot display)")
+            break
+        }
+        if os.write_fd(os.STDOUT, text) < 0 {
+            os.close(fd)
+            os.exit(1)
+        }
+        total += n
+    }
+    if total == 0 { os.println("(empty)") }
+    os.close(fd)
+    os.exit(0)
+}

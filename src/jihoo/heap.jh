@@ -1,0 +1,159 @@
+struct Block {
+    size: u64
+    next: *Block
+    prev: *Block
+    free: bool
+}
+
+const CLASSES: [u64; 10] = [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
+const HEADER: u64 = size_of(Block) as u64
+static FREE: [*u8; 10] = zeroed([*u8; 10])
+static LARGE: *Block = null
+static ARENA: u64 = 0
+static END: u64 = 0
+
+export fn jihoo_heap_init(start: u64, size: u64) {
+    unsafe {
+        for i in 0..10 { FREE[i] = null }
+        LARGE = null
+        let arena_bytes = size / 4 * 3
+        ARENA = start
+        END = start + arena_bytes
+        let remaining = size - arena_bytes
+        if remaining > HEADER {
+            let block = END as *Block
+            block.size = remaining - HEADER
+            block.next = null
+            block.prev = null
+            block.free = true
+            LARGE = block
+        }
+    }
+}
+
+unsafe fn alloc_large(size: u64) -> *u8 {
+    if size > 0xffffffffffffffff - 7 { return null }
+    let needed = (size + 7) & !7
+    var current = LARGE
+    while current != null {
+        if current.free && current.size >= needed {
+            if current.size - needed >= HEADER + 16 {
+                let next = (current as u64 + HEADER + needed) as *Block
+                next.size = current.size - needed - HEADER
+                next.next = current.next
+                next.prev = current
+                next.free = true
+                if next.next != null { next.next.prev = next }
+                current.size = needed
+                current.next = next
+            }
+            current.free = false
+            return (current as u64 + HEADER) as *u8
+        }
+        current = current.next
+    }
+    null
+}
+
+unsafe fn free_large(payload: *u8) {
+    if payload == null { return }
+    let block = (payload as u64 - HEADER) as *Block
+    if block.free { return }
+    block.free = true
+    let next = block.next
+    if next != null && next.free {
+        block.size += next.size + HEADER
+        block.next = next.next
+        if block.next != null { block.next.prev = block }
+    }
+    let previous = block.prev
+    if previous != null && previous.free {
+        previous.size += block.size + HEADER
+        previous.next = block.next
+        if block.next != null { block.next.prev = previous }
+    }
+}
+
+unsafe fn alloc_small(bucket: i64) -> *u8 {
+    let total = 8 + CLASSES[bucket]
+    let head = FREE[bucket]
+    if head != null {
+        FREE[bucket] = *(head as **u8)
+        *(head as *u64) = bucket as u64
+        return head + 8
+    }
+    let aligned = (ARENA + 7) & !7
+    if aligned <= END && total <= END - aligned {
+        ARENA = aligned + total
+        *(aligned as *u64) = bucket as u64
+        return (aligned + 8) as *u8
+    }
+    let slab = alloc_large(total * 32)
+    if slab == null { return null }
+    for i in 1..32 {
+        let block = slab + (i as u64 * total) as i64
+        *(block as **u8) = FREE[bucket]
+        FREE[bucket] = block
+    }
+    *(slab as *u64) = bucket as u64
+    slab + 8
+}
+
+export fn jihoo_heap_alloc(size: u64, alignment: u64) -> *u8 {
+    if alignment == 0 || alignment & (alignment - 1) != 0 { return null }
+    unsafe {
+        if alignment <= 8 {
+            for i in 0..10 {
+                if size <= CLASSES[i] { return alloc_small(i) }
+            }
+        }
+        if alignment > 0xffffffffffffffff - 16 { return null }
+        let extra = alignment + 16
+        if size > 0xffffffffffffffff - extra { return null }
+        let raw = alloc_large(size + extra)
+        if raw == null { return null }
+        let address = raw as u64
+        let candidate = address + 16
+        let remainder = candidate % alignment
+        let padding = if remainder == 0 { 0 } else { alignment - remainder }
+        let aligned = candidate + padding
+        *((aligned - 16) as *u64) = 0xffffffffffffffff
+        *((aligned - 8) as *u64) = address - HEADER
+        aligned as *u8
+    }
+}
+
+export fn jihoo_heap_free(payload: *u8) {
+    if payload == null { return }
+    unsafe {
+        let address = payload as u64
+        let tag = *((address - 8) as *u64)
+        if tag < 10 {
+            let block = (address - 8) as *u8
+            *(block as **u8) = FREE[tag as i64]
+            FREE[tag as i64] = block
+        } else {
+            free_large((tag + HEADER) as *u8)
+        }
+    }
+}
+
+unsafe fn capacity(payload: *u8) -> u64 {
+    let address = payload as u64
+    let tag = *((address - 8) as *u64)
+    if tag < 10 { return CLASSES[tag as i64] }
+    let block = tag as *Block
+    tag + HEADER + block.size - address
+}
+
+export fn jihoo_heap_realloc(payload: *u8, size: u64, alignment: u64) -> *u8 {
+    let next = jihoo_heap_alloc(size, alignment)
+    if next != null && payload != null {
+        unsafe {
+            let old = capacity(payload)
+            mem_copy(next, payload, (if size < old { size } else { old }) as i64)
+            jihoo_heap_free(payload)
+        }
+    }
+    next
+}

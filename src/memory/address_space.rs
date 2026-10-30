@@ -6,10 +6,12 @@
 //! and above them (heaps, RAM disk) are shared. Kernel mappings must not add
 //! new PML4 slots after the first process is created.
 use super::{
-    PAGE_NO_EXECUTE, PAGE_PRESENT, PAGE_SIZE, PAGE_USER, PAGE_WRITABLE, PageTable, alloc_frame,
+    PAGE_NO_EXECUTE, PAGE_PRESENT, PAGE_USER, PAGE_WRITABLE, PageTable, alloc_frame,
     free_frame, get_table_mut, kernel_pml4_phys,
 };
 use crate::sync::Spinlock;
+#[cfg(not(feature = "jihoo-kernel"))]
+use super::PAGE_SIZE;
 
 const USER_PML4_FIRST: usize = 128;
 const USER_PML4_END: usize = 256;
@@ -22,6 +24,14 @@ pub const USER_HEAP_BASE: u64 = 0x0000_7000_0000_0000;
 pub const USER_HEAP_LIMIT: u64 = USER_HEAP_BASE + 256 * 1024 * 1024;
 pub const USER_STACK_TOP: u64 = 0x0000_7fff_ffff_0000;
 
+#[cfg(feature = "jihoo-kernel")]
+unsafe extern "C" {
+    fn jihoo_space_create(kernel: u64) -> u64;
+    fn jihoo_space_map(root: u64, address: u64, flags: u64) -> u64;
+    fn jihoo_space_grow(root: u64, old: u64, bytes: u64) -> u64;
+    fn jihoo_space_destroy(root: u64);
+}
+
 pub struct AddressSpace {
     pml4: u64,
     /// End of the mapped heap; pages in [USER_HEAP_BASE, heap_end) are mapped.
@@ -29,6 +39,13 @@ pub struct AddressSpace {
 }
 
 impl AddressSpace {
+    #[cfg(feature = "jihoo-kernel")]
+    pub fn new() -> Option<Self> {
+        let pml4 = unsafe { jihoo_space_create(kernel_pml4_phys()) };
+        (pml4 != 0).then(|| Self { pml4, heap_end: Spinlock::new(USER_HEAP_BASE) })
+    }
+
+    #[cfg(not(feature = "jihoo-kernel"))]
     pub fn new() -> Option<Self> {
         let pml4 = alloc_frame()?;
         let kernel = unsafe { get_table_mut(kernel_pml4_phys()) };
@@ -56,12 +73,20 @@ impl AddressSpace {
         if !executable {
             flags |= PAGE_NO_EXECUTE;
         }
-        let frame = alloc_frame()?;
-        if self.map(virt, frame | flags) {
-            Some(frame)
-        } else {
-            free_frame(frame);
-            None
+        #[cfg(feature = "jihoo-kernel")]
+        {
+            let frame = unsafe { jihoo_space_map(self.pml4, virt, flags) };
+            return (frame != 0).then_some(frame);
+        }
+        #[cfg(not(feature = "jihoo-kernel"))]
+        {
+            let frame = alloc_frame()?;
+            if self.map(virt, frame | flags) {
+                Some(frame)
+            } else {
+                free_frame(frame);
+                None
+            }
         }
     }
 
@@ -99,6 +124,17 @@ impl AddressSpace {
     ///
     /// All or nothing: page tables and frames are reserved before any page is
     /// mapped, so a failure never leaves pages behind or needs an unmap.
+    #[cfg(feature = "jihoo-kernel")]
+    pub fn grow_heap(&self, bytes: u64) -> Option<u64> {
+        let mut end = self.heap_end.lock();
+        let old = *end;
+        let new = unsafe { jihoo_space_grow(self.pml4, old, bytes) };
+        if new == 0 { return None; }
+        *end = new;
+        Some(old)
+    }
+
+    #[cfg(not(feature = "jihoo-kernel"))]
     pub fn grow_heap(&self, bytes: u64) -> Option<u64> {
         let mut end = self.heap_end.lock();
         let old = *end;
@@ -148,11 +184,16 @@ impl AddressSpace {
 impl Drop for AddressSpace {
     /// Callers guarantee no CPU has this PML4 loaded.
     fn drop(&mut self) {
-        let pml4 = unsafe { get_table_mut(self.pml4) };
-        for i in USER_PML4_FIRST..USER_PML4_END {
-            free_table(pml4.entries[i], 3);
+        #[cfg(feature = "jihoo-kernel")]
+        unsafe { jihoo_space_destroy(self.pml4); }
+        #[cfg(not(feature = "jihoo-kernel"))]
+        {
+            let pml4 = unsafe { get_table_mut(self.pml4) };
+            for i in USER_PML4_FIRST..USER_PML4_END {
+                free_table(pml4.entries[i], 3);
+            }
+            free_frame(self.pml4);
         }
-        free_frame(self.pml4);
     }
 }
 

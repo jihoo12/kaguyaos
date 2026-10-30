@@ -1,0 +1,20 @@
+#![freestanding]
+
+import kaguya as os
+
+export fn kaguya_main(args: *u8, count: i64) -> never {
+    let name = os.trim_start(unsafe { make_str(args, count) })
+    if name.len == 0 {
+        os.println("Usage: rm <filename>")
+        os.exit(1)
+    }
+    let result = os.call(15, name.ptr as i64, name.len, 0, 0, 0)
+    if result != 0 {
+        os.print("Error: cannot delete ")
+        os.println(name)
+        os.exit(1)
+    }
+    os.print("Deleted ")
+    os.println(name)
+    os.exit(0)
+}

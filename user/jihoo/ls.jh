@@ -1,0 +1,42 @@
+#![freestanding]
+
+import kaguya as os
+
+struct FileEntry {
+    name: [u8; 47]
+    name_len: u8
+    size: u64
+    first_cluster: u16
+}
+
+export fn kaguya_main(args: *u8, count: i64) -> never {
+    var entries: [FileEntry; 16] = unsafe { zeroed([FileEntry; 16]) }
+    let count = os.call(12, &entries[0] as i64, 16, 0, 0, 0)
+    if count < 0 {
+        os.println("Error: failed to list files")
+        os.exit(1)
+    }
+    if count == 0 {
+        os.println("No files.")
+        os.exit(0)
+    }
+    os.println("Name                      Size")
+    os.println("--------------------------------")
+    let n = if count > 16 { 16 } else { count }
+    for i in 0..n {
+        let len = entries[i].name_len as i64
+        if len <= 47 {
+            unsafe { os.print(make_str(&entries[i].name[0], len)) }
+        } else {
+            os.print("???")
+        }
+        var column = len
+        while column < 25 {
+            os.print(" ")
+            column += 1
+        }
+        os.print_number(entries[i].size)
+        os.print("\n")
+    }
+    os.exit(0)
+}

@@ -283,6 +283,9 @@ pub fn add_new_user_task(
 
             // 1. Allocate Kernel Stack
             let kernel_stack_bottom = crate::memory::heap::alloc(stack_size) as u64;
+            if kernel_stack_bottom == 0 {
+                return usize::MAX;
+            }
             let kernel_stack_top = kernel_stack_bottom + stack_size as u64;
 
             // 2. Setup Stack Frame for IRETQ (to enter usermode)

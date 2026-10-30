@@ -3,6 +3,8 @@
 Run inside nix develop after building the kernel and preparing nvme.img.
 """
 import argparse
+from contextlib import ExitStack
+import http.server
 import json
 import os
 import re
@@ -11,6 +13,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 
 parser = argparse.ArgumentParser()
@@ -20,6 +23,9 @@ parser.add_argument('--usb-mouse', action='store_true', help='Add a mouse before
 parser.add_argument('--no-keyboard', action='store_true', help='Hardware-shell boot with an empty xHCI controller')
 parser.add_argument('--resolution', help='Preferred GOP resolution, e.g. 2560x1440 (GOP only)')
 parser.add_argument('--hardware-shell', action='store_true', help='Test diskless ring-3 shell with a USB keyboard')
+parser.add_argument('--shell-io', action='store_true', help='Check diskless shell pipes, redirection and exec arguments')
+parser.add_argument('--network', action='store_true', help='Check ping and wget against a local HTTP fixture')
+parser.add_argument('--disk-image', type=Path, help='Use a prepared NVMe image instead of nvme.img')
 parser.add_argument('--hardware-test', action='store_true', help='Test the isolated diagnostic EFI without NVMe, USB or network devices')
 parser.add_argument('--backend', choices=['virtio', 'gop'], default='virtio')
 parser.add_argument('--output', type=Path, default=Path('/tmp/kaguya-gpu-smoke'))
@@ -30,12 +36,52 @@ if args.shutdown and (args.hardware_test or args.no_keyboard):
     parser.error('--shutdown requires a shell with a keyboard')
 if args.no_keyboard and (not args.hardware_shell or args.keyboard_stress):
     parser.error('--no-keyboard requires hardware-shell and cannot be combined with stress')
+if args.shell_io and (not args.hardware_shell or args.no_keyboard):
+    parser.error('--shell-io requires hardware-shell with a keyboard')
 isolated = args.hardware_test or args.hardware_shell
+if args.network and isolated:
+    parser.error('--network requires the normal kernel')
+if args.disk_image and isolated:
+    parser.error('--disk-image requires the normal kernel')
 root = Path(__file__).resolve().parent.parent
 out = args.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
-with tempfile.TemporaryDirectory(prefix='kaguya-qmp-') as tmp:
+with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-') as tmp:
     tmp = Path(tmp)
+    requests = []
+    if args.network:
+        class Fixture(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append(self.path)
+                route = self.path.split('?', 1)[0]
+                payload = b'jihoo-http-body\n'
+                status = 200
+                if route == '/redirect/start':
+                    status = 302
+                    payload = b''
+                elif route == '/missing':
+                    status = 404
+                    payload = b'not found\n'
+                elif route == '/short':
+                    payload = b'xy'
+                elif route == '/large':
+                    payload = b'jihoo-large-body\n' * 600
+                self.send_response(status)
+                self.send_header('Content-Length', str(10 if route == '/short' else len(payload)))
+                self.send_header('Connection', 'close')
+                if status == 302:
+                    self.send_header('Location', '../ok?from=redirect')
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *unused):
+                pass
+
+        http_server = resources.enter_context(http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture))
+        http_thread = threading.Thread(target=http_server.serve_forever, daemon=True)
+        http_thread.start()
+        resources.callback(http_thread.join, 2)
+        resources.callback(http_server.shutdown)
     boot = tmp / 'esp/EFI/BOOT'
     boot.mkdir(parents=True)
     kernel = 'target/hardware-test/build/x86_64-unknown-uefi/debug/os.efi' if args.hardware_test else 'target/x86_64-unknown-uefi/debug/os.efi'
@@ -57,7 +103,7 @@ with tempfile.TemporaryDirectory(prefix='kaguya-qmp-') as tmp:
                '-qmp', f'unix:{qmp},server=on,wait=off', '-no-reboot', *gpu]
     if not isolated:
         command += [
-               '-drive', f'file={root / "nvme.img"},if=none,id=nvm,format=raw',
+               '-drive', f'file={args.disk_image.resolve() if args.disk_image else root / "nvme.img"},if=none,id=nvm,format=raw',
                '-device', 'nvme,serial=deadbeef,drive=nvm',
                '-device', 'qemu-xhci,id=xhci,msi=off,msix=off', '-device', 'usb-kbd,bus=xhci.0',
                '-device', 'e1000,netdev=net0', '-netdev', 'user,id=net0'
@@ -92,6 +138,23 @@ with tempfile.TemporaryDirectory(prefix='kaguya-qmp-') as tmp:
                             raise RuntimeError(response['error'])
                         if 'return' in response:
                             return response['return']
+                def shell_command(command, timeout=15):
+                    baseline = (out / 'serial.log').read_text(errors='replace')
+                    keys = {' ': 'spc', '.': 'dot', '|': 'shift-backslash',
+                            '>': 'shift-dot', '<': 'shift-comma', '/': 'slash',
+                            ':': 'shift-semicolon', '-': 'minus', '?': 'shift-slash',
+                            '=': 'equal', '#': 'shift-3'}
+                    for char in command:
+                        execute('human-monitor-command', {'command-line': f'sendkey {keys.get(char, char)}'})
+                        time.sleep(.1)
+                    execute('human-monitor-command', {'command-line': 'sendkey ret'})
+                    deadline = time.monotonic() + timeout
+                    while time.monotonic() < deadline:
+                        added = (out / 'serial.log').read_text(errors='replace')[len(baseline):]
+                        if added.rstrip().endswith('kaguya>'):
+                            return added
+                        time.sleep(.1)
+                    raise RuntimeError(f'Shell command timed out: {command}')
                 execute('qmp_capabilities')
                 while True:
                     serial = (out / 'serial.log').read_text(errors='replace') if (out / 'serial.log').exists() else ''
@@ -142,20 +205,6 @@ with tempfile.TemporaryDirectory(prefix='kaguya-qmp-') as tmp:
                     if args.hardware_shell and 'kaguya>' not in serial:
                         raise RuntimeError('Missing userspace prompt')
                 if args.hardware_shell and not args.no_keyboard:
-                    def shell_command(command):
-                        baseline = (out / 'serial.log').read_text(errors='replace')
-                        for char in command:
-                            key = {' ': 'spc', '.': 'dot'}.get(char, char)
-                            execute('human-monitor-command', {'command-line': f'sendkey {key}'})
-                            time.sleep(.1)
-                        execute('human-monitor-command', {'command-line': 'sendkey ret'})
-                        deadline = time.monotonic() + 15
-                        while time.monotonic() < deadline:
-                            added = (out / 'serial.log').read_text(errors='replace')[len(baseline):]
-                            if added.rstrip().endswith('kaguya>'):
-                                return added
-                            time.sleep(.1)
-                        raise RuntimeError(f'RAM filesystem command timed out: {command}')
                     listing = shell_command('ls')
                     if 'session' in listing:
                         raise RuntimeError('Previous session file survived reboot')
@@ -176,6 +225,30 @@ with tempfile.TemporaryDirectory(prefix='kaguya-qmp-') as tmp:
                     if 'Wrote 4 bytes' not in shell_command('write session temp'):
                         raise RuntimeError('Temporary session file creation failed')
                     print('RAM filesystem: seed, list, write, read, overwrite and delete passed')
+                    if args.shell_io:
+                        seed = 'Changes disappear on reboot.'
+                        if seed not in shell_command('cat welcome.txt | cat'):
+                            raise RuntimeError('Shell pipeline failed')
+                        shell_command('cat welcome.txt > copied')
+                        if seed not in shell_command('cat < copied'):
+                            raise RuntimeError('Shell input/output redirection failed')
+                        shell_command('cat welcome.txt >> copied')
+                        if shell_command('cat copied').count(seed) != 2:
+                            raise RuntimeError('Shell append redirection failed')
+                        if 'welcome.txt' not in shell_command('ls | cat').split('\n', 1)[-1]:
+                            raise RuntimeError('Shell listing pipeline failed')
+                        if seed not in shell_command('exec cat.kef welcome.txt'):
+                            raise RuntimeError('Shell exec arguments failed')
+                        if 'missing file name after redirection' not in shell_command('cat >'):
+                            raise RuntimeError('Shell missing-redirection error failed')
+                        if 'missing command' not in shell_command('ls |'):
+                            raise RuntimeError('Shell empty-stage error failed')
+                        if 'cannot be piped or redirected' not in shell_command('help > copied'):
+                            raise RuntimeError('Shell builtin redirection error failed')
+                        if seed not in shell_command('cat welcome.txt' + ' | cat' * 7):
+                            raise RuntimeError('Shell maximum-length pipeline failed')
+                        shell_command('rm copied')
+                        print('Shell I/O: pipelines, redirection, append, exec and syntax errors passed')
                     # Each program gets its own page tables; exiting must return every frame.
                     loads = [re.search(r'\[kef\] loaded .*, (\d+) frames in use', shell_command('ls'))
                              for _ in range(40)]
@@ -184,6 +257,34 @@ with tempfile.TemporaryDirectory(prefix='kaguya-qmp-') as tmp:
                     if len({load.group(1) for load in loads}) != 1:
                         raise RuntimeError(f'Exited program frames were not reclaimed: {[l.group(1) for l in loads]}')
                     print('Exec memory: 40 sequential programs used a constant number of frames')
+                if args.network:
+                    ping = shell_command('ping 10.0.2.2', timeout=30)
+                    if '10 packets transmitted, 10 received, 0% packet loss' not in ping:
+                        raise RuntimeError('Gateway ping failed')
+                    base = f'http://10.0.2.2:{http_server.server_port}'
+                    if 'jihoo-http-body' not in shell_command(f'wget {base}/ok'):
+                        raise RuntimeError('HTTP body read failed')
+                    if 'jihoo-http-body' not in shell_command(f'wget {base}/redirect/start'):
+                        raise RuntimeError('HTTP redirect failed')
+                    if '/ok?from=redirect' not in requests:
+                        raise RuntimeError('HTTP relative path/query resolution failed')
+                    shell_command(f'wget {base}/ok > fetched')
+                    if 'jihoo-http-body' not in shell_command('cat fetched'):
+                        raise RuntimeError('HTTP redirected output failed')
+                    large = shell_command(f'wget {base}/large', timeout=30)
+                    if large.count('jihoo-large-body') != 600:
+                        raise RuntimeError('HTTP streaming body read failed')
+                    if 'exit code 1' not in shell_command(f'wget {base}/missing'):
+                        raise RuntimeError('HTTP error status did not fail')
+                    if 'body shorter than Content-Length' not in shell_command(f'wget {base}/short'):
+                        raise RuntimeError('HTTP incomplete body did not fail')
+                    if 'https is not supported' not in shell_command('wget https://example.com'):
+                        raise RuntimeError('HTTPS rejection failed')
+                    shell_command('rm fetched')
+                    final = (out / 'serial.log').read_text(errors='replace')
+                    if any(marker in final for marker in ['EXCEPTION OCCURRED', 'panicked', 'panic:']):
+                        raise RuntimeError('Userspace or kernel panic during network checks')
+                    print('Network: gateway ping, HTTP streaming, redirects, output and error cases passed')
                 if args.keyboard_stress:
                     baseline = (out / 'serial.log').read_text(errors='replace')
                     for key in ['shift-a', 'b', 'backspace', 'ret'] + ['h', 'e', 'l', 'p', 'ret'] * 30:

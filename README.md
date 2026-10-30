@@ -7,6 +7,12 @@ kaguyaOS currently boots into userspace on an SMP system, runs a preemptive sche
 ![Rust](https://img.shields.io/badge/language-Rust-orange)
 ![Platform](https://img.shields.io/badge/platform-x86__64--UEFI-blue)
 
+An experimental jihoo migration includes all seven userspace programs and
+selected kernel components behind the `jihoo-kernel` Cargo feature. The
+default build still uses Rust. See the [userspace port](user/jihoo/README.md)
+and [kernel port](src/jihoo/README.md) for build commands, verification,
+remaining Rust components, and the current compiler issue.
+
 ---
 
 ## Features

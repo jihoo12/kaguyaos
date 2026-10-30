@@ -1,0 +1,34 @@
+#![freestanding]
+
+import kaguya as os
+
+export fn kaguya_main(args: *u8, count: i64) -> never {
+    let text = os.trim_start(unsafe { make_str(args, count) })
+    if text.len == 0 {
+        os.println("Usage: write <filename> <content>")
+        os.exit(1)
+    }
+    var end = 0
+    while end < text.len && text[end] != ' ' && text[end] != '\t' { end += 1 }
+    if end > 47 {
+        os.println("Error: filename too long")
+        os.exit(1)
+    }
+    let name = text[0..end]
+    let content = os.trim_start(text[end..text.len])
+    let fd = os.open(name, os.O_WRITE | os.O_CREATE | os.O_TRUNC)
+    if fd < 0 {
+        os.println("Error: write failed")
+        os.exit(1)
+    }
+    let written = os.write_fd(fd, content)
+    os.close(fd)
+    if written != content.len {
+        os.println("Error: write failed")
+        os.exit(1)
+    }
+    os.print("Wrote ")
+    os.print_number(content.len as u64)
+    os.println(" bytes")
+    os.exit(0)
+}

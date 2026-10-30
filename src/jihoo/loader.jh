@@ -1,0 +1,35 @@
+struct Header {
+    error: u64
+    entry_offset: u64
+    code_offset: u64
+    code_size: u64
+    init_size: u64
+}
+
+fn failure(code: u64) -> Header {
+    Header { error: code, entry_offset: 0, code_offset: 0, code_size: 0, init_size: 0 }
+}
+
+unsafe fn word(bytes: *u8, offset: i64) -> u64 {
+    (bytes[offset] as u64) | ((bytes[offset + 1] as u64) << 8) |
+        ((bytes[offset + 2] as u64) << 16) | ((bytes[offset + 3] as u64) << 24)
+}
+
+export fn jihoo_parse_kef(bytes: *u8, length: u64) -> Header {
+    unsafe {
+        if length < 4 { return failure(2) }
+        if bytes[0] != 'K' || bytes[1] != 'E' || bytes[2] != 'F' || bytes[3] > 1 {
+            return failure(1)
+        }
+        let version = bytes[3]
+        if length < 16 || (version == 1 && length < 20) { return failure(2) }
+        let entry_offset = word(bytes, 4)
+        let code_offset = word(bytes, 8)
+        let code_size = word(bytes, 12)
+        let init_size = if version == 0 { code_size } else { word(bytes, 16) }
+        if code_size == 0 { return failure(3) }
+        if init_size > code_size || entry_offset >= code_size { return failure(4) }
+        if code_offset + init_size > length { return failure(5) }
+        Header { error: 0, entry_offset, code_offset, code_size, init_size }
+    }
+}

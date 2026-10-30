@@ -20,6 +20,8 @@
           OVMF
           python3
           binutils
+          clang
+          lld
         ];
 
         shellHook = ''

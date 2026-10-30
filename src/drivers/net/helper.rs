@@ -1,3 +1,7 @@
+#[cfg(feature = "jihoo-kernel")]
+pub use crate::jihoo::{calculate_checksum, transport_checksum};
+
+#[cfg(not(feature = "jihoo-kernel"))]
 pub fn calculate_checksum(data: &[u8]) -> u16 {
     let mut sum = 0u32;
     let mut i = 0;
@@ -21,6 +25,7 @@ pub fn calculate_checksum(data: &[u8]) -> u16 {
 
 /// TCP/UDP checksum over the IPv4 pseudo-header and `segment`. Computing it
 /// over a segment that already carries a valid checksum yields 0.
+#[cfg(not(feature = "jihoo-kernel"))]
 pub fn transport_checksum(src: [u8; 4], dst: [u8; 4], protocol: u8, segment: &[u8]) -> u16 {
     let mut sum = 0u32;
     for pair in src.chunks(2).chain(dst.chunks(2)) {

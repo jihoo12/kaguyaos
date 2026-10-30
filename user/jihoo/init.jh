@@ -1,0 +1,292 @@
+#![freestanding]
+
+import kaguya as os
+
+const MAX_CMD_LEN: i64 = 128
+const MAX_STAGES: i64 = 8
+const MAX_WORDS: i64 = 16
+
+struct Stage {
+    words: [str; 16]
+    word_count: i64
+    input: Option(str)
+    output: Option(str)
+    append: bool
+}
+
+fn empty_stage() -> Stage {
+    Stage {
+        words: [""; 16]
+        word_count: 0
+        input: None
+        output: None
+        append: false
+    }
+}
+
+fn help() {
+    os.println("Commands:")
+    os.println("  help              Show this help")
+    os.println("  ls                List files")
+    os.println("  cat <file>        Show file contents")
+    os.println("  write <file> <msg> Write msg to a file")
+    os.println("  rm <file>         Delete a file")
+    os.println("  wget <url>        Download an http:// URL to stdout")
+    os.println("  exec <file> [args] Execute a KEF binary")
+    os.println("  a | b             Pipe a's output into b")
+    os.println("  cmd > f, >> f, < f Redirect output (replace/append) or input")
+    os.println("  clear             Clear screen")
+    os.println("  shutdown          Shut down")
+}
+
+fn whitespace(byte: u8) -> bool {
+    byte == ' ' || byte == '\t' || byte == '\r' || byte == '\n' || byte == 12
+}
+
+fn token(text: str, position: i64) -> (str, i64) {
+    var start = position
+    while start < text.len && whitespace(text[start]) { start += 1 }
+    var end = start
+    while end < text.len && !whitespace(text[end]) { end += 1 }
+    (text[start..end], end)
+}
+
+fn parse_stage(text: str) -> Result(Stage, str) {
+    var stage = empty_stage()
+    var position = 0
+    loop {
+        let (word, end) = token(text, position)
+        position = end
+        if word.len == 0 { break }
+        var kind: u8 = 0
+        var offset = 0
+        if word.starts_with(">>") {
+            kind = 'a'
+            offset = 2
+        } else if word.starts_with(">") {
+            kind = '>'
+            offset = 1
+        } else if word.starts_with("<") {
+            kind = '<'
+            offset = 1
+        } else {
+            if stage.word_count == MAX_WORDS { return Err("too many arguments") }
+            stage.words[stage.word_count] = word
+            stage.word_count += 1
+            continue
+        }
+        var file = word[offset..word.len]
+        if file.len == 0 {
+            let (next, end) = token(text, position)
+            position = end
+            if next.len == 0 { return Err("missing file name after redirection") }
+            file = next
+        }
+        if kind == '<' {
+            stage.input = Some(file)
+        } else {
+            stage.output = Some(file)
+            stage.append = kind == 'a'
+        }
+    }
+    if stage.word_count == 0 { return Err("missing command") }
+    Ok(stage)
+}
+
+fn resolve(stage: Stage) -> Option((str, i64)) {
+    let name = stage.words[0]
+    if name == "exec" {
+        if stage.word_count > 1 { return Some((stage.words[1], 2)) }
+        return None
+    }
+    let program = match name {
+        "ls" => "ls.kef"
+        "cat" => "cat.kef"
+        "write" => "write.kef"
+        "rm" => "rm.kef"
+        "ping" => "ping.kef"
+        "wget" => "wget.kef"
+        _ => return None
+    }
+    Some((program, 1))
+}
+
+fn join_args(inout buffer: [u8; 128], stage: Stage, first: i64) -> str {
+    var length = 0
+    for i in first..stage.word_count {
+        if i > first {
+            buffer[length] = ' '
+            length += 1
+        }
+        let word = stage.words[i]
+        for byte in word {
+            buffer[length] = byte
+            length += 1
+        }
+    }
+    unsafe { make_str(&buffer[0], length) }
+}
+
+fn open_or_report(name: str, flags: i64) -> Option(i64) {
+    let fd = os.open(name, flags)
+    if fd < 0 {
+        os.print("Error: cannot open ")
+        os.println(name)
+        return None
+    }
+    Some(fd)
+}
+
+fn close_owned(fd: Option(i64)) {
+    match fd {
+        Some(n) => if n > os.STDERR { os.close(n) }
+        None => {}
+    }
+}
+
+fn run_builtin(name: str) -> bool {
+    if name == "help" {
+        help()
+    } else if name == "clear" {
+        os.call(9, 0, 0, 0, 0, 0)
+    } else if name == "shutdown" {
+        os.println("Goodbye!")
+        os.call(7, 0, 0, 0, 0, 0)
+        loop {}
+    } else {
+        return false
+    }
+    true
+}
+
+fn process_command(line: str) {
+    var stages: [Stage; 8] = [empty_stage(); 8]
+    var count = 0
+    var start = 0
+    for end in 0..line.len + 1 {
+        if end < line.len && line[end] != '|' { continue }
+        if count == MAX_STAGES {
+            os.println("Error: too many pipeline stages")
+            return
+        }
+        match parse_stage(line[start..end]) {
+            Ok(stage) => stages[count] = stage
+            Err(message) => {
+                os.print("Error: ")
+                os.println(message)
+                return
+            }
+        }
+        count += 1
+        start = end + 1
+    }
+    let simple = count == 1 && stages[0].input.is_none() && stages[0].output.is_none()
+    if simple && run_builtin(stages[0].words[0]) { return }
+    for i in 0..count {
+        let name = stages[i].words[0]
+        if resolve(stages[i]).is_none() {
+            if name == "exec" {
+                os.println("Usage: exec <file> [args]")
+            } else if name == "help" || name == "clear" || name == "shutdown" {
+                os.print(name)
+                os.println(" cannot be piped or redirected")
+            } else {
+                os.print("Unknown: ")
+                os.println(name)
+                os.println("Type 'help' for commands.")
+            }
+            return
+        }
+    }
+    var tasks: [i64; 8] = [-1; 8]
+    var previous: Option(i64) = None
+    for i in 0..count {
+        let stage = stages[i]
+        let (program, first) = resolve(stage).unwrap()
+        var args_buffer: [u8; 128] = [0; 128]
+        let args = join_args(&args_buffer, stage, first)
+        var pipe: Option((i64, i64)) = None
+        if i + 1 < count {
+            pipe = os.pipe()
+            if pipe.is_none() {
+                os.println("Error: cannot create pipe")
+                close_owned(previous)
+                break
+            }
+        }
+        let pipe_write = match pipe {
+            Some(pair) => Some(pair.1)
+            None => None
+        }
+        let stdin = match stage.input {
+            Some(name) => open_or_report(name, os.O_READ)
+            None => Some(previous.unwrap_or(os.STDIN))
+        }
+        let stdout = match stage.output {
+            Some(name) => {
+                let mode = if stage.append { os.O_APPEND } else { os.O_TRUNC }
+                open_or_report(name, os.O_WRITE | os.O_CREATE | mode)
+            }
+            None => Some(pipe_write.unwrap_or(os.STDOUT))
+        }
+        match (stdin, stdout) {
+            (Some(input), Some(output)) => {
+                tasks[i] = os.spawn(program, args, [input, output, os.STDERR])
+                if tasks[i] == -1 {
+                    os.print("Error: failed to execute ")
+                    os.println(program)
+                }
+            }
+            _ => {}
+        }
+        close_owned(stdin)
+        if previous != stdin { close_owned(previous) }
+        close_owned(stdout)
+        if pipe_write != stdout { close_owned(pipe_write) }
+        previous = match pipe {
+            Some(pair) => Some(pair.0)
+            None => None
+        }
+    }
+    for i in 0..count {
+        if tasks[i] != -1 { os.call(26, tasks[i], 0, 0, 0, 0) }
+    }
+}
+
+export fn kaguya_main(args: *u8, count: i64) -> never {
+    os.println("")
+    os.println("  ============================")
+    os.println("    kaguyaOS v0.1.0")
+    os.println("    Type 'help' for commands")
+    os.println("  ============================")
+    os.println("")
+    var command: [u8; 128] = [0; 128]
+    loop {
+        os.print("kaguya> ")
+        var length = 0
+        loop {
+            var key: [u8; 1] = [0; 1]
+            if unsafe { os.read_fd(os.STDIN, &key[0], 1) } != 1 { continue }
+            let byte = key[0]
+            if byte == '\n' {
+                os.print("\n")
+                break
+            }
+            if byte == 8 {
+                if length > 0 {
+                    length -= 1
+                    os.print("\x08 \x08")
+                }
+                continue
+            }
+            if byte >= 32 && byte < 127 && length < MAX_CMD_LEN - 1 {
+                command[length] = byte
+                length += 1
+                unsafe { os.print(make_str(&key[0], 1)) }
+            }
+        }
+        if length > 0 {
+            process_command(unsafe { make_str(&command[0], length) })
+        }
+    }
+}

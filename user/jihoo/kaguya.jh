@@ -1,0 +1,129 @@
+extern fn kaguya_syscall(id: i64, a: i64, b: i64, c: i64, d: i64, e: i64) -> i64
+extern fn kaguya_rdtsc() -> u64
+
+pub const STDIN: i64 = 0
+pub const STDOUT: i64 = 1
+pub const STDERR: i64 = 2
+pub const O_READ: i64 = 1
+pub const O_WRITE: i64 = 2
+pub const O_CREATE: i64 = 4
+pub const O_TRUNC: i64 = 8
+pub const O_APPEND: i64 = 16
+
+pub fn call(id: i64, a: i64, b: i64, c: i64, d: i64, e: i64) -> i64 {
+    unsafe { kaguya_syscall(id, a, b, c, d, e) }
+}
+
+pub fn exit(code: i64) -> never {
+    call(5, code, 0, 0, 0, 0)
+    loop {}
+}
+
+pub fn write_fd(fd: i64, text: str) -> i64 {
+    call(31, fd, text.ptr as i64, text.len, 0, 0)
+}
+
+pub fn print(text: str) {
+    write_fd(STDOUT, text)
+}
+
+pub fn println(text: str) {
+    print(text)
+    print("\n")
+}
+
+pub fn print_number(value: u64) {
+    var bytes: [u8; 20] = [0; 20]
+    var n = value
+    var i: i64 = 20
+    loop {
+        i -= 1
+        bytes[i] = '0' + (n % 10) as u8
+        n /= 10
+        if n == 0 { break }
+    }
+    unsafe { print(make_str(&bytes[i], 20 - i)) }
+}
+
+pub fn open(name: str, flags: i64) -> i64 {
+    call(29, name.ptr as i64, name.len, flags, 0, 0)
+}
+
+pub fn close(fd: i64) {
+    call(32, fd, 0, 0, 0, 0)
+}
+
+pub fn pipe() -> Option((i64, i64)) {
+    var fds: [i64; 2] = [0; 2]
+    if call(34, &fds[0] as i64, 0, 0, 0, 0) != 0 { return None }
+    Some((fds[0], fds[1]))
+}
+
+pub fn spawn(program: str, args: str, stdio: [i64; 3]) -> i64 {
+    call(35, program.ptr as i64, program.len, args.ptr as i64, args.len, &stdio[0] as i64)
+}
+
+pub fn milliseconds() -> u32 {
+    (unsafe { kaguya_rdtsc() } / 2400000) as u32
+}
+
+pub fn pack_ip(ip: [u8; 4]) -> i64 {
+    (ip[0] as i64) | ((ip[1] as i64) << 8) | ((ip[2] as i64) << 16) | ((ip[3] as i64) << 24)
+}
+
+pub fn dns_resolve(name: str) -> Option([u8; 4]) {
+    let packed = call(27, name.ptr as i64, name.len, 0, 0, 0) as u32
+    if packed == 0 { return None }
+    Some([packed as u8, (packed >> 8) as u8, (packed >> 16) as u8, (packed >> 24) as u8])
+}
+
+pub fn parse_ip(text: str) -> Option([u8; 4]) {
+    var ip: [u8; 4] = [0; 4]
+    var index = 0
+    var part: u16 = 0
+    var digits = 0
+    for byte in text {
+        if byte >= '0' && byte <= '9' {
+            part = part * 10 + (byte - '0') as u16
+            if part > 255 { return None }
+            digits += 1
+        } else if byte == '.' && index < 3 && digits > 0 {
+            ip[index] = part as u8
+            part = 0
+            digits = 0
+            index += 1
+        } else {
+            return None
+        }
+    }
+    if index != 3 || digits == 0 { return None }
+    ip[3] = part as u8
+    Some(ip)
+}
+
+pub fn print_ip(ip: [u8; 4]) {
+    for i in 0..4 {
+        if i > 0 { print(".") }
+        print_number(ip[i] as u64)
+    }
+}
+
+pub unsafe fn read_fd(fd: i64, data: *u8, count: i64) -> i64 {
+    call(30, fd, data as i64, count, 0, 0)
+}
+
+pub fn trim_start(text: str) -> str {
+    var start = 0
+    while start < text.len && (text[start] == ' ' || text[start] == '\t') {
+        start += 1
+    }
+    text[start..text.len]
+}
+
+#[panic_handler]
+fn on_panic(message: str) -> never {
+    write_fd(STDERR, "panic: ")
+    write_fd(STDERR, message)
+    write_fd(STDERR, "\n")
+    exit(99)
+}

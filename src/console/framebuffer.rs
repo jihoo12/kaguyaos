@@ -12,6 +12,7 @@ impl Color {
     pub const BORDER: Self = Self(0x001A1A1A);
 }
 
+#[repr(C)]
 pub struct Framebuffer {
     base: *mut u32,
     stride: usize,
@@ -20,6 +21,12 @@ pub struct Framebuffer {
 }
 
 unsafe impl Send for Framebuffer {}
+
+#[cfg(feature = "jihoo-kernel")]
+unsafe extern "C" {
+    fn jihoo_put_pixel(surface: *mut Framebuffer, x: usize, y: usize, color: u32);
+    fn jihoo_fill_rect(surface: *mut Framebuffer, x: usize, y: usize, width: usize, height: usize, color: u32);
+}
 
 impl Framebuffer {
     pub fn from_info(info: FramebufferInfo) -> Self {
@@ -42,18 +49,26 @@ impl Framebuffer {
             return;
         }
         let mut display = super::display::DISPLAY.lock();
+        #[cfg(feature = "jihoo-kernel")]
+        unsafe { jihoo_put_pixel(self, x, y, color.0); }
+        #[cfg(not(feature = "jihoo-kernel"))]
         unsafe { core::ptr::write_volatile(self.base.add(y * self.stride + x), color.0); }
         if let Some(d) = display.as_mut() { d.mark(x, y, 1, 1); }
     }
 
     pub fn fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: Color) {
         let mut display = super::display::DISPLAY.lock();
-        let x_end = x.saturating_add(width).min(self.width);
-        let y_end = y.saturating_add(height).min(self.height);
-        for py in y..y_end {
-            let row = unsafe { self.base.add(py * self.stride) };
-            for px in x..x_end {
-                unsafe { core::ptr::write_volatile(row.add(px), color.0); }
+        #[cfg(feature = "jihoo-kernel")]
+        unsafe { jihoo_fill_rect(self, x, y, width, height, color.0); }
+        #[cfg(not(feature = "jihoo-kernel"))]
+        {
+            let x_end = x.saturating_add(width).min(self.width);
+            let y_end = y.saturating_add(height).min(self.height);
+            for py in y..y_end {
+                let row = unsafe { self.base.add(py * self.stride) };
+                for px in x..x_end {
+                    unsafe { core::ptr::write_volatile(row.add(px), color.0); }
+                }
             }
         }
         if let Some(d) = display.as_mut() { d.mark(x, y, width, height); }

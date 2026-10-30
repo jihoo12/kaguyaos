@@ -28,14 +28,15 @@ pub fn run(info: &BootInfo) -> ! {
         );
         crate::println!("[3/6] Allocating kernel heap");
         const KERNEL_HEAP: u64 = 0xffff_9000_0000_0000;
+        const KERNEL_HEAP_PAGES: usize = 256;
         map_buffer(
             pml4,
             &mut allocator,
             KERNEL_HEAP,
-            128,
+            KERNEL_HEAP_PAGES,
             memory::PAGE_NO_EXECUTE,
         );
-        memory::heap::init(KERNEL_HEAP as usize, 128 * 4096);
+        memory::heap::init(KERNEL_HEAP as usize, KERNEL_HEAP_PAGES * 4096);
         crate::println!(
             "[4/6] Allocating GOP surface {}x{}",
             info.horizontal_resolution,

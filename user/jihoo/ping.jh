@@ -1,0 +1,101 @@
+#![freestanding]
+
+import kaguya as os
+
+export fn kaguya_main(args: *u8, length: i64) -> never {
+    var ip: [u8; 4] = [10, 0, 2, 2]
+    let target = os.trim_start(unsafe { make_str(args, length) })
+    if target.len > 0 {
+        match os.parse_ip(target) {
+            Some(address) => ip = address
+            None => {
+                if target == "-h" || target == "--help" {
+                    os.println("Usage: ping [ip-address|hostname]")
+                    os.println("  Default target: 10.0.2.2 (QEMU gateway)")
+                    os.exit(0)
+                }
+                os.print("Resolving ")
+                os.print(target)
+                os.println("...")
+                match os.dns_resolve(target) {
+                    Some(address) => ip = address
+                    None => {
+                        os.println("ping: DNS lookup failed")
+                        os.exit(1)
+                    }
+                }
+            }
+        }
+    }
+    os.print("PING ")
+    os.print_ip(ip)
+    os.println(": 56 data bytes")
+    var sent: u32 = 0
+    var received: u32 = 0
+    var total_ms: u32 = 0
+    var min_ms: u32 = 999999
+    var max_ms: u32 = 0
+    for sequence in 1..11 {
+        sent += 1
+        let started = os.milliseconds()
+        let identifier = os.call(23, os.pack_ip(ip), 0, 0, 0, 0) as u16
+        if identifier == 0 {
+            os.println("  send failed")
+            os.call(4, 0, 0, 0, 0, 0)
+            continue
+        }
+        var found = false
+        let deadline = started +% 1000
+        loop {
+            os.call(4, 0, 0, 0, 0, 0)
+            var reply: [u8; 74] = [0; 74]
+            let n = os.call(24, &reply[0] as i64, 74, 0, 0, 0)
+            if n >= 74 {
+                let id = (reply[4] as u16) | ((reply[5] as u16) << 8)
+                let seq = (reply[6] as u16) | ((reply[7] as u16) << 8)
+                if id == 0xbeef && seq == identifier {
+                    let elapsed = os.milliseconds() -% started
+                    received += 1
+                    total_ms += elapsed
+                    if elapsed < min_ms { min_ms = elapsed }
+                    if elapsed > max_ms { max_ms = elapsed }
+                    os.print_number(sequence as u64)
+                    os.print(" bytes from ")
+                    os.print_ip([reply[0], reply[1], reply[2], reply[3]])
+                    os.print(": icmp_seq=")
+                    os.print_number(sequence as u64)
+                    os.print(" time=")
+                    os.print_number(elapsed as u64)
+                    os.println(" ms")
+                    found = true
+                    break
+                }
+            }
+            if os.milliseconds() -% deadline < 0x80000000 { break }
+        }
+        if !found {
+            os.print_number(sequence as u64)
+            os.println(" bytes from timeout")
+        }
+        os.call(25, 1000, 0, 0, 0, 0)
+    }
+    os.print("\n--- ")
+    os.print_ip(ip)
+    os.println(" ping statistics ---")
+    os.print_number(sent as u64)
+    os.print(" packets transmitted, ")
+    os.print_number(received as u64)
+    os.print(" received, ")
+    os.print_number((((sent - received) * 100) / sent) as u64)
+    os.println("% packet loss")
+    if received > 0 {
+        os.print("rtt min/avg/max = ")
+        os.print_number(min_ms as u64)
+        os.print("/")
+        os.print_number((total_ms / received) as u64)
+        os.print("/")
+        os.print_number(max_ms as u64)
+        os.println(" ms")
+    }
+    os.exit(0)
+}

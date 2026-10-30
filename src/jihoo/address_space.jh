@@ -1,0 +1,117 @@
+extern fn kaguya_alloc_frame() -> u64
+extern fn kaguya_free_frame(frame: u64)
+
+const PRESENT: u64 = 1
+const WRITABLE: u64 = 2
+const USER: u64 = 4
+const NX: u64 = 0x8000000000000000
+const FRAME_MASK: u64 = 0x000ffffffffff000
+const USER_START: u64 = 0x400000000000
+const USER_END: u64 = 0x800000000000
+const HEAP_LIMIT: u64 = 0x700010000000
+
+export fn jihoo_space_create(kernel: u64) -> u64 {
+    unsafe {
+        let root = kaguya_alloc_frame()
+        if root == 0 { return 0 }
+        let source = kernel as *u64
+        let destination = root as *u64
+        for i in 0..512 {
+            if i < 128 || i >= 256 { destination[i] = source[i] }
+        }
+        root
+    }
+}
+
+unsafe fn leaf(root: u64, address: u64) -> *u64 {
+    if address < USER_START || address >= USER_END { return null }
+    var table = root as *u64
+    for shift in [39, 30, 21] {
+        let index = ((address >> shift) & 511) as i64
+        if table[index] & PRESENT == 0 {
+            let frame = kaguya_alloc_frame()
+            if frame == 0 { return null }
+            table[index] = frame | PRESENT | WRITABLE | USER
+        }
+        table = (table[index] & FRAME_MASK) as *u64
+    }
+    table
+}
+
+unsafe fn map(root: u64, address: u64, entry: u64) -> bool {
+    let table = leaf(root, address)
+    if table == null { return false }
+    let index = ((address >> 12) & 511) as i64
+    if table[index] & PRESENT != 0 { return false }
+    table[index] = entry
+    true
+}
+
+export fn jihoo_space_map(root: u64, address: u64, flags: u64) -> u64 {
+    unsafe {
+        let frame = kaguya_alloc_frame()
+        if frame == 0 { return 0 }
+        if map(root, address, frame | flags) { return frame }
+        kaguya_free_frame(frame)
+        0
+    }
+}
+
+export fn jihoo_space_grow(root: u64, old: u64, bytes: u64) -> u64 {
+    if bytes > 0xffffffffffffffff - 4095 { return 0 }
+    let rounded = (bytes + 4095) & !4095
+    if old > HEAP_LIMIT || rounded > HEAP_LIMIT - old { return 0 }
+    let end = old + rounded
+    unsafe {
+        var address = old
+        while address < end {
+            if leaf(root, address) == null { return 0 }
+            address += 4096
+        }
+        var frames: u64 = 0
+        address = old
+        while address < end {
+            let frame = kaguya_alloc_frame()
+            if frame == 0 {
+                while frames != 0 {
+                    let next = *(frames as *u64)
+                    kaguya_free_frame(frames)
+                    frames = next
+                }
+                return 0
+            }
+            *(frame as *u64) = frames
+            frames = frame
+            address += 4096
+        }
+        address = old
+        while address < end {
+            let frame = frames
+            frames = *(frame as *u64)
+            *(frame as *u64) = 0
+            if !map(root, address, frame | PRESENT | USER | WRITABLE | NX) {
+                panic("reserved heap mapping failed")
+            }
+            address += 4096
+        }
+    }
+    end
+}
+
+unsafe fn free_table(entry: u64, levels: u32) {
+    if entry & PRESENT == 0 { return }
+    let frame = entry & FRAME_MASK
+    if levels > 0 {
+        let table = frame as *u64
+        for i in 0..512 { free_table(table[i], levels - 1) }
+    }
+    kaguya_free_frame(frame)
+}
+
+export fn jihoo_space_destroy(root: u64) {
+    unsafe {
+        let table = root as *u64
+        for i in 128..256 { free_table(table[i], 3) }
+        kaguya_free_frame(root)
+    }
+}

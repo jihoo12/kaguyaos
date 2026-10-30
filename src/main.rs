@@ -4,6 +4,9 @@
 
 extern crate alloc;
 
+#[cfg(feature = "jihoo-kernel")]
+mod jihoo;
+
 #[cfg(feature = "hardware-test")]
 mod hardware_test;
 #[cfg(all(feature = "hardware-test", feature = "hardware-shell"))]
@@ -70,9 +73,17 @@ mod file;
 mod fs;
 mod gdt;
 mod interrupts;
+#[cfg(not(feature = "jihoo-kernel"))]
+mod io;
+#[cfg(feature = "jihoo-kernel")]
+#[path = "jihoo/io.rs"]
 mod io;
 mod memory;
 mod drivers;
+#[cfg(not(feature = "jihoo-kernel"))]
+mod pic;
+#[cfg(feature = "jihoo-kernel")]
+#[path = "jihoo/pic.rs"]
 mod pic;
 mod pipe;
 mod processor;

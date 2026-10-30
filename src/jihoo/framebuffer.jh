@@ -1,0 +1,27 @@
+struct Framebuffer {
+    base: *u32
+    stride: u64
+    width: u64
+    height: u64
+}
+
+export fn jihoo_put_pixel(surface: *Framebuffer, x: u64, y: u64, color: u32) {
+    unsafe {
+        if x >= surface.width || y >= surface.height { return }
+        write_volatile(surface.base + (y * surface.stride + x) as i64, color)
+    }
+}
+
+export fn jihoo_fill_rect(surface: *Framebuffer, x: u64, y: u64, width: u64, height: u64, color: u32) {
+    unsafe {
+        if x >= surface.width || y >= surface.height { return }
+        let w = if width > surface.width - x { surface.width - x } else { width }
+        let h = if height > surface.height - y { surface.height - y } else { height }
+        for row in y..y + h {
+            let pixels = surface.base + (row * surface.stride) as i64
+            for column in x..x + w {
+                write_volatile(pixels + column as i64, color)
+            }
+        }
+    }
+}

@@ -4,7 +4,16 @@
 
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::AtomicBool;
+#[cfg(not(feature = "jihoo-kernel"))]
+use core::sync::atomic::Ordering;
+
+#[cfg(feature = "jihoo-kernel")]
+unsafe extern "C" {
+    fn jihoo_lock_acquire(lock: *mut u8) -> u64;
+    fn jihoo_lock_try(lock: *mut u8) -> u64;
+    fn jihoo_lock_release(lock: *mut u8, enable_interrupts: bool);
+}
 
 /// An interrupt-safe spinlock.
 ///
@@ -27,6 +36,13 @@ impl<T> Spinlock<T> {
         }
     }
 
+    #[cfg(feature = "jihoo-kernel")]
+    pub fn lock(&self) -> SpinlockGuard<'_, T> {
+        let flags = unsafe { jihoo_lock_acquire(self.lock.as_ptr().cast()) };
+        SpinlockGuard { lock: self, interrupts_enabled: flags & (1 << 9) != 0 }
+    }
+
+    #[cfg(not(feature = "jihoo-kernel"))]
     pub fn lock(&self) -> SpinlockGuard<'_, T> {
         let rflags = unsafe {
             let r: u64;
@@ -52,6 +68,19 @@ impl<T> Spinlock<T> {
         }
     }
 
+    #[cfg(feature = "jihoo-kernel")]
+    pub fn try_lock(&self) -> Option<SpinlockGuard<'_, T>> {
+        let flags = unsafe { jihoo_lock_try(self.lock.as_ptr().cast()) };
+        if flags == u64::MAX {
+            return None;
+        }
+        Some(SpinlockGuard {
+            lock: self,
+            interrupts_enabled: flags & (1 << 9) != 0,
+        })
+    }
+
+    #[cfg(not(feature = "jihoo-kernel"))]
     pub fn try_lock(&self) -> Option<SpinlockGuard<'_, T>> {
         let rflags = unsafe {
             let r: u64;
@@ -83,6 +112,9 @@ impl<T> Spinlock<T> {
     }
 
     pub unsafe fn force_unlock(&self) {
+        #[cfg(feature = "jihoo-kernel")]
+        unsafe { jihoo_lock_release(self.lock.as_ptr().cast(), false); }
+        #[cfg(not(feature = "jihoo-kernel"))]
         self.lock.store(false, Ordering::Release);
     }
 }
@@ -107,10 +139,15 @@ impl<T> DerefMut for SpinlockGuard<'_, T> {
 
 impl<T> Drop for SpinlockGuard<'_, T> {
     fn drop(&mut self) {
-        self.lock.lock.store(false, Ordering::Release);
-        if self.interrupts_enabled {
-            unsafe {
-                core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+        #[cfg(feature = "jihoo-kernel")]
+        unsafe { jihoo_lock_release(self.lock.lock.as_ptr().cast(), self.interrupts_enabled); }
+        #[cfg(not(feature = "jihoo-kernel"))]
+        {
+            self.lock.lock.store(false, Ordering::Release);
+            if self.interrupts_enabled {
+                unsafe {
+                    core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+                }
             }
         }
     }

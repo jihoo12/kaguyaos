@@ -1,0 +1,62 @@
+import io
+
+const MASTER_CMD: u16 = 0x20
+const MASTER_DATA: u16 = 0x21
+const SLAVE_CMD: u16 = 0xa0
+const SLAVE_DATA: u16 = 0xa1
+
+unsafe fn out(port: u16, value: u8) { io.jihoo_outb(port, value) }
+unsafe fn delay() { io.jihoo_outb(0x80, 0) }
+
+export fn jihoo_pic_init() {
+    unsafe {
+        io.jihoo_inb(MASTER_DATA)
+        io.jihoo_inb(SLAVE_DATA)
+        delay()
+        out(MASTER_CMD, 0x11)
+        delay()
+        out(SLAVE_CMD, 0x11)
+        delay()
+        out(MASTER_DATA, 0x20)
+        delay()
+        out(SLAVE_DATA, 0x28)
+        delay()
+        out(MASTER_DATA, 4)
+        delay()
+        out(SLAVE_DATA, 2)
+        delay()
+        out(MASTER_DATA, 1)
+        delay()
+        out(SLAVE_DATA, 1)
+        delay()
+        out(MASTER_DATA, 0xfc)
+        out(SLAVE_DATA, 0xff)
+        let divisor = (1193182 as u32 / 100) as u16
+        out(0x43, 0x36)
+        delay()
+        out(0x40, divisor as u8)
+        delay()
+        out(0x40, (divisor >> 8) as u8)
+    }
+}
+
+export fn jihoo_pic_eoi(irq: u8) {
+    unsafe {
+        if irq >= 8 { out(SLAVE_CMD, 0x20) }
+        out(MASTER_CMD, 0x20)
+    }
+}
+
+export fn jihoo_pic_unmask(irq: u8) -> bool {
+    unsafe {
+        if irq < 8 {
+            out(MASTER_DATA, io.jihoo_inb(MASTER_DATA) & !(1 << irq))
+        } else if irq < 16 {
+            out(SLAVE_DATA, io.jihoo_inb(SLAVE_DATA) & !(1 << (irq - 8)))
+            out(MASTER_DATA, io.jihoo_inb(MASTER_DATA) & !(1 << 2))
+        } else {
+            return false
+        }
+    }
+    true
+}

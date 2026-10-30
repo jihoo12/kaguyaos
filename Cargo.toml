@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 hardware-test = []
 hardware-shell = []
+jihoo-kernel = []
 
 [dependencies]
 font8x8 = { version = "0.3", default-features = false, features = ["unicode"] }

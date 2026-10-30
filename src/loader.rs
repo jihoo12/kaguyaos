@@ -15,14 +15,41 @@ fn header_u32(file_data: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes(file_data.get(offset..offset + 4)?.try_into().ok()?))
 }
 
-/// Loads a KEF executable into `space`: code at USER_CODE_BASE, a stack below
-/// USER_STACK_TOP with an unmapped guard page, and `args` copied to the top of
-/// the stack. Returns (entry point, initial RSP, args pointer).
-pub fn load_kef(
-    file_data: &[u8],
-    space: &AddressSpace,
-    args: &[u8],
-) -> Result<(u64, u64, u64), &'static str> {
+#[cfg(feature = "jihoo-kernel")]
+#[repr(C)]
+struct Header {
+    error: u64,
+    entry_offset: u64,
+    code_offset: u64,
+    code_size: u64,
+    init_size: u64,
+}
+
+#[cfg(feature = "jihoo-kernel")]
+unsafe extern "C" {
+    fn jihoo_parse_kef(bytes: *const u8, length: usize) -> Header;
+}
+
+#[cfg(feature = "jihoo-kernel")]
+fn parse_kef(file_data: &[u8]) -> Result<(usize, usize, usize, usize), &'static str> {
+    let header = unsafe { jihoo_parse_kef(file_data.as_ptr(), file_data.len()) };
+    match header.error {
+        0 => Ok((
+            header.entry_offset as usize,
+            header.code_offset as usize,
+            header.code_size as usize,
+            (header.code_offset + header.init_size) as usize,
+        )),
+        1 => Err("Invalid KEF magic number"),
+        2 => Err("File too small to contain KEF header"),
+        3 => Err("KEF code size is 0"),
+        4 => Err("Invalid KEF code range or entry point"),
+        _ => Err("KEF file is truncated"),
+    }
+}
+
+#[cfg(not(feature = "jihoo-kernel"))]
+fn parse_kef(file_data: &[u8]) -> Result<(usize, usize, usize, usize), &'static str> {
     let version = match file_data.get(0..4) {
         Some(b"KEF\0") => 0,
         Some(b"KEF\x01") => 1,
@@ -35,8 +62,7 @@ pub fn load_kef(
     let code_size = field(12)? as usize;
     let init_size = if version == 0 { code_size } else { field(16)? as usize };
 
-    let code_pages = (code_size + 4095) / 4096;
-    if code_pages == 0 {
+    if code_size == 0 {
         return Err("KEF code size is 0");
     }
     if init_size > code_size || entry_offset >= code_size {
@@ -46,6 +72,20 @@ pub fn load_kef(
         .checked_add(init_size)
         .filter(|&end| end <= file_data.len())
         .ok_or("KEF file is truncated")?;
+
+    Ok((entry_offset, code_offset, code_size, file_code_end))
+}
+
+/// Loads a KEF executable into `space`: code at USER_CODE_BASE, a stack below
+/// USER_STACK_TOP with an unmapped guard page, and `args` copied to the top of
+/// the stack. Returns (entry point, initial RSP, args pointer).
+pub fn load_kef(
+    file_data: &[u8],
+    space: &AddressSpace,
+    args: &[u8],
+) -> Result<(u64, u64, u64), &'static str> {
+    let (entry_offset, code_offset, code_size, file_code_end) = parse_kef(file_data)?;
+    let code_pages = (code_size + 4095) / 4096;
 
     const STACK_PAGES: u64 = 4;
     if args.len() > PAGE_SIZE as usize / 2 {
