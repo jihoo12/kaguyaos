@@ -77,6 +77,25 @@ validation, and collection/allocation-cleanup checks on the jihoo heap.
 Artifacts are in `/tmp/kaguya-standalone-diagnostic`. This initial diagnostic
 uses serial output and a solid GOP background; a visible text console and
 replacement page tables, interrupts, drivers, scheduling, and userspace are
-not yet connected to this standalone image. Continue with console and CPU
-initialization. The ordinary kernel remains Rust and the complete migration
+not yet connected to this standalone image. The ordinary kernel remains Rust and the complete migration
 has not been achieved.
+
+## Current stop: compiler issue #22
+
+The text console draft in `src/jihoo/console.jh` and vendored Basic Latin
+font data are not imported by either kernel build. A new native C harness
+(no Rust requirement) checks glyphs, pixel formats, viewport clipping,
+wrapping, terminal cells, and backing-buffer guards at `-O0` and `-O2`.
+Its first glyph assertion fails: the static font array is emitted as zeros.
+The remainder of that test and standalone console integration are unverified.
+
+Minimal explicit-list and repeated static-array initializers both read as
+zeros on `c8014f4`; const/local arrays, a static scalar, and a zeroed array
+behave correctly. Native LLVM/Clang execution and native/UEFI IR confirm
+[jihoo issue #22](https://github.com/jihoolang/jihoo/issues/22). Reproductions,
+controls and commands are in `tools/jihoo-regressions/static-initializer/`.
+No font-data workaround is connected. Migration is stopped at this compiler
+problem as requested. After the fix, rebuild the compiler, rerun these
+cases and `bash tools/test-jihoo-console.sh`, then connect the text console
+and continue CPU initialization. The verified serial-only EFI remains
+available; complete Rust removal has not been achieved.

@@ -1,0 +1,15 @@
+static SCALAR: u8 = 12
+static ZERO: [u8; 4] = zeroed([u8; 4])
+const VALUES: [u8; 4] = [12, 30, 51, 63]
+
+fn main() -> i32 {
+    unsafe {
+        let local: [u8; 4] = [12, 30, 51, 63]
+        println(SCALAR)
+        println(ZERO[0])
+        println(VALUES[0])
+        println(local[0])
+        if SCALAR == 12 && ZERO[0] == 0 && VALUES[0] == 12 && local[0] == 12 { return 0 }
+    }
+    1
+}

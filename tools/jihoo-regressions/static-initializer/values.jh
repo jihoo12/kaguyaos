@@ -1,0 +1,5 @@
+static VALUES: [u8; 4] = [12, 30, 51, 63]
+
+pub export fn read_value(index: i64) -> u8 {
+    unsafe { VALUES[index] }
+}

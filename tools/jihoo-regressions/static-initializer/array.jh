@@ -1,0 +1,8 @@
+import values
+
+fn main() -> i32 {
+    for i in 0..4 { println(values.read_value(i)) }
+    if values.read_value(0) == 12 && values.read_value(1) == 30 &&
+        values.read_value(2) == 51 && values.read_value(3) == 63 { return 0 }
+    1
+}

@@ -109,3 +109,11 @@ Compiler [issue #21](https://github.com/jihoolang/jihoo/issues/21) is fixed in
 and boots in QEMU through ExitBootServices and heap/collection checks. This
 image does not run userspace yet. The ordinary kernel remains Rust; see the
 kernel README and [full-port checklist](../../docs/jihoo-full-port.md).
+
+The next standalone text-console step is stopped at
+[compiler issue #22](https://github.com/jihoolang/jihoo/issues/22): nonzero
+static array initializers silently become zeros, including the bitmap
+font. Minimal/control cases confirm the problem on `c8014f4`. The draft is
+not connected to either kernel build. The verified serial-only standalone
+diagnostic and existing mixed-kernel/userspace checkpoints are preserved;
+resume console verification after the compiler fix.

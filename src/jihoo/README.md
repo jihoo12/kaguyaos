@@ -300,3 +300,30 @@ diagnostics are serial-only. Replacement page tables, a text console,
 interrupts, drivers, scheduling, and userspace are not yet connected to this
 standalone image. No physical hardware has been tested. Continue using the
 [full-port checklist](../../docs/jihoo-full-port.md).
+
+## Current stop: issue #22
+
+The unconnected text-console draft (`console.jh`, `font/basic.jh`) adds
+ASCII glyph rendering, GOP color conversion, clipped viewports, cursor
+wrapping/backspace, and terminal cells/regions. Font bytes are vendored
+from the existing `font8x8` dependency with its MIT license in `font/`.
+Neither `kernel.jh` nor `standalone/boot.jh` imports this draft.
+
+```sh
+CC=clang bash tools/test-jihoo-console.sh
+```
+
+The new C host harness requires no Rust. On compiler `c8014f4`, it fails
+the first glyph-pixel assertion because a nonzero static byte-array
+initializer becomes zero-filled storage. Other console assertions have
+not yet run to completion. This is confirmed independently with minimal
+static-array cases, const/local/scalar controls, two native backends, and
+native/UEFI LLVM output. See
+[issue #22](https://github.com/jihoolang/jihoo/issues/22) and the
+[reproductions](../../tools/jihoo-regressions/static-initializer/README.md).
+
+Migration is stopped until the compiler fix. Rebuild the adjacent compiler,
+rerun the reproductions and console test, then connect the console and
+continue CPU initialization. The previously verified serial-only diagnostic
+remains unchanged; ordinary kernel, driver, and userspace ownership work
+still depends on Rust.

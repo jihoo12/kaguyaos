@@ -1,0 +1,9 @@
+static VALUES: [u8; 4] = [12; 4]
+
+fn main() -> i32 {
+    unsafe {
+        for i in 0..4 { println(VALUES[i]) }
+        if VALUES[0] == 12 && VALUES[3] == 12 { return 0 }
+    }
+    1
+}

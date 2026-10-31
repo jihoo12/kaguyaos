@@ -1,0 +1,129 @@
+import framebuffer
+import font.basic
+
+pub struct Console {
+    pub surface: framebuffer.Framebuffer
+    pub format: u32
+    pub origin_x: u64
+    pub origin_y: u64
+    pub width: u64
+    pub height: u64
+    pub x: u64
+    pub y: u64
+}
+
+fn native_color(format: u32, color: u32) -> u32 {
+    if format == 0 {
+        return (color & 0xff00ff00) | ((color & 0xff) << 16) | ((color >> 16) & 0xff)
+    }
+    color
+}
+
+pub export fn jihoo_console_init(console: *Console, surface: *framebuffer.Framebuffer, format: u32) {
+    unsafe {
+        console.surface = *surface
+        console.format = format
+        console.origin_x = 0
+        console.origin_y = 0
+        console.width = surface.width
+        console.height = surface.height
+        console.x = 0
+        console.y = 0
+    }
+}
+
+pub export fn jihoo_console_viewport(console: *Console, x: u64, y: u64, width: u64, height: u64) {
+    unsafe {
+        if x >= console.surface.width || y >= console.surface.height { return }
+        console.origin_x = x
+        console.origin_y = y
+        console.width = min(width, console.surface.width - x)
+        console.height = min(height, console.surface.height - y)
+        console.x = 0
+        console.y = 0
+    }
+}
+
+pub export fn jihoo_console_clear(console: *Console, color: u32) {
+    unsafe {
+        framebuffer.jihoo_fill_rect(&console.surface, console.origin_x, console.origin_y,
+                                    console.width, console.height, native_color(console.format, color))
+        console.x = 0
+        console.y = 0
+    }
+}
+
+pub export fn jihoo_console_cell(console: *Console, row: u64, column: u64,
+                                 character: u32, foreground: u32, background: u32) {
+    unsafe {
+        if row >= console.height / 16 || column >= console.width / 8 || character >= 128 { return }
+        let x = console.origin_x + column * 8
+        let y = console.origin_y + row * 16
+        let fg = native_color(console.format, foreground)
+        let bg = native_color(console.format, background)
+        for dy in 0..8 {
+            let bits = basic.GLYPHS[character as i64 * 8 + dy]
+            for dx in 0..8 {
+                let color = if (bits >> dx) & 1 != 0 { fg } else { bg }
+                framebuffer.jihoo_put_pixel(&console.surface, x + dx as u64, y + dy as u64, color)
+            }
+        }
+    }
+}
+
+pub export fn jihoo_console_byte(console: *Console, byte: u8) {
+    unsafe {
+        if byte == 10 {
+            console.x = 0
+            console.y += 16
+            return
+        }
+        if byte == 8 {
+            if console.x >= 8 { console.x -= 8 }
+            return
+        }
+        if byte >= 128 || console.width < 8 || console.height < 16 { return }
+        if console.x > console.width - 8 {
+            console.x = 0
+            console.y += 16
+        }
+        if console.y > console.height - 16 { jihoo_console_clear(console, 0) }
+        jihoo_console_cell(console, console.y / 16, console.x / 8, byte as u32, 0xffffff, 0)
+        console.x += 8
+    }
+}
+
+pub export fn jihoo_console_write(console: *Console, bytes: *u8, length: u64) {
+    unsafe {
+        var i: u64 = 0
+        while i < length {
+            jihoo_console_byte(console, bytes[i as i64])
+            i += 1
+        }
+    }
+}
+
+pub struct Cell {
+    pub character: u32
+    pub foreground: u32
+    pub background: u32
+}
+
+pub export fn jihoo_console_region(console: *Console, row: u64, column: u64,
+                                   cells: *Cell, length: u64, width: u64) {
+    if width == 0 { return }
+    unsafe {
+        var i: u64 = 0
+        while i < length {
+            let dy = i / width
+            let dx = i % width
+            if dy > 0xffffffffffffffff - row { break }
+            if dx <= 0xffffffffffffffff - column {
+                let cell = cells + i as i64
+                jihoo_console_cell(console, row + dy, column + dx,
+                                   cell.character, cell.foreground, cell.background)
+            }
+            i += 1
+        }
+    }
+}
