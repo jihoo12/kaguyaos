@@ -4,6 +4,7 @@ import fat
 import kernel_sync
 import memory
 import runtime
+import shared
 
 const RAM_BASE: u64 = 0xffffb00000000000
 const RAM_BYTES: u64 = 8388608
@@ -14,7 +15,7 @@ struct RamDisk {
 }
 
 static RAM: RamDisk = zeroed(RamDisk)
-static VOLUME: *kernel_sync.Spinlock(filesystem.Volume) = null
+static VOLUME: *shared.Shared(kernel_sync.Spinlock(filesystem.Volume)) = null
 
 export fn ram_read(context: *u8, lba: u64, count: u32, output: *u8) -> i32 {
     unsafe {
@@ -36,7 +37,7 @@ export fn ram_write(context: *u8, lba: u64, count: u32, input: *u8) -> i32 {
     }
 }
 
-pub fn volume() -> *kernel_sync.Spinlock(filesystem.Volume) { unsafe { VOLUME } }
+pub fn volume() -> *shared.Shared(kernel_sync.Spinlock(filesystem.Volume)) { unsafe { VOLUME } }
 
 pub fn init_ram() {
     // All kernel top-level slots must exist before the first process is made.
@@ -47,8 +48,8 @@ pub fn init_ram() {
         RAM = RamDisk { base: RAM_BASE as *u8, sectors: RAM_BYTES / 512 }
         let io = fat.DataIo { context: &RAM as *u8, read: ram_read, write: ram_write,
                                clusters: ((RAM_BYTES / 512 - 81) / 8) as u32 }
-        let pointer = mem.alloc(kernel_sync.Spinlock(filesystem.Volume), 1)
-        write(pointer, kernel_sync.Spinlock.new(filesystem.Volume.new(io)))
+        let pointer = mem.alloc(shared.Shared(kernel_sync.Spinlock(filesystem.Volume)), 1)
+        write(pointer, shared.Shared.new(kernel_sync.Spinlock.new(filesystem.Volume.new(io))))
         VOLUME = pointer
         var guard = (*pointer).lock()
         // This allocation is a new zeroed temporary RAM filesystem only.

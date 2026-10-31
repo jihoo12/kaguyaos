@@ -8,6 +8,60 @@ fn require(condition: bool, code: i64) {
 
 export fn kaguya_main(arguments: *u8, count: i64) -> never {
     let args = unsafe { make_str(arguments, count) }
+    if args == "busy" {
+        let start = os.milliseconds()
+        while os.milliseconds() - start < 300 {}
+        os.exit(0)
+    }
+    if args == "preemption" {
+        let first = os.spawn("verify.kef", "busy", [0, 1, 2])
+        let second = os.spawn("verify.kef", "busy", [0, 1, 2])
+        require(first > 0 && second > 0, 50)
+        require(os.call(26, first, 0, 0, 0, 0) == 0, 51)
+        require(os.call(26, second, 0, 0, 0, 0) == 0, 52)
+        os.exit(0)
+    }
+    if args == "producer" {
+        var buffer: [u8; 6000] = [0; 6000]
+        for i in 0..6000 { buffer[i] = (i % 251) as u8 }
+        require(os.call(31, 1, &buffer[0] as i64, 6000, 0, 0) == 6000, 40)
+        os.exit(0)
+    }
+    if args == "consumer" {
+        var buffer: [u8; 500] = [0; 500]
+        var received: i64 = 0
+        loop {
+            let n = unsafe { os.read_fd(0, &buffer[0], 500) }
+            require(n >= 0 && received + n <= 6000, 41)
+            if n == 0 { break }
+            for i in 0..n { require(buffer[i] == ((received + i) % 251) as u8, 42) }
+            received += n
+        }
+        require(received == 6000, 43)
+        os.exit(0)
+    }
+    if args == "scheduler" {
+        require(os.call(34, 4096, 0, 0, 0, 0) == -2, 30)
+        require(os.spawn("verify.kef", "", [999, 1, 2]) == -1, 31)
+        let fd = os.open("scheduled", os.O_READ | os.O_WRITE | os.O_CREATE | os.O_TRUNC)
+        require(fd >= 3, 32)
+        require(os.write_fd(fd, "saved") == 5, 33)
+        require(os.call(33, fd, 0, 0, 0, 0) == 0, 34)
+        var data: [u8; 5] = [0; 5]
+        require(unsafe { os.read_fd(fd, &data[0], 5) } == 5, 35)
+        require(unsafe { make_str(&data[0], 5) } == "saved", 36)
+        os.close(fd)
+        let (reader, writer) = match os.pipe() { Some(pair) => pair, None => os.exit(37) }
+        let producer = os.spawn("verify.kef", "producer", [0, writer, 2])
+        let consumer = os.spawn("verify.kef", "consumer", [reader, 1, 2])
+        require(producer > 0 && consumer > 0, 38)
+        os.close(reader)
+        os.close(writer)
+        require(os.call(26, producer, 0, 0, 0, 0) == 0, 44)
+        require(os.call(26, consumer, 0, 0, 0, 0) == 0, 45)
+        require(os.call(25, 21, 0, 0, 0, 0) == 0, 46)
+        os.exit(0)
+    }
     if args == "fault" {
         unsafe { write_volatile(4096 as *u8, 1) }
         os.exit(99)

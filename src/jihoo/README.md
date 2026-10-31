@@ -508,30 +508,50 @@ supplies console I/O and scheduler event callbacks; actual scheduling,
 syscall/descriptor integration, and USB keyboard input remain next. Socket
 variants and network descriptor methods are deferred to the network port.
 
-## Current stop: compiler issue #23
+## Standalone scheduler and descriptor syscalls
 
-The unconnected `task.jh` draft carries task states, CPU-local queues,
-claim/steal selection, deferred runnable handoffs, acknowledged zombie
-reclamation, address-space/file-table ownership, wait generations, sleep,
-wait/exit and timer quanta. `cpu_state.jh` drafts its shared CPU record.
-Neither file is imported by either kernel; the verified standalone CPU
-record and EFI paths remain unchanged. The scheduler's assembly/runtime
-bridges, syscall integration and runtime behavior are not yet implemented
-or verified.
+Compiler issue #23 is fixed in `8a7aecfcf3b4e72ac40890f739deb96cca3019f6`.
+The boxed/vector assignment reproductions and four controls pass, including
+native execution and UEFI checking; `task.jh` checks and emits objects.
 
-On compiler `d0b3d3182a33e602ef687561633d6e2be9d0472b`, checking the draft fails
-at `scheduler.tasks[i].address_space = None`. A minimal `Box(Row)` case and
-`Vec(Box(Row))` case lose the `Option(u64)` field's contextual type and
-report `unknown name None`, in both native and UEFI checking. Four controls
-(local struct, raw pointer, explicit `deref_mut()`, typed RHS) compile/run
-and print `true`. See [issue #23](https://github.com/jihoolang/jihoo/issues/23)
-and its [reproductions](../../tools/jihoo-regressions/box-field-assignment/README.md).
+`task.jh` now owns stable boxed task records, per-CPU queues, claims/steals,
+deferred runnable handoffs, acknowledged stack retirement, address spaces,
+file tables, wait generations, sleep and timer quanta. The native C harness
+uses real stacks and the SysV bridge in `tools/jihoo-task-switch.S`. It tests
+cooperative dispatch, wait/exit, timed sleep, wake-before-wait generation
+changes, blocking events, timer quanta and retirement at both optimization
+levels:
 
-An ordinary untyped zero branch in the draft was annotated `u64` separately;
-it is not part of the compiler report. No workaround is connected. Migration
-is stopped pending the compiler fix. Then rebuild the compiler, rerun the
-reproductions/controls and `check --lib -I src/jihoo/runtime -I src/jihoo
-src/jihoo/task.jh`, resolve any remaining ordinary port errors, implement the
-bridges, and exercise real scheduling and descriptor/pipe blocking in QEMU.
-Complete Rust removal, the full standalone shell, drivers, networking and
-SMP remain unfinished.
+```sh
+CC=clang bash tools/test-jihoo-task.sh
+```
+
+The UEFI bridge in `standalone/task.S` saves nonvolatile general registers,
+publishes outgoing tasks/retired stacks only after loading the incoming
+stack, and supplies the initial ring-3 trampoline. `task_arch.jh` updates
+TSS, user stack, GS state and CR3. The standalone processor shares
+`cpu_state.PerCpu`; PIT handling acknowledges the PIC before switching.
+Kernel-mode execution remains non-preemptive.
+
+`standalone/scheduler.jh` connects the temporary RAM volume, KEF loader,
+file-table inheritance and syscall services for yield, exit, status, sleep,
+wait, heap growth, open/read/write/close/seek, pipes, spawn and FD kind.
+Paths, buffers, descriptor arrays and argument ranges are checked against
+the current user page tables. The console read callback currently returns
+EOF; USB/input integration and other shell syscalls remain unfinished.
+Only a new RAM filesystem is initialized; physical disks are never opened.
+
+```sh
+CC=clang bash tools/build-jihoo-kernel.sh scheduler-test
+python3 tools/gpu-smoke.py --scheduler-test --output /tmp/kaguya-jihoo-scheduler
+python3 tools/gpu-smoke.py --scheduler-test --resolution 2560x1440 --output /tmp/kaguya-jihoo-scheduler-1440p
+```
+
+The EFI runs the original CPU/heap/ownership/RAM-filesystem/ring-3 checks,
+then twenty scheduled ring-3 executions, filesystem descriptor I/O, child
+spawn/wait, timed sleep, a 6,000-byte transfer through a 4 KiB pipe, EOF,
+concurrent user timer preemption and contained page/NX faults. Process frame
+counts return to baseline. Task metadata remains allocated for stable task
+indices; this does not claim constant kernel heap use across all spawns.
+AP startup, queue stealing on multiple CPUs, the full shell and device
+paths have not been tested here. The ordinary build still requires Rust.

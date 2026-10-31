@@ -1,0 +1,132 @@
+import task
+import task_arch
+import processor
+import memory
+import storage
+import runtime
+import frame
+import paging
+import space
+import kef
+import file_table
+import shared
+import std.utf8
+
+extern fn jihoo_probe_data() -> *u8
+extern fn jihoo_probe_size() -> u64
+extern fn jihoo_wait_interrupt()
+
+export fn kaguya_console_read(output: *u8, length: u64) -> i64 { 0 }
+export fn kaguya_console_write(input: *u8, length: u64) -> i64 {
+    unsafe { runtime.output(make_str(input, length as i64)) }
+    length as i64
+}
+
+fn user_range(pointer: u64, length: u64) -> bool {
+    if pointer == 0 || pointer > 0x7fffffffffff || length > 0x7fffffffffff - pointer { return false }
+    match task.current_space() {
+        Some(owner) => paging.jihoo_range_mapped(owner.root() as *u64, pointer, length, true)
+        None => false
+    }
+}
+
+pub fn spawn(name: str, arguments: str, files: shared.Shared(file_table.FileTable)) -> u64 {
+    let bytes = unsafe { (*storage.volume()).lock().read_file(name) }
+    match bytes {
+        Ok(data) => {
+            if data.len() == 0 { return 0xffffffffffffffff }
+            let address_space = match space.AddressSpace.new(memory.root()) { Some(value) => value, None => return 0xffffffffffffffff }
+            match kef.load(unsafe { &data[0] }, data.len() as u64, address_space, arguments) {
+                Ok(image) => task.add_user(image.entry, image.stack, image.arguments, image.argument_count, address_space, files)
+                Err(_) => 0xffffffffffffffff
+            }
+        }
+        Err(_) => 0xffffffffffffffff
+    }
+}
+
+pub fn dispatch(id: u64, a: u64, b: u64, c: u64, d: u64, e: u64) -> u64 {
+    if id == 5 { task.exit(a) }
+    if id == 4 { task.schedule(); return 0 }
+    if id == 16 { return task.status(a) }
+    if id == 17 { return task.exit_code(a) }
+    if id == 26 { return task.wait_task(a) }
+    if id == 25 { task.sleep(a); return 0 }
+    if id == 1 || id == 2 || id == 10 { return 0 }
+    if id == 28 { return match task.current_space() { Some(owner) => owner.grow(a), None => 0 } }
+    let files = match task.current_files() { Some(value) => value, None => return (-7 as i64) as u64 }
+    if id == 29 {
+        if b == 0 || b > 255 || !user_range(a, b) { return (-2 as i64) as u64 }
+        let name = unsafe { make_str(a as *u8, b as i64) }
+        if utf8.validate(name).is_err() { return (-2 as i64) as u64 }
+        return match files.open(name, c) { Ok(fd) => fd, Err(error) => error as u64 }
+    }
+    if id == 30 || id == 31 {
+        if c == 0 { return 0 }
+        if !user_range(b, c) { return (-2 as i64) as u64 }
+        return (if id == 30 { files.read(a, b as *u8, c) } else { files.write(a, b as *u8, c) }) as u64
+    }
+    if id == 32 { return match files.close(a) { Ok(()) => 0, Err(error) => error as u64 } }
+    if id == 33 { return match files.seek(a, b as i64, c) { Ok(offset) => offset, Err(error) => error as u64 } }
+    if id == 34 {
+        if a & 7 != 0 || !user_range(a, 16) { return (-2 as i64) as u64 }
+        return match files.pipe() {
+            Ok((reader, writer)) => { unsafe { (a as *u64)[0] = reader; (a as *u64)[1] = writer }; 0 }
+            Err(error) => error as u64
+        }
+    }
+    if id == 35 {
+        if b == 0 || b > 255 || d > 2048 || !user_range(a, b) ||
+            (d != 0 && !user_range(c, d)) || e & 7 != 0 || !user_range(e, 24) { return 0xffffffffffffffff }
+        unsafe {
+            let stdio = e as *u64
+            let child = match files.inherit([stdio[0], stdio[1], stdio[2]]) { Ok(value) => value, Err(_) => return 0xffffffffffffffff }
+            let arguments = if d == 0 { "" } else { make_str(c as *u8, d as i64) }
+            let name = make_str(a as *u8, b as i64)
+            if utf8.validate(name).is_err() { return 0xffffffffffffffff }
+            return spawn(name, arguments, child)
+        }
+    }
+    if id == 36 { return match files.kind(a) { Ok(kind) => kind, Err(error) => error as u64 } }
+    0xffffffffffffffff
+}
+
+fn run(arguments: str, expected: u64) {
+    let files = unsafe { file_table.FileTable.with_console((*storage.volume()).clone()) }
+    let id = spawn("verify.kef", arguments, files)
+    if id == 0xffffffffffffffff { panic("scheduler probe load failed") }
+    let start = task.clock()
+    while task.status(id) != 2 {
+        if task.clock() - start > 500 { panic("scheduler probe timeout") }
+        task.schedule()
+        unsafe { jihoo_wait_interrupt() }
+    }
+    task.schedule()
+    if task.exit_code(id) != expected {
+        println("scheduler probe exit: " + task.exit_code(id).to_string().as_str())
+        panic("scheduler probe failed")
+    }
+}
+
+pub fn check() {
+    unsafe {
+        (*storage.volume()).lock().deref_mut().create("verify.kef", jihoo_probe_data(), jihoo_probe_size()).unwrap()
+        processor.init(0, 0)
+    }
+    task.init()
+    task.enter_idle()
+    let before = frame.jihoo_pool_in_use()
+    for _ in 0..20 { run("syscall probe", 0) }
+    if frame.jihoo_pool_in_use() != before { panic("scheduler leaked process frames") }
+    runtime.output("Scheduler: twenty ring3 executions, syscall return and frame reclamation passed\n")
+    run("scheduler", 0)
+    if frame.jihoo_pool_in_use() != before { panic("pipeline leaked process frames") }
+    runtime.output("Scheduler: spawn, wait, sleep, files, blocking pipe and EOF passed\n")
+    let switches = task.switches()
+    run("preemption", 0)
+    if task.switches() - switches < 8 { panic("user timer did not switch tasks") }
+    run("fault", 0xdead)
+    run("nx", 0xdead)
+    if frame.jihoo_pool_in_use() != before { panic("preempted/faulted process frames leaked") }
+    runtime.output("Scheduler: concurrent timer preemption and fault/NX isolation passed\n")
+}

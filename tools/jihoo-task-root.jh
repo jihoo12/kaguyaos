@@ -1,0 +1,17 @@
+import task
+
+extern fn kaguya_kernel_panic(message: *u8, length: u64) -> never
+
+#[panic_handler]
+fn on_panic(message: str) -> never {
+    unsafe { kaguya_kernel_panic(message.ptr, message.len as u64) }
+}
+
+export fn jihoo_task_init() { task.init(); task.enter_idle() }
+export fn jihoo_task_add(entry: u64, bottom: u64, bytes: u64) -> u64 { task.add_kernel(entry, bottom, bytes) }
+export fn jihoo_task_schedule() { task.schedule() }
+export fn jihoo_task_status(id: u64) -> u64 { task.status(id) }
+export fn jihoo_task_exit(code: u64) -> never { task.exit(code) }
+export fn jihoo_task_wait(id: u64) -> u64 { task.wait_task(id) }
+export fn jihoo_task_sleep(milliseconds: u64) { task.sleep(milliseconds) }
+export fn jihoo_task_code(id: u64) -> u64 { task.exit_code(id) }

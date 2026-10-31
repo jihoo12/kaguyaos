@@ -142,22 +142,35 @@ excluded from the kernel; its console and scheduling callbacks are native
 test fixtures. Connect real scheduler handoffs/events and the syscall table
 next. Socket variants remain part of the later network port.
 
-## Current stop: compiler issue #23
+## Scheduler checkpoint
 
-The unconnected scheduler draft is `src/jihoo/task.jh`, with a draft CPU
-record in `cpu_state.jh`. It has not passed checking or runtime validation;
-architecture bridges and syscall integration still need implementation.
-Automatic boxed-field assignment loses the expected type of `None` in
-`Vec(Box(Task))`. Minimal Box/vector cases fail native and UEFI checking on
-`d0b3d31`, while local/pointer/explicit-projection/typed-RHS controls run and
-print `true`. This is reported as
-[jihoo issue #23](https://github.com/jihoolang/jihoo/issues/23), with files in
-`tools/jihoo-regressions/box-field-assignment/`.
+Compiler issue #23 is fixed in `8a7aecfcf3b4e72ac40890f739deb96cca3019f6`.
+The rebuilt compiler passes boxed/vector field assignment checks, both native
+executions and all four controls, UEFI checking, and scheduler object emission.
+No workaround is connected.
 
-No workaround is connected. Migration is stopped as requested until the
-compiler fix. The preceding verified file-table checkpoint is `aa91345`;
-the standalone RAM-filesystem/CPU/ring-3 checkpoints remain available.
-Rebuild the compiler, rerun the cases, continue scheduler checking/bridges,
-then connect descriptor/pipe syscalls and test scheduling/blocking in QEMU.
-The ordinary OS build still requires Rust; the complete migration is not
-finished.
+`task.jh` now has real native and UEFI stack-switch bridges. Host C tests
+at `-O0` and `-O2` exercise cooperative switching, wait/exit, timed sleep,
+event generations, timer quanta and acknowledged stack retirement. The
+standalone processor uses the shared `cpu_state.jh` record. PIT scheduling
+runs after interrupt acknowledgement; kernel execution is not preempted.
+
+The separate `scheduler-test` EFI connects address-space and descriptor
+ownership to syscall dispatch, generic KEF loading from the temporary RAM
+volume, stdio inheritance, and real blocking pipe waits. QEMU passes twenty
+ring-3 runs with constant frame counts, filesystem I/O, child spawn/wait,
+timed sleep, a 6,000-byte stream through a bounded 4 KiB pipe, EOF, concurrent
+user timer preemption, and contained page/NX faults. It first runs the
+existing CPU, RAM-filesystem and ring-3 checks too.
+
+```sh
+CC=clang bash tools/test-jihoo-task.sh
+CC=clang bash tools/build-jihoo-kernel.sh scheduler-test
+python3 tools/gpu-smoke.py --scheduler-test --output /tmp/kaguya-jihoo-scheduler
+```
+
+This is a single-CPU integration checkpoint; AP startup, hardware drivers,
+full shell input and the remaining syscall services are still unfinished.
+The original diagnostic still stops before CPU/device initialization.
+No physical disk is connected or formatted. Ordinary OS builds still use
+Rust; complete Rust removal has not been achieved.

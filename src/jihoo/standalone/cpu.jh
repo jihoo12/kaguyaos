@@ -3,6 +3,7 @@ import runtime
 import pic
 import io
 import shared_check
+import task
 
 extern fn jihoo_load_gdt(pointer: *u8)
 extern fn jihoo_load_idt(pointer: *u8)
@@ -109,9 +110,11 @@ export fn jihoo_interrupt_dispatch(frame: *InterruptFrame) {
         if vector >= 32 && vector < 48 {
             if vector == 32 {
                 atomic_add(&TICKS, 1)
+                task.kaguya_scheduler_clock_tick()
                 if frame.cs & 3 == 3 { atomic_add(&USER_TICKS, 1) }
             }
             pic.jihoo_pic_eoi((vector - 32) as u8)
+            if vector == 32 { task.kaguya_scheduler_interrupt(frame.cs & 3 == 3) }
             return
         }
         if vector == 255 { return }

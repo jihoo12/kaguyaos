@@ -7,6 +7,7 @@ import cpu
 import memory
 import ring3
 import storage
+import scheduler
 
 struct GopInfo {
     version: u32
@@ -134,9 +135,13 @@ pub fn run(stage: u32) -> i32 {
                 storage.check()
             }
             if stage >= 2 { ring3.check() }
+            if stage >= 4 { scheduler.check() }
         }
         runtime.output("PCI/NVMe/USB/network/GPU drivers: NOT STARTED\n")
-        if stage >= 3 {
+        if stage >= 4 {
+            runtime.output("APs and device drivers: NOT STARTED\n")
+            runtime.output("SCHEDULER TEST READY - reset or power off to exit\n")
+        } else if stage >= 3 {
             runtime.output("APs, scheduler, device drivers: NOT STARTED\n")
             runtime.output("FILESYSTEM TEST READY - reset or power off to exit\n")
         } else if stage >= 2 {

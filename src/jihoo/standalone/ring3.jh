@@ -6,6 +6,8 @@ import runtime
 import memory
 import processor
 import cpu
+import task
+import scheduler
 
 extern fn jihoo_probe_data() -> *u8
 extern fn jihoo_probe_size() -> u64
@@ -26,6 +28,7 @@ fn user_range(pointer: u64, length: u64) -> bool {
 }
 
 export fn jihoo_syscall_dispatch(id: u64, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64) -> u64 {
+    if task.ready() { return scheduler.dispatch(id, a, b, c, d, e) }
     unsafe {
         CALLS += 1
         if id == 5 { jihoo_finish_user(a) }
@@ -43,6 +46,7 @@ export fn jihoo_syscall_dispatch(id: u64, a: u64, b: u64, c: u64, d: u64, e: u64
 }
 
 export fn kaguya_user_fault() -> never {
+    if task.ready() { task.exit(0xdead) }
     unsafe {
         FAULTS += 1
         jihoo_finish_user(0xdead)

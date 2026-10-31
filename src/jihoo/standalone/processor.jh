@@ -1,22 +1,11 @@
 import cpu
+import cpu_state
 
 pub extern fn jihoo_read_msr(msr: u32) -> u64
 pub extern fn jihoo_write_msr(msr: u32, value: u64)
 extern fn jihoo_syscall_address() -> u64
 
-pub struct PerCpu {
-    pub kernel_stack: u64
-    pub user_stack: u64
-    pub scratch: u64
-    pub apic_id: u8
-    pub cpu_index: u8
-    pub current_task: u64
-    pub idle_stack: u64
-    pub ticks_left: u32
-    pub need_reschedule: bool
-}
-
-static CPUS: [PerCpu; 64] = zeroed([PerCpu; 64])
+static CPUS: [cpu_state.PerCpu; 64] = zeroed([cpu_state.PerCpu; 64])
 
 pub fn init(index: u64, stack: u64) {
     if index >= 64 { panic("CPU index out of range") }
@@ -35,4 +24,4 @@ pub fn init(index: u64, stack: u64) {
     }
 }
 
-pub fn current() -> *PerCpu { unsafe { jihoo_read_msr(0xc0000101) as *PerCpu } }
+pub fn current() -> *cpu_state.PerCpu { unsafe { jihoo_read_msr(0xc0000101) as *cpu_state.PerCpu } }

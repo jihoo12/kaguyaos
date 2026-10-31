@@ -1,0 +1,32 @@
+import cpu_state
+import processor
+import cpu
+import memory
+import task
+
+extern fn jihoo_write_cr3(root: u64)
+extern fn jihoo_user_trampoline_address() -> u64
+extern fn jihoo_kernel_return_address() -> u64
+
+pub export fn kaguya_cpu_state() -> *cpu_state.PerCpu { processor.current() }
+pub export fn kaguya_online_cpus() -> u64 { 1 }
+export fn kaguya_kick_cpu(index: u64) { panic("standalone AP is offline") }
+export fn kaguya_kernel_root() -> u64 { memory.root() }
+
+export fn kaguya_prepare_switch(index: u64, stack: u64, user_stack: u64, user_gs: u64, root: u64) {
+    unsafe {
+        let local = processor.current()
+        if index != local.cpu_index as u64 { panic("wrong switch CPU") }
+        if stack != 0 {
+            local.kernel_stack = stack
+            cpu.set_kernel_stack(index, stack)
+        }
+        local.user_stack = user_stack
+        processor.jihoo_write_msr(0xc0000102, user_gs)
+        jihoo_write_cr3(root)
+    }
+}
+
+export fn kaguya_user_trampoline_address() -> u64 { unsafe { jihoo_user_trampoline_address() } }
+export fn kaguya_kernel_return_address() -> u64 { unsafe { jihoo_kernel_return_address() } }
+export fn jihoo_kernel_task_return() -> never { task.exit(0) }

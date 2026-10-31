@@ -1,4 +1,4 @@
-// Unconnected scheduler draft; blocked by compiler issue #23. See README.md.
+// Architecture callbacks keep task ownership independent of CPU entry code.
 import std.mem
 import space
 import file_table
@@ -53,12 +53,14 @@ static SCHEDULER: *kernel_sync.Spinlock(Scheduler) = null
 static READY: bool = false
 static NEXT_ID: u64 = 1
 static TICKS: u64 = 0
+static SWITCHES: u64 = 0
 static CURRENT: [u64; 64] = [NONE; 64]
 static HANDOFF: [u64; 64] = [0; 64]
 static RETIRED: [u64; 64] = [0; 64]
 
 pub fn ready() -> bool { unsafe { atomic_load(&READY) } }
 pub fn clock() -> u64 { unsafe { atomic_load(&TICKS) } }
+pub fn switches() -> u64 { unsafe { atomic_load(&SWITCHES) } }
 
 pub fn init() {
     if ready() { panic("scheduler already initialized") }
@@ -265,6 +267,7 @@ pub fn schedule() {
             let bottom = if state == Status.Zombie { guard.tasks[current as i64].kernel_bottom } else { 0 }
             let idle = local.idle_stack
             guard.deref_mut().tasks[current as i64].user_rsp = local.user_stack
+            guard.deref_mut().tasks[current as i64].user_gs = jihoo_read_msr(0xc0000102)
             local.current_task = NONE
             local.user_stack = 0
             local.ticks_left = 0
@@ -272,6 +275,7 @@ pub fn schedule() {
             atomic_store(&CURRENT[cpu as i64], NONE)
             drop(guard)
             kaguya_prepare_switch(cpu, 0, 0, 0, kaguya_kernel_root())
+            atomic_add(&SWITCHES, 1)
             kaguya_context_switch(old, idle, &HANDOFF[cpu as i64], 0, &RETIRED[0], bottom)
             return
         }
@@ -310,6 +314,7 @@ pub fn schedule() {
         }
         drop(guard)
         kaguya_prepare_switch(cpu, kernel_top, user_rsp, gs, root)
+        atomic_add(&SWITCHES, 1)
         kaguya_context_switch(old, stack, &HANDOFF[cpu as i64], encoded, &RETIRED[0], bottom)
     }
 }

@@ -38,3 +38,11 @@ not this compiler problem. No typed-RHS or explicit-projection workaround
 is connected. Migration is stopped pending a compiler fix. Rebuild the
 compiler and rerun these cases before continuing scheduler compilation,
 assembly handoffs, syscall integration and QEMU checks.
+
+## Fixed compiler verification
+
+On `8a7aecfcf3b4e72ac40890f739deb96cca3019f6`, all three checks above
+pass; `box.jh`, `vector.jh` and the four controls run and print `true`.
+The full scheduler draft also passes native checking and object emission.
+The scheduler now has native stack-switch tests and a standalone UEFI
+integration check; see [the migration notes](../../../docs/jihoo-full-port.md).

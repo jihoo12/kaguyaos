@@ -448,3 +448,19 @@ rustc --edition 2024 --test --cfg 'feature="hardware-shell"' tools/ramfs-test.rs
 
 These cover multi-cluster data, overwrite, deletion, end-of-disk and integer-overflow
 bounds, and rebuilding an empty filesystem for a new session.
+
+## Jihoo migration
+
+The complete Rust-free port is in progress; ordinary builds still use Rust.
+See [the migration tracker](docs/jihoo-full-port.md) for the verified scope.
+The standalone Jihoo scheduler checkpoint builds without Cargo or rustc:
+
+```bash
+CC=clang bash tools/build-jihoo-kernel.sh scheduler-test
+python3 tools/gpu-smoke.py --scheduler-test --output /tmp/kaguya-jihoo-scheduler
+```
+
+It tests UEFI handoff, CPU tables, memory ownership, a temporary RAM
+filesystem, scheduled ring-3 programs, descriptor I/O, blocking pipes,
+timer preemption and user-fault containment. It has no device drivers or
+interactive keyboard input yet and does not access physical disks.
