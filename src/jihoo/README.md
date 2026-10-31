@@ -295,35 +295,43 @@ This build invokes jihoo, Clang for assembly, and the linker, without Cargo
 or rustc. It produces a separate image under `target/jihoo-kernel/` and
 preserves the ordinary mixed/Rust build. QEMU passes ExitBootServices,
 GOP/memory-map validation, and collections/cleanup on the jihoo heap, then
-halts at `HARDWARE TEST READY`. The initial framebuffer is a solid background;
-diagnostics are serial-only. Replacement page tables, a text console,
-interrupts, drivers, scheduling, and userspace are not yet connected to this
-standalone image. No physical hardware has been tested. Continue using the
+halts at `HARDWARE TEST READY`. The console checkpoint below adds visible
+GOP text. Replacement page tables, interrupts, drivers, scheduling, and
+userspace are not yet connected to this standalone image. No physical hardware has been tested. Continue using the
 [full-port checklist](../../docs/jihoo-full-port.md).
 
-## Current stop: issue #22
+## Issue #22 resolution and standalone text console
 
-The unconnected text-console draft (`console.jh`, `font/basic.jh`) adds
-ASCII glyph rendering, GOP color conversion, clipped viewports, cursor
-wrapping/backspace, and terminal cells/regions. Font bytes are vendored
-from the existing `font8x8` dependency with its MIT license in `font/`.
-Neither `kernel.jh` nor `standalone/boot.jh` imports this draft.
+[Issue #22](https://github.com/jihoolang/jihoo/issues/22) is fixed in compiler
+`d0b3d3182a33e602ef687561633d6e2be9d0472b`, freshly built through Nix. Explicit-list
+and repeated nonzero static arrays retain their data in native execution
+and UEFI IR/objects; const/local/scalar/zeroed controls and the compiler's
+own aggregate initializer regression pass. See the
+[reproductions](../../tools/jihoo-regressions/static-initializer/README.md).
+
+The text console (`console.jh`, `font/basic.jh`) is connected to the separate
+standalone EFI. Standard jihoo output writes to serial and an interrupt-safe
+GOP console after ExitBootServices. It renders ASCII, converts GOP RGB/BGR
+formats, clamps viewports, handles wrapping/backspace, and supplies terminal
+cell/region operations. The existing Basic Latin font bytes are vendored
+with their MIT license, so the standalone build needs no Rust font crate.
+The mixed kernel continues using its existing console ownership.
 
 ```sh
 CC=clang bash tools/test-jihoo-console.sh
+CC=clang bash tools/build-jihoo-kernel.sh
+python3 tools/gpu-smoke.py --hardware-test --kernel-image target/jihoo-kernel/hardware-test/os.efi --output /tmp/kaguya-jihoo-console
+python3 tools/gpu-smoke.py --hardware-test --resolution 2560x1440 --kernel-image target/jihoo-kernel/hardware-test/os.efi --output /tmp/kaguya-jihoo-console-1440p
 ```
 
-The new C host harness requires no Rust. On compiler `c8014f4`, it fails
-the first glyph-pixel assertion because a nonzero static byte-array
-initializer becomes zero-filled storage. Other console assertions have
-not yet run to completion. This is confirmed independently with minimal
-static-array cases, const/local/scalar controls, two native backends, and
-native/UEFI LLVM output. See
-[issue #22](https://github.com/jihoolang/jihoo/issues/22) and the
-[reproductions](../../tools/jihoo-regressions/static-initializer/README.md).
-
-Migration is stopped until the compiler fix. Rebuild the adjacent compiler,
-rerun the reproductions and console test, then connect the console and
-continue CPU initialization. The previously verified serial-only diagnostic
-remains unchanged; ordinary kernel, driver, and userspace ownership work
-still depends on Rust.
+The C host harness requires no Rust and passes at `-O0` and `-O2`: exact
+glyph pixels, both GOP color formats, stride/tail guards, unsupported
+characters, clipped viewports, wrapping/backspace/clear, terminal cells,
+zero-width regions, and coordinate overflow. Kernel-runtime collection tests
+also pass at both optimization levels on the new compiler. QEMU reaches the
+ready marker at 1280x800 and 2560x1440; the captured screen visibly contains
+the diagnostic text. The standalone image still halts before replacement
+page tables, CPU tables/interrupts, drivers, scheduling, or userspace.
+No physical hardware has been tested. Continue CPU initialization using the
+[full-port checklist](../../docs/jihoo-full-port.md); full Rust removal is
+still incomplete.

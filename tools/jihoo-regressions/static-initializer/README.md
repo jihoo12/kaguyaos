@@ -41,6 +41,9 @@ In `compiler/llvm.jh`, the static initializer emission handles scalar
 constants explicitly but falls back to zero bytes for other cases,
 including `mir.Const.Bytes`. This is the suspected cause, based on code and
 IR inspection; no compiler patch or production workaround is applied.
-Migration is stopped pending a fix. After the fix, rerun these cases and
-the console host test before connecting the text console to the independent
-jihoo EFI image.
+Fixed in `d0b3d3182a33e602ef687561633d6e2be9d0472b`. The explicit-list and repeated
+array cases now print their initialized values, at both optimization levels
+and with the Clang control. Const/local/scalar/zeroed controls still pass;
+UEFI IR contains the four actual bytes and COFF emission succeeds. The
+compiler's own aggregate/static regression and the console C harness both
+pass. No const-array or runtime-initialization workaround is used.

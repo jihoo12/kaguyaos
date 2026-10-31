@@ -110,21 +110,18 @@ fn main() -> i32 {
         jihoo_disable_interrupts()
         if descriptor_size < 40 || map_size % descriptor_size != 0 { panic("invalid memory map") }
         heap.jihoo_heap_init(&HEAP[0] as u64, 1048576)
-        runtime.serial("kaguyaOS - HARDWARE TEST (storage writes disabled)\n")
+        runtime.init_console(framebuffer as *u32, stride as u64, width as u64, height as u64, format)
+        runtime.output("kaguyaOS - HARDWARE TEST (storage writes disabled)\n")
         println("UEFI ExitBootServices: OK")
         println("GOP: " + width.to_string().as_str() + " x " + height.to_string().as_str())
         println("Memory map: " + (map_size / descriptor_size).to_string().as_str() + " entries")
         println("ACPI RSDP: " + acpi.to_string().as_str())
         if runtime_check.jihoo_runtime_check() != 8128 { panic("collection self-check failed") }
         if runtime.live_allocations() != 0 { panic("collection allocation leak") }
-        runtime.serial("jihoo kernel runtime: collections and cleanup passed\n")
-        let pixels = framebuffer as *u32
-        for y in 0..height as i64 {
-            for x in 0..width as i64 { write_volatile(pixels + y * stride as i64 + x, 0x002b2f36) }
-        }
-        runtime.serial("PCI/NVMe/USB/network/GPU drivers: NOT STARTED\n")
-        runtime.serial("Paging replacement, timers, APs, userspace: NOT STARTED\n")
-        runtime.serial("HARDWARE TEST READY - reset or power off to exit\n")
+        runtime.output("jihoo kernel runtime: collections and cleanup passed\n")
+        runtime.output("PCI/NVMe/USB/network/GPU drivers: NOT STARTED\n")
+        runtime.output("Paging replacement, timers, APs, userspace: NOT STARTED\n")
+        runtime.output("HARDWARE TEST READY - reset or power off to exit\n")
         jihoo_halt()
     }
 }

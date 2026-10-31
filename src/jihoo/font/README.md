@@ -6,7 +6,6 @@ Rust console. Bits run from left to right, with eight rows per glyph.
 The data is vendored so standalone jihoo builds do not need Cargo or a
 Rust font crate. See [LICENSE](LICENSE) for the upstream MIT license.
 
-This font is currently an unconnected migration draft. Compiler issue
-[#22](https://github.com/jihoolang/jihoo/issues/22) emits its nonzero static
-initializer as zeros. Verify the compiler fix and renderer tests before
-using it in a kernel image.
+Compiler [issue #22](https://github.com/jihoolang/jihoo/issues/22) is fixed
+in `d0b3d31`. The native renderer tests at `-O0` and `-O2` and standalone
+UEFI/QEMU text output now pass with this static initializer.

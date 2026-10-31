@@ -2,7 +2,7 @@ extern fn jihoo_irq_save() -> u64
 extern fn jihoo_irq_enable()
 extern fn jihoo_pause()
 
-export fn jihoo_lock_acquire(lock: *u8) -> u64 {
+pub export fn jihoo_lock_acquire(lock: *u8) -> u64 {
     unsafe {
         let flags = jihoo_irq_save()
         while !atomic_cas(lock, 0, 1) { jihoo_pause() }
@@ -10,7 +10,7 @@ export fn jihoo_lock_acquire(lock: *u8) -> u64 {
     }
 }
 
-export fn jihoo_lock_try(lock: *u8) -> u64 {
+pub export fn jihoo_lock_try(lock: *u8) -> u64 {
     unsafe {
         let flags = jihoo_irq_save()
         if atomic_cas(lock, 0, 1) { return flags }
@@ -19,7 +19,7 @@ export fn jihoo_lock_try(lock: *u8) -> u64 {
     }
 }
 
-export fn jihoo_lock_release(lock: *u8, enable_interrupts: bool) {
+pub export fn jihoo_lock_release(lock: *u8, enable_interrupts: bool) {
     unsafe {
         atomic_store(lock, 0)
         if enable_interrupts { jihoo_irq_enable() }

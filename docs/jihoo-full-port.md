@@ -74,28 +74,19 @@ python3 tools/gpu-smoke.py --hardware-test --kernel-image target/jihoo-kernel/ha
 
 QEMU reaches `HARDWARE TEST READY` after ExitBootServices, GOP/memory-map
 validation, and collection/allocation-cleanup checks on the jihoo heap.
-Artifacts are in `/tmp/kaguya-standalone-diagnostic`. This initial diagnostic
-uses serial output and a solid GOP background; a visible text console and
-replacement page tables, interrupts, drivers, scheduling, and userspace are
-not yet connected to this standalone image. The ordinary kernel remains Rust and the complete migration
-has not been achieved.
+The original serial-only artifacts are in `/tmp/kaguya-standalone-diagnostic`.
 
-## Current stop: compiler issue #22
+Compiler issue #22 is fixed in `d0b3d3182a33e602ef687561633d6e2be9d0472b`.
+Explicit/repeated static arrays and controls pass, including native LLVM and
+Clang execution, UEFI IR/COFF, and the compiler's own aggregate regression.
+The C console harness passes at both optimization levels without Rust.
+The standalone EFI now renders visible GOP text with a vendored licensed
+font and interrupt-safe output locking. QEMU checks pass at 1280x800 and
+2560x1440; captures/logs are in `/tmp/kaguya-jihoo-console` and
+`/tmp/kaguya-jihoo-console-1440p`. Kernel collection/cleanup host tests also
+pass on this compiler. No static-data workaround is connected.
 
-The text console draft in `src/jihoo/console.jh` and vendored Basic Latin
-font data are not imported by either kernel build. A new native C harness
-(no Rust requirement) checks glyphs, pixel formats, viewport clipping,
-wrapping, terminal cells, and backing-buffer guards at `-O0` and `-O2`.
-Its first glyph assertion fails: the static font array is emitted as zeros.
-The remainder of that test and standalone console integration are unverified.
-
-Minimal explicit-list and repeated static-array initializers both read as
-zeros on `c8014f4`; const/local arrays, a static scalar, and a zeroed array
-behave correctly. Native LLVM/Clang execution and native/UEFI IR confirm
-[jihoo issue #22](https://github.com/jihoolang/jihoo/issues/22). Reproductions,
-controls and commands are in `tools/jihoo-regressions/static-initializer/`.
-No font-data workaround is connected. Migration is stopped at this compiler
-problem as requested. After the fix, rebuild the compiler, rerun these
-cases and `bash tools/test-jihoo-console.sh`, then connect the text console
-and continue CPU initialization. The verified serial-only EFI remains
-available; complete Rust removal has not been achieved.
+Continue with CPU tables, interrupts, and replacement page tables, then
+scheduler/ownership/device work. The standalone image does not yet run
+userspace or drivers. The ordinary kernel remains Rust and complete Rust
+removal has not been achieved. No physical hardware has been tested.

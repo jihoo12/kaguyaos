@@ -1,26 +1,25 @@
 import heap
 import io
+import console
+import framebuffer
+import sync
 
-extern fn jihoo_irq_save() -> u64
-extern fn jihoo_irq_enable()
 extern fn jihoo_pause()
 extern fn jihoo_halt() -> never
 
 static LOCK: u8 = 0
 static LIVE: u64 = 0
+static SCREEN_LOCK: u8 = 0
+static SCREEN_READY: bool = false
+static SCREEN: console.Console = zeroed(console.Console)
 
 fn acquire() -> u64 {
-    unsafe {
-        let flags = jihoo_irq_save()
-        while !atomic_cas(&LOCK, 0, 1) { jihoo_pause() }
-        flags
-    }
+    unsafe { sync.jihoo_lock_acquire(&LOCK) }
 }
 
 fn release(flags: u64) {
     unsafe {
-        atomic_store(&LOCK, 0)
-        if flags & 0x200 != 0 { jihoo_irq_enable() }
+        sync.jihoo_lock_release(&LOCK, flags & 0x200 != 0)
     }
 }
 
@@ -50,6 +49,26 @@ export fn kaguya_runtime_free(pointer: *u8) {
 
 pub fn live_allocations() -> u64 { unsafe { LIVE } }
 
+pub fn init_console(base: *u32, stride: u64, width: u64, height: u64, format: u32) {
+    var surface = framebuffer.Framebuffer { base: base, stride: stride, width: width, height: height }
+    unsafe {
+        let flags = sync.jihoo_lock_acquire(&SCREEN_LOCK)
+        console.jihoo_console_init(&SCREEN, &surface, format)
+        console.jihoo_console_clear(&SCREEN, 0)
+        SCREEN_READY = true
+        sync.jihoo_lock_release(&SCREEN_LOCK, flags & 0x200 != 0)
+    }
+}
+
+pub fn output(text: str) {
+    serial(text)
+    unsafe {
+        let flags = sync.jihoo_lock_acquire(&SCREEN_LOCK)
+        if SCREEN_READY { console.jihoo_console_write(&SCREEN, text.ptr, text.len as u64) }
+        sync.jihoo_lock_release(&SCREEN_LOCK, flags & 0x200 != 0)
+    }
+}
+
 pub fn serial(text: str) {
     for byte in text {
         unsafe {
@@ -64,7 +83,7 @@ pub fn serial(text: str) {
 
 export fn kaguya_runtime_write(fd: i32, bytes: *u8, length: u64) -> i64 {
     if fd != 1 && fd != 2 { return -1 }
-    serial(unsafe { make_str(bytes, length as i64) })
+    output(unsafe { make_str(bytes, length as i64) })
     length as i64
 }
 
