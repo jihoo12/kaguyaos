@@ -96,7 +96,19 @@ Artifacts are in `/tmp/kaguya-jihoo-cpu` and `/tmp/kaguya-jihoo-cpu-1440p`.
 The original diagnostic still stops before these initializations and passes
 its regression in `/tmp/kaguya-jihoo-cpu-diagnostic`.
 
-Continue with CPU-local/syscall state, address-space ownership, KEF loading,
-and scheduling, followed by device work. The standalone image does not yet run
-userspace or drivers. The ordinary kernel remains Rust and complete Rust
+Atomic shared address-space ownership and full KEF mapping/argument
+orchestration now live in `space.jh` and `kef.jh`. The native C tests pass
+clone/last-owner lifetime, OOM cleanup, mappings, initialized data/BSS,
+stack guards and argument delivery at both optimization levels. The
+separate `ring3-test` EFI embeds a jihoo verification KEF and passes twenty
+executions, syscall entry/return, user-pointer checks, heap growth,
+contained kernel-page and NX faults, user-mode PIT return, and constant
+frame/heap counts in QEMU at 1280x800 and 2560x1440. Artifacts are in
+`/tmp/kaguya-jihoo-ring3` and `/tmp/kaguya-jihoo-ring3-1440p`.
+
+This isolated harness uses a bootstrap continuation, not the scheduler.
+Only exit, console-write, heap-growth and retired-allocation syscalls are
+supplied. Continue with shared kernel ownership, scheduler handoffs/waits,
+and file/pipe ownership, then shell/device integration. The standalone
+images do not yet provide the full shell or drivers. The ordinary kernel remains Rust and complete Rust
 removal has not been achieved. No physical hardware has been tested.

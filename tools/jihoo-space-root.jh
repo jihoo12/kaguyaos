@@ -1,0 +1,117 @@
+import space
+import kef
+import paging
+
+extern fn kaguya_kernel_panic(message: *u8, length: u64) -> never
+extern fn frame_live() -> u64
+extern fn heap_live() -> u64
+extern fn frame_budget(count: i64)
+extern fn heap_fail_next()
+extern fn physical_of(root: u64, address: u64) -> u64
+extern fn flags_of(root: u64, address: u64) -> u64
+
+#[panic_handler]
+fn on_panic(message: str) -> never {
+    unsafe { kaguya_kernel_panic(message.ptr, message.len as u64) }
+}
+
+fn require(condition: bool, message: str) {
+    if !condition { panic(message) }
+}
+
+export fn jihoo_space_ownership_check(kernel: u64) {
+    unsafe {
+        let baseline = frame_live()
+        {
+            let original = space.AddressSpace.new(kernel).unwrap()
+            let copy = original.clone()
+            require(original.root() == copy.root(), "cloned root changed")
+            require(*(original.root() as *u64) == *(kernel as *u64), "kernel slot not shared")
+            let physical = original.map_page(space.USER_START, true, false)
+            require(physical != 0, "user page allocation failed")
+            *(physical as *u64) = 0x12345678
+            require(copy.map_page(space.USER_START, true, false) == 0, "duplicate mapping accepted")
+            require(copy.map_page(space.USER_START + 1, true, false) == 0, "unaligned mapping accepted")
+            require(copy.map_page(4096, true, false) == 0, "kernel mapping accepted")
+            drop(original)
+            require(*(physical_of(copy.root(), space.USER_START) as *u64) == 0x12345678,
+                    "clone did not keep pages alive")
+            require(copy.grow(0) == space.HEAP_START, "empty grow failed")
+            require(copy.grow(1) == space.HEAP_START, "first grow failed")
+            require(copy.grow(4097) == space.HEAP_START + 4096, "rounded grow failed")
+            require(copy.grow(0) == space.HEAP_START + 12288, "heap end incorrect")
+            require(copy.grow(0xffffffffffffffff) == 0, "overflow grow accepted")
+            require(flags_of(copy.root(), space.HEAP_START) & 0x8000000000000007 == 0x8000000000000007,
+                    "heap permissions incorrect")
+            frame_budget(0)
+            require(copy.grow(4096) == 0, "OOM grow succeeded")
+            require(copy.grow(0) == space.HEAP_START + 12288, "failed grow changed end")
+            frame_budget(-1)
+        }
+        require(frame_live() == baseline && heap_live() == 0, "final owner leaked")
+        frame_budget(0)
+        require(space.AddressSpace.new(kernel).is_none(), "OOM create succeeded")
+        frame_budget(-1)
+        heap_fail_next()
+        require(space.AddressSpace.new(kernel).is_none(), "OOM ownership node succeeded")
+        require(frame_live() == baseline && heap_live() == 0, "failed create leaked")
+        {
+            let destination = space.AddressSpace.new(kernel).unwrap()
+            frame_budget(2)
+            require(destination.map_page(space.USER_START, true, true) == 0, "partial table OOM succeeded")
+            frame_budget(-1)
+        }
+        require(frame_live() == baseline && heap_live() == 0, "partial table OOM leaked")
+    }
+}
+
+export fn jihoo_kef_loading_check(kernel: u64) {
+    unsafe {
+        let baseline = frame_live()
+        // Version 1: two image pages, four initialized bytes and entry offset 2.
+        var image: [u8; 36] = [0; 36]
+        image[0] = 'K'
+        image[1] = 'E'
+        image[2] = 'F'
+        image[3] = 1
+        image[4] = 2
+        image[8] = 32
+        image[13] = 32
+        image[16] = 4
+        image[32] = 0x11
+        image[33] = 0x22
+        image[34] = 0x33
+        image[35] = 0x44
+        {
+            let destination = space.AddressSpace.new(kernel).unwrap()
+            let loaded = kef.load(&image[0], 36, destination, "one two").unwrap()
+            require(loaded.entry == space.USER_START + 2, "KEF entry incorrect")
+            require(loaded.stack & 15 == 0 && loaded.stack == loaded.arguments && loaded.argument_count == 7,
+                    "KEF stack/arguments incorrect")
+            let code = physical_of(destination.root(), space.USER_START) as *u8
+            require(code[0] == 0x11 && code[1] == 0x22 && code[2] == 0x33 && code[3] == 0x44,
+                    "KEF initialized data incorrect")
+            for i in 4..4096 { require(code[i] == 0, "KEF page tail not zero") }
+            let bss = physical_of(destination.root(), space.USER_START + 4096) as *u8
+            for i in 0..4096 { require(bss[i] == 0, "KEF BSS not zero") }
+            require(flags_of(destination.root(), space.USER_START) & 0x8000000000000007 == 7,
+                    "KEF code permissions incorrect")
+            require(flags_of(destination.root(), space.STACK_TOP - 4096) & 0x8000000000000007 == 0x8000000000000007,
+                    "KEF stack permissions incorrect")
+            require(physical_of(destination.root(), space.STACK_TOP - 5 * 4096) == 0, "KEF guard mapped")
+            let args = physical_of(destination.root(), loaded.arguments) as *u8
+            require(make_str(args, 7) == "one two", "KEF arguments not copied")
+        }
+        require(frame_live() == baseline && heap_live() == 0, "loaded KEF leaked")
+        {
+            let destination = space.AddressSpace.new(kernel).unwrap()
+            var args: [u8; 2049] = [1; 2049]
+            require(kef.load(&image[0], 36, destination, make_str(&args[0], 2049)).is_err(), "long args accepted")
+            require(kef.load(&image[0], 35, destination, "").is_err(), "truncated image accepted")
+            frame_budget(0)
+            require(kef.load(&image[0], 36, destination, "").is_err(), "OOM image load succeeded")
+            frame_budget(-1)
+        }
+        require(frame_live() == baseline && heap_live() == 0, "failed load leaked")
+    }
+}

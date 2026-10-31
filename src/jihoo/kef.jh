@@ -1,0 +1,38 @@
+import loader
+import space
+
+pub struct Loaded {
+    pub entry: u64
+    pub stack: u64
+    pub arguments: u64
+    pub argument_count: u64
+}
+
+pub fn load(bytes: *u8, length: u64, destination: space.AddressSpace, args: str) -> Result(Loaded, str) {
+    let header = loader.jihoo_parse_kef(bytes, length)
+    if header.error != 0 { return Err("invalid KEF header") }
+    if args.len > 2048 { return Err("KEF arguments too long") }
+    let pages = (header.code_size + 4095) / 4096
+    var offset: u64 = 0
+    while offset < pages * 4096 {
+        let frame = destination.map_page(space.USER_START + offset, true, true)
+        if frame == 0 { return Err("OOM mapping KEF code") }
+        if offset < header.init_size {
+            let count = min(header.init_size - offset, 4096)
+            unsafe { mem_copy(frame as *u8, bytes + (header.code_offset + offset) as i64, count as i64) }
+        }
+        offset += 4096
+    }
+    var top: u64 = 0
+    var i: u64 = 4
+    while i > 0 {
+        top = destination.map_page(space.STACK_TOP - i * 4096, true, false)
+        if top == 0 { return Err("OOM mapping KEF stack") }
+        i -= 1
+    }
+    let arguments = (space.STACK_TOP - args.len as u64) & !15
+    let in_page = arguments - (space.STACK_TOP - 4096)
+    unsafe { mem_copy((top + in_page) as *u8, args.ptr, args.len) }
+    Ok(Loaded { entry: space.USER_START + header.entry_offset, stack: arguments,
+                arguments: arguments, argument_count: args.len as u64 })
+}

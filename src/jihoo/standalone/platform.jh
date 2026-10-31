@@ -4,6 +4,7 @@ import runtime
 import runtime_check
 import cpu
 import memory
+import ring3
 
 struct GopInfo {
     version: u32
@@ -67,7 +68,8 @@ fn rsdp(table: *uefi.SystemTable) -> u64 {
     }
 }
 
-pub fn run(cpu_test: bool) -> i32 {
+pub fn run(stage: u32) -> i32 {
+    let cpu_test = stage > 0
     runtime.serial("kaguyaOS jihoo-only diagnostic entry\n")
     let table = uefi.system_table()
     uefi.disable_watchdog()
@@ -123,9 +125,13 @@ pub fn run(cpu_test: bool) -> i32 {
             cpu.init()
             memory.init(map as *u8, map_size, descriptor_size, framebuffer, framebuffer_size)
             cpu.check()
+            if stage >= 2 { ring3.check() }
         }
         runtime.output("PCI/NVMe/USB/network/GPU drivers: NOT STARTED\n")
-        if cpu_test {
+        if stage >= 2 {
+            runtime.output("APs, scheduler, device drivers: NOT STARTED\n")
+            runtime.output("RING3 TEST READY - reset or power off to exit\n")
+        } else if cpu_test {
             runtime.output("APs, scheduler, syscalls, userspace: NOT STARTED\n")
             runtime.output("CPU TEST READY - reset or power off to exit\n")
         } else {

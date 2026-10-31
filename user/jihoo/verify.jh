@@ -1,0 +1,50 @@
+#![freestanding]
+
+import kaguya as os
+
+fn require(condition: bool, code: i64) {
+    if !condition { os.exit(code) }
+}
+
+export fn kaguya_main(arguments: *u8, count: i64) -> never {
+    let args = unsafe { make_str(arguments, count) }
+    if args == "fault" {
+        unsafe { write_volatile(4096 as *u8, 1) }
+        os.exit(99)
+    }
+    if args == "nx" {
+        let heap = os.call(28, 1, 0, 0, 0, 0)
+        require(heap != 0, 20)
+        unsafe {
+            write_volatile(heap as *u8, 0xc3)
+            let function = heap as fnptr() -> u64
+            function()
+        }
+        os.exit(99)
+    }
+    if args == "timer" {
+        let start = os.milliseconds()
+        while os.milliseconds() - start < 100 {}
+        os.exit(0)
+    }
+    require(args == "syscall probe", 1)
+    require(os.call(31, 1, 0, 1, 0, 0) == -2, 2)
+    require(os.call(31, 1, 4096, 1, 0, 0) == -2, 3)
+    require(os.call(31, 1, 0x7ffffffebfff, 2, 0, 0) == -2, 4)
+    require(os.call(31, 1, -16, 32, 0, 0) == -2, 5)
+    require(os.call(31, 1, 0, 0, 0, 0) == 0, 6)
+    let message = "jihoo ring3 syscall probe\n"
+    require(os.write_fd(os.STDOUT, message) == message.len, 7)
+    let heap = os.call(28, 1, 0, 0, 0, 0)
+    require(heap == 0x700000000000, 8)
+    unsafe {
+        let bytes = heap as *u8
+        for i in 0..4096 { require(bytes[i] == 0, 9) }
+        bytes[0] = 0x12
+        bytes[4095] = 0x34
+        require(bytes[0] == 0x12 && bytes[4095] == 0x34, 10)
+    }
+    require(os.call(28, 0x10000001, 0, 0, 0, 0) == 0, 11)
+    require(os.call(28, 0, 0, 0, 0, 0) == heap + 4096, 12)
+    os.exit(0)
+}

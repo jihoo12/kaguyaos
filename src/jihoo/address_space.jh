@@ -10,7 +10,7 @@ const USER_START: u64 = 0x400000000000
 const USER_END: u64 = 0x800000000000
 const HEAP_LIMIT: u64 = 0x700010000000
 
-export fn jihoo_space_create(kernel: u64) -> u64 {
+pub export fn jihoo_space_create(kernel: u64) -> u64 {
     unsafe {
         let root = kaguya_alloc_frame()
         if root == 0 { return 0 }
@@ -47,7 +47,7 @@ unsafe fn map(root: u64, address: u64, entry: u64) -> bool {
     true
 }
 
-export fn jihoo_space_map(root: u64, address: u64, flags: u64) -> u64 {
+pub export fn jihoo_space_map(root: u64, address: u64, flags: u64) -> u64 {
     unsafe {
         let frame = kaguya_alloc_frame()
         if frame == 0 { return 0 }
@@ -57,7 +57,7 @@ export fn jihoo_space_map(root: u64, address: u64, flags: u64) -> u64 {
     }
 }
 
-export fn jihoo_space_grow(root: u64, old: u64, bytes: u64) -> u64 {
+pub export fn jihoo_space_grow(root: u64, old: u64, bytes: u64) -> u64 {
     if bytes > 0xffffffffffffffff - 4095 { return 0 }
     let rounded = (bytes + 4095) & !4095
     if old > HEAP_LIMIT || rounded > HEAP_LIMIT - old { return 0 }
@@ -108,7 +108,7 @@ unsafe fn free_table(entry: u64, levels: u32) {
     kaguya_free_frame(frame)
 }
 
-export fn jihoo_space_destroy(root: u64) {
+pub export fn jihoo_space_destroy(root: u64) {
     unsafe {
         let table = root as *u64
         for i in 128..256 { free_table(table[i], 3) }

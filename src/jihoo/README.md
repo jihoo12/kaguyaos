@@ -369,3 +369,43 @@ scheduling, syscall entry and userspace are not started in this mode.
 This is an incremental validation artifact, not the complete OS or the
 physical-hardware diagnostic milestone. Continue with CPU-local/syscall
 state, address-space ownership, KEF loading, and scheduling.
+
+## Standalone address ownership, KEF and ring-3 checkpoint
+
+```sh
+CC=clang bash tools/test-jihoo-space.sh
+CC=clang bash tools/build-jihoo-kernel.sh ring3-test
+python3 tools/gpu-smoke.py --ring3-test --output /tmp/kaguya-jihoo-ring3
+python3 tools/gpu-smoke.py --ring3-test --resolution 2560x1440 --output /tmp/kaguya-jihoo-ring3-1440p
+```
+
+On compiler `d0b3d31`, `space.jh` supplies atomic reference-counted address
+space ownership, mapping/heap locks, and last-owner page reclamation.
+`kef.jh` owns the formerly Rust loader orchestration: code/BSS pages,
+nonexecutable stack pages, an unmapped stack guard, and aligned argument
+copying. The C host tests run twenty rounds at both optimization levels,
+checking shared lifetime, duplicate/unaligned/kernel mapping rejection,
+heap rounding/overflow/OOM, root/node/partial-table allocation failures,
+exact initialized data and BSS, page flags, argument contents and guards.
+All frames and ownership allocations are released after each round.
+
+The separate ring-3 EFI embeds `user/jihoo/verify.jh` as a KEF using Clang
+assembly; neither its kernel nor user build invokes Cargo or rustc. It sets
+up CPU-local GS state, TSS RSP0, EFER/STAR/LSTAR/SFMASK and a syscall assembly
+boundary that translates the user SysV register ABI to the kernel UEFI ABI.
+The test dispatcher supplies exit, console write, heap growth and retired
+allocation stubs; it is not the full production syscall dispatcher.
+
+QEMU passes twenty normal executions with stable frame/heap counts,
+argument delivery, syscall return, exact invalid-argument errors for null,
+kernel, guard-crossing and overflowing user ranges, and heap growth/data
+writes. A deliberate ring-3 write to kernel-only memory faults, and an
+attempt to execute the NX heap faults with error `0x15`; both executions
+are contained and reclaimed. A timed user-mode loop receives PIT IRQs and
+returns through the interrupt frame. Both GOP resolutions pass.
+
+This harness uses one isolated bootstrap continuation for program exit;
+it does not supply scheduling, preemption, threads, descriptor ownership,
+USB input, filesystems, storage, networking or AP startup. The normal Rust
+and mixed kernels are still separate. Continue by porting shared ownership,
+scheduler handoffs/waits and file/pipe ownership before the full shell.

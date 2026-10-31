@@ -1,0 +1,84 @@
+import address_space as raw
+import sync
+
+extern fn kaguya_runtime_alloc(size: u64, alignment: u64) -> *u8
+extern fn kaguya_runtime_free(pointer: *u8)
+
+pub const USER_START: u64 = 0x400000000000
+pub const USER_END: u64 = 0x800000000000
+pub const HEAP_START: u64 = 0x700000000000
+pub const STACK_TOP: u64 = 0x7fffffff0000
+
+struct Shared {
+    references: u64
+    root: u64
+    heap_end: u64
+    lock: u8
+}
+
+pub struct AddressSpace {
+    shared: *Shared
+}
+
+impl AddressSpace {
+    pub fn new(kernel: u64) -> Option(AddressSpace) {
+        let root = raw.jihoo_space_create(kernel)
+        if root == 0 { return None }
+        unsafe {
+            let shared = kaguya_runtime_alloc(size_of(Shared) as u64, 8) as *Shared
+            if shared == null {
+                raw.jihoo_space_destroy(root)
+                return None
+            }
+            *shared = Shared { references: 1, root: root, heap_end: HEAP_START, lock: 0 }
+            Some(AddressSpace { shared: shared })
+        }
+    }
+
+    pub fn root(self) -> u64 { unsafe { self.shared.root } }
+
+    pub fn map_page(self, address: u64, writable: bool, executable: bool) -> u64 {
+        if address < USER_START || address >= USER_END || address & 4095 != 0 { return 0 }
+        var flags: u64 = 5
+        if writable { flags |= 2 }
+        if !executable { flags |= 0x8000000000000000 }
+        unsafe {
+            let saved = sync.jihoo_lock_acquire(&self.shared.lock)
+            let physical = raw.jihoo_space_map(self.shared.root, address, flags)
+            sync.jihoo_lock_release(&self.shared.lock, saved & 0x200 != 0)
+            physical
+        }
+    }
+
+    pub fn grow(self, bytes: u64) -> u64 {
+        unsafe {
+            let saved = sync.jihoo_lock_acquire(&self.shared.lock)
+            let old = self.shared.heap_end
+            let end = raw.jihoo_space_grow(self.shared.root, old, bytes)
+            if end != 0 { self.shared.heap_end = end }
+            sync.jihoo_lock_release(&self.shared.lock, saved & 0x200 != 0)
+            if end == 0 { 0 } else { old }
+        }
+    }
+}
+
+impl Clone for AddressSpace {
+    fn clone(self) -> AddressSpace {
+        unsafe {
+            let previous = atomic_add(&self.shared.references, 1)
+            if previous >= 0x7fffffffffffffff { panic("address-space reference overflow") }
+            AddressSpace { shared: self.shared }
+        }
+    }
+}
+
+impl Drop for AddressSpace {
+    fn drop(inout self) {
+        unsafe {
+            if atomic_sub(&self.shared.references, 1) == 1 {
+                raw.jihoo_space_destroy(self.shared.root)
+                kaguya_runtime_free(self.shared as *u8)
+            }
+        }
+    }
+}

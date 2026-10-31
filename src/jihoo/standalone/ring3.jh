@@ -1,0 +1,98 @@
+import space
+import kef
+import paging
+import frame
+import runtime
+import memory
+import processor
+import cpu
+
+extern fn jihoo_probe_data() -> *u8
+extern fn jihoo_probe_size() -> u64
+extern fn jihoo_run_user(entry: u64, stack: u64, arguments: u64, count: u64) -> u64
+extern fn jihoo_finish_user(status: u64) -> never
+extern fn jihoo_write_cr3(root: u64)
+
+static CURRENT: *space.AddressSpace = null
+static CALLS: u64 = 0
+static FAULTS: u64 = 0
+
+fn user_range(pointer: u64, length: u64) -> bool {
+    if pointer == 0 || pointer > 0x7fffffffffff || length > 0x7fffffffffff - pointer { return false }
+    unsafe {
+        if CURRENT == null { return false }
+        paging.jihoo_range_mapped((*CURRENT).root() as *u64, pointer, length, true)
+    }
+}
+
+export fn jihoo_syscall_dispatch(id: u64, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64) -> u64 {
+    unsafe {
+        CALLS += 1
+        if id == 5 { jihoo_finish_user(a) }
+        if id == 28 { return (*CURRENT).grow(a) }
+        if id == 31 {
+            if c == 0 { return 0 }
+            if !user_range(b, c) { return (-2 as i64) as u64 }
+            if a != 1 && a != 2 { return (-7 as i64) as u64 }
+            runtime.output(make_str(b as *u8, c as i64))
+            return c
+        }
+        if id == 1 || id == 2 || id == 10 { return 0 }
+        0xffffffffffffffff
+    }
+}
+
+export fn kaguya_user_fault() -> never {
+    unsafe {
+        FAULTS += 1
+        jihoo_finish_user(0xdead)
+    }
+}
+
+fn once(bytes: *u8, length: u64, arguments: str) -> u64 {
+    let process = space.AddressSpace.new(memory.root()).unwrap()
+    let loaded = kef.load(bytes, length, process, arguments).unwrap()
+    unsafe {
+        let stack = runtime.kaguya_runtime_alloc(16384, 16)
+        if stack == null { panic("probe kernel stack OOM") }
+        CURRENT = &process
+        processor.init(0, stack as u64 + 16384)
+        jihoo_write_cr3(process.root())
+        let status = jihoo_run_user(loaded.entry, loaded.stack, loaded.arguments, loaded.argument_count)
+        jihoo_write_cr3(memory.root())
+        CURRENT = null
+        processor.current().kernel_stack = 0
+        runtime.kaguya_runtime_free(stack)
+        status
+    }
+}
+
+pub fn check() {
+    unsafe {
+        let bytes = jihoo_probe_data()
+        let length = jihoo_probe_size()
+        if length == 0 { panic("missing ring3 probe") }
+        let before = frame.jihoo_pool_in_use()
+        let allocations = runtime.live_allocations()
+        for _ in 0..20 {
+            if once(bytes, length, "syscall probe") != 0 { panic("ring3 probe failed") }
+            if frame.jihoo_pool_in_use() != before || runtime.live_allocations() != allocations {
+                panic("ring3 probe reclamation failed")
+            }
+        }
+        if CALLS < 20 * 10 { panic("syscall entry missing") }
+        runtime.output("Ring3: jihoo KEF, syscall return, user-pointer rejection, NX heap and twenty cleanups passed\n")
+        if once(bytes, length, "fault") != 0xdead || FAULTS != 1 { panic("user fault containment failed") }
+        if frame.jihoo_pool_in_use() != before || runtime.live_allocations() != allocations {
+            panic("faulted process leaked")
+        }
+        runtime.output("Ring3: user page fault contained and process frames reclaimed\n")
+        if once(bytes, length, "nx") != 0xdead || FAULTS != 2 { panic("user NX containment failed") }
+        let ticks = cpu.user_ticks()
+        if once(bytes, length, "timer") != 0 || cpu.user_ticks() <= ticks { panic("user timer return failed") }
+        if frame.jihoo_pool_in_use() != before || runtime.live_allocations() != allocations {
+            panic("NX/timer process leaked")
+        }
+        runtime.output("Ring3: NX execution rejected and user-mode timer return passed\n")
+    }
+}

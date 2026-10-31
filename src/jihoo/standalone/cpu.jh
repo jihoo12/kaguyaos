@@ -10,6 +10,7 @@ extern fn jihoo_breakpoint()
 extern fn jihoo_wait_interrupt()
 extern fn jihoo_halt() -> never
 extern fn jihoo_read_cr2() -> u64
+extern fn kaguya_user_fault() -> never
 
 static GDT: [u64; 448] = zeroed([u64; 448])
 static TSS: [u64; 832] = zeroed([u64; 832])
@@ -17,6 +18,9 @@ static FAULT_STACKS: [u64; 32770] = zeroed([u64; 32770])
 static IDT: [u64; 512] = zeroed([u64; 512])
 static BREAKPOINTS: u64 = 0
 static TICKS: u64 = 0
+static USER_TICKS: u64 = 0
+
+pub fn user_ticks() -> u64 { unsafe { atomic_load(&USER_TICKS) } }
 
 pub struct InterruptFrame {
     pub r15: u64
@@ -100,7 +104,10 @@ export fn jihoo_interrupt_dispatch(frame: *InterruptFrame) {
             return
         }
         if vector >= 32 && vector < 48 {
-            if vector == 32 { atomic_add(&TICKS, 1) }
+            if vector == 32 {
+                atomic_add(&TICKS, 1)
+                if frame.cs & 3 == 3 { atomic_add(&USER_TICKS, 1) }
+            }
             pic.jihoo_pic_eoi((vector - 32) as u8)
             return
         }
@@ -118,6 +125,7 @@ export fn jihoo_interrupt_dispatch(frame: *InterruptFrame) {
             hex(jihoo_read_cr2())
         }
         runtime.serial("\n")
+        if frame.cs & 3 == 3 { kaguya_user_fault() }
         jihoo_halt()
     }
 }

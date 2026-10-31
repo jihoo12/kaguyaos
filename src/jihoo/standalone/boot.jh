@@ -1,4 +1,4 @@
 #![uefi]
 import platform
 
-fn main() -> i32 { platform.run(false) }
+fn main() -> i32 { platform.run(0) }

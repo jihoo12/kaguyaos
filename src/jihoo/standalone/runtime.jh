@@ -23,7 +23,7 @@ fn release(flags: u64) {
     }
 }
 
-export fn kaguya_runtime_alloc(size: u64, alignment: u64) -> *u8 {
+pub export fn kaguya_runtime_alloc(size: u64, alignment: u64) -> *u8 {
     let flags = acquire()
     let pointer = heap.jihoo_heap_alloc(if size == 0 { 1 } else { size }, alignment)
     unsafe { if pointer != null { LIVE += 1 } }
@@ -31,7 +31,7 @@ export fn kaguya_runtime_alloc(size: u64, alignment: u64) -> *u8 {
     pointer
 }
 
-export fn kaguya_runtime_realloc(pointer: *u8, size: u64, alignment: u64) -> *u8 {
+pub export fn kaguya_runtime_realloc(pointer: *u8, size: u64, alignment: u64) -> *u8 {
     if pointer == null { return kaguya_runtime_alloc(size, alignment) }
     let flags = acquire()
     let next = heap.jihoo_heap_realloc(pointer, if size == 0 { 1 } else { size }, alignment)
@@ -39,7 +39,7 @@ export fn kaguya_runtime_realloc(pointer: *u8, size: u64, alignment: u64) -> *u8
     next
 }
 
-export fn kaguya_runtime_free(pointer: *u8) {
+pub export fn kaguya_runtime_free(pointer: *u8) {
     if pointer == null { return }
     let flags = acquire()
     heap.jihoo_heap_free(pointer)
@@ -81,7 +81,7 @@ pub fn serial(text: str) {
     }
 }
 
-export fn kaguya_runtime_write(fd: i32, bytes: *u8, length: u64) -> i64 {
+pub export fn kaguya_runtime_write(fd: i32, bytes: *u8, length: u64) -> i64 {
     if fd != 1 && fd != 2 { return -1 }
     output(unsafe { make_str(bytes, length as i64) })
     length as i64

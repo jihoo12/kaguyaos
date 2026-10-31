@@ -119,3 +119,13 @@ kernel checkpoints remain separate. A separate Rust-free `cpu-test` image also p
 CR3 replacement, frame recycling, `int3` return, and PIT IRQ checks at both
 resolutions. It does not execute user programs yet; syscall/ownership and
 scheduler integration continue next.
+
+The additional `verify.jh` program is an isolated kernel-validation fixture,
+not an eighth ordinary shell utility. `tools/build-jihoo-kernel.sh ring3-test`
+builds it as KEF and embeds it in the standalone EFI without Rust tools.
+QEMU at both GOP resolutions passes twenty executions with constant frame
+and heap counts, argument copying, console-write/heap-grow syscall return,
+invalid user pointers, contained kernel-page/NX faults, and user-mode PIT
+interrupt return. This test dispatcher and bootstrap continuation do not
+replace the full scheduler, descriptor table, device drivers or shell.
+See the kernel README for exact coverage and remaining work.
