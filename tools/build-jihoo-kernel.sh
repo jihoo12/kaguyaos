@@ -8,7 +8,8 @@ case "$mode" in
     ring3-test) entry=ring3_test ;;
     filesystem-test) entry=filesystem_test ;;
     scheduler-test) entry=scheduler_test ;;
-    *) echo 'Standalone build supports hardware-test, cpu-test, ring3-test, filesystem-test or scheduler-test' >&2; exit 2 ;;
+    shell) entry=shell ;;
+    *) echo 'Standalone build supports hardware-test, cpu-test, ring3-test, filesystem-test, scheduler-test or shell' >&2; exit 2 ;;
 esac
 if [[ -z "${JIHOO_BIN:-}" ]]; then
     compiler_package="$(nix build path:../jihoo#jihoo --no-link --print-out-paths)"
@@ -17,16 +18,22 @@ fi
 output="$PWD/target/jihoo-kernel/$mode"
 mkdir -p "$output/esp/EFI/BOOT"
 compiler="${CC:-clang}"
-if [[ "$mode" == ring3-test || "$mode" == filesystem-test || "$mode" == scheduler-test ]]; then
+if [[ "$mode" == shell ]]; then
+    JIHOO_BIN="$JIHOO_BIN" KAGUYA_USER_OUTPUT="$output/user" bash user/build-jihoo.sh verify init ls cat write rm ping wget
+elif [[ "$mode" == ring3-test || "$mode" == filesystem-test || "$mode" == scheduler-test ]]; then
     JIHOO_BIN="$JIHOO_BIN" KAGUYA_USER_OUTPUT="$output/user" bash user/build-jihoo.sh verify
 fi
 python3 - "$output" "$mode" <<'PY'
 from pathlib import Path
 import json
+import os
 import sys
 output = Path(sys.argv[1])
+xhci_index = int(os.environ.get('KAGUYA_XHCI_INDEX', '0'))
+if not 0 <= xhci_index <= 65535:
+    raise SystemExit('KAGUYA_XHCI_INDEX must be in 0..65535')
 image = output / 'user/verify.kef'
-data = '.incbin ' + json.dumps(str(image)) + '\n' if sys.argv[2] in ('ring3-test', 'filesystem-test', 'scheduler-test') else ''
+data = '.incbin ' + json.dumps(str(image)) + '\n' if sys.argv[2] in ('ring3-test', 'filesystem-test', 'scheduler-test', 'shell') else ''
 (output / 'probe.S').write_text('''
 .text
 .globl jihoo_probe_data
@@ -42,6 +49,27 @@ jihoo_probe_size:
 .section .rdata,"dr"
 probe_start:
 ''' + data + 'probe_end:\n')
+names = ['init', 'ls', 'cat', 'write', 'rm', 'ping', 'wget'] if sys.argv[2] == 'shell' else []
+with (output / 'probe.S').open('a') as source:
+    source.write(f'.text\n.globl jihoo_xhci_index\njihoo_xhci_index:\n    movq ${xhci_index}, %rax\n    ret\n')
+    source.write('''
+.text
+.globl jihoo_program_count
+jihoo_program_count:
+    movq $%d, %%rax
+    ret
+.globl jihoo_program_table
+jihoo_program_table:
+    leaq program_table(%%rip), %%rax
+    ret
+.section .rdata,"dr"
+.p2align 3
+program_table:
+''' % len(names))
+    for name in names:
+        source.write(f'.quad name_{name}, {len(name)+4}, data_{name}, end_{name}-data_{name}\n')
+    for name in names:
+        source.write(f'name_{name}:\n.asciz "{name}.kef"\ndata_{name}:\n.incbin ' + json.dumps(str(output / f'user/{name}.kef')) + f'\nend_{name}:\n')
 PY
 "$compiler" -target x86_64-unknown-windows -ffreestanding -fno-pic \
     -c "$output/probe.S" -o "$output/probe.obj"

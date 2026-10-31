@@ -8,6 +8,7 @@ import memory
 import ring3
 import storage
 import scheduler
+import usb
 
 struct GopInfo {
     version: u32
@@ -39,6 +40,7 @@ static HEAP: [u64; 131072] = zeroed([u64; 131072])
 
 extern fn jihoo_disable_interrupts()
 extern fn jihoo_halt() -> never
+extern fn jihoo_xhci_index() -> u64
 
 #[panic_handler]
 fn on_panic(message: str) -> never {
@@ -129,13 +131,15 @@ pub fn run(stage: u32) -> i32 {
         if cpu_test {
             cpu.init()
             memory.init(map as *u8, map_size, descriptor_size, framebuffer, framebuffer_size)
+            if stage >= 5 { usb.init(jihoo_xhci_index()) }
             cpu.check()
             if stage >= 3 {
                 storage.init_ram()
                 storage.check()
             }
             if stage >= 2 { ring3.check() }
-            if stage >= 4 { scheduler.check() }
+            if stage >= 5 { scheduler.shell() }
+            if stage == 4 { scheduler.check() }
         }
         runtime.output("PCI/NVMe/USB/network/GPU drivers: NOT STARTED\n")
         if stage >= 4 {

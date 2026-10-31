@@ -49,6 +49,14 @@ pub export fn kaguya_runtime_free(pointer: *u8) {
 
 pub fn live_allocations() -> u64 { unsafe { LIVE } }
 
+pub fn clear() {
+    unsafe {
+        let flags = sync.jihoo_lock_acquire(&SCREEN_LOCK)
+        if SCREEN_READY { console.jihoo_console_clear(&SCREEN, 0) }
+        sync.jihoo_lock_release(&SCREEN_LOCK, flags & 0x200 != 0)
+    }
+}
+
 pub fn init_console(base: *u32, stride: u64, width: u64, height: u64, format: u32) {
     var surface = framebuffer.Framebuffer { base: base, stride: stride, width: width, height: height }
     unsafe {

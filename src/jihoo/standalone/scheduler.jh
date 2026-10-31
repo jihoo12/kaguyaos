@@ -11,12 +11,16 @@ import kef
 import file_table
 import shared
 import std.utf8
+import std.uefi
+import usb
 
 extern fn jihoo_probe_data() -> *u8
 extern fn jihoo_probe_size() -> u64
 extern fn jihoo_wait_interrupt()
+extern fn jihoo_program_count() -> u64
+extern fn jihoo_program_table() -> *u64
 
-export fn kaguya_console_read(output: *u8, length: u64) -> i64 { 0 }
+export fn kaguya_console_read(output: *u8, length: u64) -> i64 { usb.read(output, length) }
 export fn kaguya_console_write(input: *u8, length: u64) -> i64 {
     unsafe { runtime.output(make_str(input, length as i64)) }
     length as i64
@@ -31,13 +35,17 @@ fn user_range(pointer: u64, length: u64) -> bool {
 }
 
 pub fn spawn(name: str, arguments: str, files: shared.Shared(file_table.FileTable)) -> u64 {
+    task.collect()
     let bytes = unsafe { (*storage.volume()).lock().read_file(name) }
     match bytes {
         Ok(data) => {
             if data.len() == 0 { return 0xffffffffffffffff }
             let address_space = match space.AddressSpace.new(memory.root()) { Some(value) => value, None => return 0xffffffffffffffff }
             match kef.load(unsafe { &data[0] }, data.len() as u64, address_space, arguments) {
-                Ok(image) => task.add_user(image.entry, image.stack, image.arguments, image.argument_count, address_space, files)
+                Ok(image) => {
+                    println("[kef] loaded " + (data.len() as u64).to_string().as_str() + " bytes, " + frame.jihoo_pool_in_use().to_string().as_str() + " frames in use")
+                    task.add_user(image.entry, image.stack, image.arguments, image.argument_count, address_space, files)
+                }
                 Err(_) => 0xffffffffffffffff
             }
         }
@@ -46,6 +54,19 @@ pub fn spawn(name: str, arguments: str, files: shared.Shared(file_table.FileTabl
 }
 
 pub fn dispatch(id: u64, a: u64, b: u64, c: u64, d: u64, e: u64) -> u64 {
+    if id == 7 {
+        usb.shutdown()
+        runtime.output("Shutdown: requesting UEFI power off\n")
+        uefi.reset(2, 0)
+    }
+    if id == 9 { runtime.clear(); return 0 }
+    if id == 12 { return list(a, b) }
+    if id == 15 {
+        if b == 0 || b > 47 || !user_range(a, b) { return (-2 as i64) as u64 }
+        let name = unsafe { make_str(a as *u8, b as i64) }
+        if utf8.validate(name).is_err() { return (-2 as i64) as u64 }
+        return unsafe { match (*storage.volume()).lock().deref_mut().delete(name) { Ok(()) => 0, Err(error) => error as u64 } }
+    }
     if id == 5 { task.exit(a) }
     if id == 4 { task.schedule(); return 0 }
     if id == 16 { return task.status(a) }
@@ -89,6 +110,52 @@ pub fn dispatch(id: u64, a: u64, b: u64, c: u64, d: u64, e: u64) -> u64 {
     }
     if id == 36 { return match files.kind(a) { Ok(kind) => kind, Err(error) => error as u64 } }
     0xffffffffffffffff
+}
+
+fn list(pointer: u64, capacity: u64) -> u64 {
+    let entries = unsafe { (*storage.volume()).lock().list() }
+    match entries {
+        Ok(files) => {
+            if pointer != 0 && capacity != 0 {
+                if pointer & 7 != 0 || capacity > 0x7fffffffffffffff / 64 || !user_range(pointer, capacity * 64) { return (-2 as i64) as u64 }
+                unsafe {
+                    for i in 0..min(capacity, files.len() as u64) as i64 {
+                        let entry = (pointer + i as u64 * 64) as *u8
+                        mem_fill(entry, 0, 64)
+                        let name = files[i].name.as_str()
+                        let length = min(name.len, 47)
+                        mem_copy(entry, name.ptr, length)
+                        entry[47] = length as u8
+                        write((entry + 48) as *u64, files[i].size)
+                        write((entry + 56) as *u16, files[i].first_cluster)
+                    }
+                }
+            }
+            files.len() as u64
+        }
+        Err(error) => error as u64
+    }
+}
+
+pub fn shell() -> never {
+    unsafe {
+        let programs = jihoo_program_table()
+        for i in 0..jihoo_program_count() as i64 {
+            let entry = programs + i * 4
+            let name = make_str(entry[0] as *u8, entry[1] as i64)
+            (*storage.volume()).lock().deref_mut().create(name, entry[2] as *u8, entry[3]).unwrap()
+        }
+        processor.init(0, 0)
+        task.init()
+        task.enter_idle()
+        let files = file_table.FileTable.with_console((*storage.volume()).clone())
+        if spawn("init.kef", "", files) == 0xffffffffffffffff { panic("shell load failed") }
+        loop {
+            usb.poll()
+            task.schedule()
+            jihoo_wait_interrupt()
+        }
+    }
 }
 
 fn run(arguments: str, expected: u64) {

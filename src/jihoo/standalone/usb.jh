@@ -1,0 +1,56 @@
+import xhci
+import task
+import sync
+import runtime
+
+const WAIT_KEY: u64 = 0xfffffffffffffffd
+static LOCK: u8 = 0
+static WAITERS: u64 = 0
+static ENABLED: bool = false
+
+export fn kaguya_xhci_log(bytes: *u8, length: u64) { unsafe { runtime.output(make_str(bytes, length as i64)) } }
+
+pub fn init(index: u64) {
+    xhci.init(index)
+    unsafe { ENABLED = true }
+    println("USB: controller #" + index.to_string().as_str() + ": " + xhci.keyboard_count().to_string().as_str() + " boot keyboard(s) ready")
+}
+
+pub fn available(output: *u8, length: u64) -> u64 {
+    unsafe {
+        let flags = sync.jihoo_lock_acquire(&LOCK)
+        xhci.process_events()
+        var count: u64 = 0
+        while count < length {
+            match xhci.get_key() { Some(byte) => { output[count as i64] = byte; count += 1 }, None => break }
+        }
+        sync.jihoo_lock_release(&LOCK, flags & 0x200 != 0)
+        count
+    }
+}
+
+pub fn read(output: *u8, length: u64) -> i64 {
+    if length == 0 || !unsafe { ENABLED } { return 0 }
+    loop {
+        let generation = task.kaguya_event_generation(WAIT_KEY)
+        let count = available(output, length)
+        if count > 0 { return count as i64 }
+        unsafe { atomic_add(&WAITERS, 1) }
+        task.kaguya_wait_event(WAIT_KEY, 0, generation)
+        unsafe { atomic_sub(&WAITERS, 1) }
+    }
+}
+
+pub fn poll() {
+    unsafe {
+        if !ENABLED || atomic_load(&WAITERS) == 0 { return }
+        let flags = sync.jihoo_lock_try(&LOCK)
+        if flags == 0xffffffffffffffff { return }
+        xhci.process_events()
+        let ready = xhci.has_key()
+        sync.jihoo_lock_release(&LOCK, flags & 0x200 != 0)
+        if ready { task.kaguya_wake_event(WAIT_KEY) }
+    }
+}
+
+pub fn shutdown() { xhci.shutdown() }

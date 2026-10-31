@@ -47,3 +47,8 @@ jihoo_irq_enable:
 jihoo_pause:
     pause
     ret
+
+.globl jihoo_dma_fence
+jihoo_dma_fence:
+    mfence
+    ret

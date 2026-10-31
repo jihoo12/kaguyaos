@@ -1,0 +1,20 @@
+import xhci_ring as ring
+import hid_keyboard
+
+extern fn kaguya_kernel_panic(message: *u8, length: u64) -> never
+#[panic_handler]
+fn on_panic(message: str) -> never { unsafe { kaguya_kernel_panic(message.ptr, message.len as u64) } }
+
+static RING: ring.Ring = zeroed(ring.Ring)
+static KEYBOARD: hid_keyboard.Keyboard = zeroed(hid_keyboard.Keyboard)
+export fn jihoo_usb_ring_init(base: *ring.Trb, bytes: u64) { unsafe { RING = ring.Ring.new(base, bytes) } }
+export fn jihoo_usb_enqueue(parameter: u64, status: u32, control: u32) -> u64 {
+    unsafe { RING.enqueue(ring.Trb { parameter: parameter, status: status, control: control }) }
+}
+export fn jihoo_usb_contains(pointer: u64) -> bool { unsafe { RING.contains(pointer) } }
+export fn jihoo_usb_neutral(value: u32) -> u32 { ring.neutral_port(value) }
+export fn jihoo_usb_report(bytes: *u8) {
+    unsafe { var report: [u8; 8] = [0; 8]; for i in 0..8 { report[i] = bytes[i] }; KEYBOARD.report(report) }
+}
+export fn jihoo_usb_key() -> i32 { unsafe { match KEYBOARD.pop() { Some(byte) => byte as i32, None => -1 } } }
+export fn jihoo_usb_ascii(key: u8, modifiers: u8) -> u8 { hid_keyboard.ascii(key, modifiers) }

@@ -1,0 +1,54 @@
+extern fn jihoo_dma_fence()
+
+pub struct Trb {
+    pub parameter: u64
+    pub status: u32
+    pub control: u32
+}
+
+pub struct Ring {
+    pub base: *Trb
+    pub usable: u64
+    pub index: u64
+    pub cycle: bool
+}
+
+impl Ring {
+    pub fn new(base: *Trb, bytes: u64) -> Ring {
+        if base == null || base as u64 & 63 != 0 || bytes < 32 || bytes & 15 != 0 { panic("invalid xHCI ring") }
+        unsafe {
+            mem_fill(base as *u8, 0, bytes as i64)
+            let link = base + (bytes / 16 - 1) as i64
+            link.parameter = base as u64
+            link.control = (6 << 10) | 2
+        }
+        Ring { base: base, usable: bytes / 16 - 1, index: 0, cycle: true }
+    }
+
+    pub fn enqueue(inout self, trb: Trb) -> u64 {
+        unsafe {
+            let destination = self.base + self.index as i64
+            write_volatile(&destination.parameter, trb.parameter)
+            write_volatile(&destination.status, trb.status)
+            jihoo_dma_fence()
+            let bit: u32 = if self.cycle { 1 } else { 0 }
+            write_volatile(&destination.control, (trb.control & !1) | bit)
+            self.index += 1
+            if self.index == self.usable {
+                let link = self.base + self.usable as i64
+                write_volatile(&link.control, (6 << 10) | 2 | bit)
+                self.index = 0
+                self.cycle = !self.cycle
+            }
+            destination as u64
+        }
+    }
+
+    pub fn contains(self, pointer: u64) -> bool {
+        self.base != null && pointer >= self.base as u64 && pointer < self.base as u64 + self.usable * 16
+    }
+}
+
+pub fn neutral_port(value: u32) -> u32 {
+    value & ((15 << 5) | (1 << 9) | (3 << 14) | (7 << 25))
+}

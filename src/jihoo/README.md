@@ -537,8 +537,8 @@ Kernel-mode execution remains non-preemptive.
 file-table inheritance and syscall services for yield, exit, status, sleep,
 wait, heap growth, open/read/write/close/seek, pipes, spawn and FD kind.
 Paths, buffers, descriptor arrays and argument ranges are checked against
-the current user page tables. The console read callback currently returns
-EOF; USB/input integration and other shell syscalls remain unfinished.
+the current user page tables. At this checkpoint the console read callback returned EOF. USB input and
+additional shell syscalls are connected in the USB shell checkpoint below.
 Only a new RAM filesystem is initialized; physical disks are never opened.
 
 ```sh
@@ -555,3 +555,49 @@ counts return to baseline. Task metadata remains allocated for stable task
 indices; this does not claim constant kernel heap use across all spawns.
 AP startup, queue stealing on multiple CPUs, the full shell and device
 paths have not been tested here. The ordinary build still requires Rust.
+
+## Standalone USB shell
+
+`standalone/shell.jh` starts the existing Jihoo user shell and utilities on
+the temporary RAM volume. The build embeds all seven programs and the
+verification KEF; no Cargo/rustc invocation is required. File listing and
+deletion, screen clear and UEFI shutdown now join the descriptor syscalls.
+`task.collect()` consumes acknowledged retirements before a new load so
+completed children return their frames promptly.
+
+The xHCI port uses `xhci.jh` for controller and device state, `xhci_ring.jh`
+for DMA descriptors, and `hid_keyboard.jh` for boot reports and queued keys.
+It retains firmware ownership handoff, 32/64-byte contexts, up to 256
+scratchpads, bounded polling, power-preserving USB 2 reset, packet-size
+updates, interface/endpoint selection and first-keyboard stopping. DMA rings,
+contexts, scratchpads and reports are zeroed frame allocations retained for
+the boot lifetime; controllers without 64-bit DMA require addresses below
+4 GiB. Allocation exhaustion stops boot. `jihoo_dma_fence` supplies an x86
+memory fence around ownership and doorbell changes. `usb.jh` serializes
+polling, releases its lock before scheduler waits/wakes, and uses generation
+snapshots to avoid lost notifications. The BSP PIT and idle loop poll for
+blocked readers; AP startup is still disabled.
+
+```sh
+CC=clang bash tools/test-jihoo-usb.sh
+CC=clang bash tools/build-jihoo-kernel.sh shell
+python3 tools/gpu-smoke.py --jihoo-shell --shell-io --shutdown --output /tmp/kaguya-jihoo-standalone-shell
+python3 tools/gpu-smoke.py --jihoo-shell --resolution 2560x1440 --usb-mouse --keyboard-stress --shutdown --output /tmp/kaguya-jihoo-standalone-usb-stress
+python3 tools/gpu-smoke.py --jihoo-shell --no-keyboard --output /tmp/kaguya-jihoo-standalone-no-keyboard
+```
+
+The native C helper tests pass ring cycles, link TRBs, PORTSC writes, HID
+mapping/repeated-key/rollover behavior, queue capacity and wrap at `-O0` and
+`-O2`. QEMU passes keyboard input, file utilities, eight-stage pipelines,
+redirection/append, exec arguments, syntax errors, forty constant-frame
+executions and guest shutdown. Mouse filtering, Shift/Backspace and USB
+ring-wrap stress pass at 2560x1440; missing-keyboard boot also passes. The
+standalone diagnostic and scheduler images pass their regressions.
+
+The new image is `target/jihoo-kernel/shell/esp/EFI/BOOT/BOOTX64.EFI`.
+Select another controller with `KAGUYA_XHCI_INDEX=1` when building it.
+Physical hardware, high DMA addresses, 64-byte contexts and scratchpad-heavy
+controllers have not been exercised by this checkpoint. It does not access
+physical disks. NVMe, virtio GPU, ACPI/APIC/SMP and networking remain outside
+this standalone image; ping/wget build but their network services are not
+implemented here. The ordinary kernel still requires Rust.

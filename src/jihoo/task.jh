@@ -242,6 +242,11 @@ fn maintenance(inout scheduler: Scheduler) {
     }
 }
 
+pub fn collect() {
+    if !ready() { return }
+    unsafe { var guard = (*SCHEDULER).lock(); maintenance(&guard.deref_mut()) }
+}
+
 pub fn schedule() {
     if !ready() { return }
     unsafe {

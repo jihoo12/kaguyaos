@@ -174,3 +174,40 @@ full shell input and the remaining syscall services are still unfinished.
 The original diagnostic still stops before CPU/device initialization.
 No physical disk is connected or formatted. Ordinary OS builds still use
 Rust; complete Rust removal has not been achieved.
+
+## Standalone diskless USB shell checkpoint
+
+The separate `shell` mode now builds the kernel and all seven user programs
+without Cargo or rustc. It embeds their KEFs in the EFI, copies them only to
+the newly initialized temporary RAM volume, then boots the existing Jihoo
+ring-3 shell. `xhci.jh`, `xhci_ring.jh` and `hid_keyboard.jh` replace the Rust
+USB path for this image. Only the selected xHCI controller is enabled; its
+64 KiB MMIO window is mapped before any user address spaces are created.
+DMA pages are zeroed identity-mapped frames retained for the boot lifetime.
+Firmware handoff, 32/64-byte contexts, up to 256 scratchpads, bounded waits,
+port-power-preserving reset, HID boot protocol and first-keyboard stopping
+are carried over. Kernel allocation exhaustion stops boot.
+
+```sh
+CC=clang bash tools/test-jihoo-usb.sh
+CC=clang bash tools/build-jihoo-kernel.sh shell
+python3 tools/gpu-smoke.py --jihoo-shell --shell-io --shutdown --output /tmp/kaguya-jihoo-standalone-shell
+```
+
+QEMU passes USB keyboard input, file create/read/overwrite/delete, eight-stage
+pipelines, input/output/append redirection, exec arguments, syntax errors,
+forty sequential executions with constant frame usage, and guest shutdown.
+A second run at 2560x1440 passes mouse filtering, Shift/Backspace and thirty
+help commands wrapping the USB rings. No-keyboard boot passes too. Logs and
+screenshots are in `/tmp/kaguya-jihoo-standalone-shell`,
+`/tmp/kaguya-jihoo-standalone-usb-stress` and
+`/tmp/kaguya-jihoo-standalone-no-keyboard`. The original standalone diagnostic
+and scheduler regressions still pass after USB integration.
+
+The new EFI is `target/jihoo-kernel/shell/esp/EFI/BOOT/BOOTX64.EFI` and has not
+been tested on physical hardware. It uses the BSP PIT for scheduling and USB
+reader polling; APs remain off. Keep the existing physical-hardware milestone
+artifacts separate. `KAGUYA_XHCI_INDEX` selects another controller at build
+time. No physical disk is accessed or automatically formatted. NVMe, virtio
+GPU, ACPI/APIC/SMP, network services and the ordinary Rust build replacement
+remain unfinished. No new Jihoo compiler problem was found in these steps.

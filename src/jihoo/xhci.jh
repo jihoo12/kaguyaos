@@ -1,0 +1,395 @@
+import std.mem
+import xhci_ring as ring
+import hid_keyboard
+import pci
+
+extern fn kaguya_alloc_frame() -> u64
+extern fn kaguya_map_mmio(base: u64, bytes: u64) -> bool
+extern fn kaguya_xhci_log(bytes: *u8, length: u64)
+extern fn jihoo_dma_fence()
+extern fn jihoo_pause()
+
+const LIMIT: u64 = 20000000
+
+struct Context {
+    op: u64
+    runtime: u64
+    doorbells: *u32
+    commands: ring.Ring
+    events: *ring.Trb
+    dequeue: u64
+    cycle: bool
+    dcbaa: *u64
+    input: u64
+    data: u64
+    context_size: u64
+    max_ports: u32
+    dma64: bool
+    failed: bool
+    expected: u64
+    completion: u8
+    slot: u8
+    keyboards: u64
+}
+
+static CONTEXT: *Context = null
+static DEVICES: [u64; 64] = [0; 64]
+static CONTROL_RINGS: [ring.Ring; 64] = zeroed([ring.Ring; 64])
+static KEY_RINGS: [ring.Ring; 64] = zeroed([ring.Ring; 64])
+static REPORTS: [u64; 64] = [0; 64]
+static ENDPOINTS: [u8; 64] = [0; 64]
+static SPEEDS: [u32; 64] = [0; 64]
+static KEYS: hid_keyboard.Keyboard = zeroed(hid_keyboard.Keyboard)
+
+fn log(message: str) { unsafe { kaguya_xhci_log(message.ptr, message.len as u64) } }
+fn read32(address: u64) -> u32 { unsafe { read_volatile(address as *u32) } }
+fn write32(address: u64, value: u32) { unsafe { write_volatile(address as *u32, value) } }
+fn write64(address: u64, value: u64) { unsafe { write_volatile(address as *u64, value) } }
+
+fn wait_register(address: u64, mask: u32, expected: u32) -> bool {
+    for _ in 0..LIMIT as i64 {
+        if read32(address) & mask == expected { return true }
+        unsafe { jihoo_pause() }
+    }
+    false
+}
+
+fn required_page(dma64: bool) -> u64 {
+    let address = unsafe { kaguya_alloc_frame() }
+    if address == 0 || (!dma64 && address > 0xfffff000) { panic("xHCI DMA allocation failed") }
+    address
+}
+
+fn ring_doorbell(slot: u8, endpoint: u8) {
+    unsafe { jihoo_dma_fence(); write_volatile(CONTEXT.doorbells + slot as i64, endpoint as u32) }
+}
+
+fn command(parameter: u64, kind: u32, slot: u8) -> bool {
+    unsafe {
+        CONTEXT.completion = 0
+        CONTEXT.slot = 0
+        CONTEXT.expected = CONTEXT.commands.enqueue(ring.Trb { parameter: parameter, status: 0,
+                                                               control: (kind << 10) | (slot as u32 << 24) })
+        ring_doorbell(0, 0)
+    }
+    wait_completion()
+}
+
+fn queue_report(slot: u8) {
+    unsafe {
+        let index = slot as i64 - 1
+        KEY_RINGS[index].enqueue(ring.Trb { parameter: REPORTS[index], status: 8, control: (1 << 10) | (1 << 5) })
+        ring_doorbell(slot, ENDPOINTS[index])
+    }
+}
+
+pub fn process_events() {
+    unsafe {
+        let ctx = CONTEXT
+        if ctx == null || ctx.failed { return }
+        for _ in 0..256 {
+            let entry = ctx.events + ctx.dequeue as i64
+            let control = read_volatile(&entry.control)
+            if (control & 1 != 0) != ctx.cycle { break }
+            jihoo_dma_fence()
+            let parameter = read_volatile(&entry.parameter)
+            let status = read_volatile(&entry.status)
+            let kind = (control >> 10) & 63
+            let slot = (control >> 24) as u8
+            let code = (status >> 24) as u8
+            if kind == 33 && parameter == ctx.expected { ctx.completion = code; ctx.slot = slot }
+            if kind == 32 {
+                let keyboard = slot > 0 && slot <= 64 && KEY_RINGS[slot as i64 - 1].contains(parameter)
+                if keyboard {
+                    if code == 1 && status & 0xffffff == 0 {
+                        let report = REPORTS[slot as i64 - 1] as *u8
+                        var bytes: [u8; 8] = [0; 8]
+                        for i in 0..8 { bytes[i] = read_volatile(report + i) }
+                        KEYS.report(bytes)
+                        queue_report(slot)
+                    } else if code == 6 { log("xHCI: Keyboard endpoint stalled; reconnect and reboot required\n") }
+                } else if parameter == ctx.expected { ctx.completion = code }
+            }
+            ctx.dequeue += 1
+            if ctx.dequeue == 256 { ctx.dequeue = 0; ctx.cycle = !ctx.cycle }
+        }
+        write64(ctx.runtime + 0x38, (ctx.events as u64 + ctx.dequeue * 16) | 8)
+    }
+}
+
+fn wait_completion() -> bool {
+    for _ in 0..LIMIT as i64 {
+        process_events()
+        unsafe {
+            if CONTEXT.completion != 0 { return CONTEXT.completion == 1 }
+            jihoo_pause()
+        }
+    }
+    log("xHCI: command/transfer timeout; controller disabled for this boot\n")
+    shutdown()
+    unsafe { CONTEXT.failed = true }
+    false
+}
+
+fn control(slot: u8, setup: [u8; 8], data: u64, bytes: u16, incoming: bool) -> bool {
+    unsafe {
+        if CONTEXT.failed || slot == 0 || slot > 64 { return false }
+        let transfer = &CONTROL_RINGS[slot as i64 - 1]
+        var packet: u64 = 0
+        for i in 0..8 { packet |= setup[i] as u64 << (i * 8) }
+        var flags: u32 = (2 << 10) | (1 << 6)
+        if bytes != 0 { flags |= (if incoming { 3 } else { 2 }) << 16 }
+        transfer.enqueue(ring.Trb { parameter: packet, status: 8, control: flags })
+        if bytes != 0 {
+            let direction: u32 = if incoming { 1 << 16 } else { 0 }
+            transfer.enqueue(ring.Trb { parameter: data, status: bytes as u32, control: (3 << 10) | direction })
+        }
+        let direction: u32 = if incoming && bytes != 0 { 0 } else { 1 << 16 }
+        CONTEXT.completion = 0
+        CONTEXT.expected = transfer.enqueue(ring.Trb { parameter: 0, status: 0, control: (4 << 10) | (1 << 5) | direction })
+        ring_doorbell(slot, 1)
+    }
+    wait_completion()
+}
+
+fn input(index: u64) -> u64 { unsafe { CONTEXT.input + index * CONTEXT.context_size } }
+fn copy_context(source: u64, destination: u64) {
+    unsafe {
+        for i in 0..CONTEXT.context_size as i64 { (destination as *u8)[i] = read_volatile(source as *u8 + i) }
+    }
+}
+
+fn configure_keyboard(slot: u8, endpoint: u8, packet: u16, interval: u8, configuration: u8, interface: u8) {
+    if !control(slot, [0, 9, configuration, 0, 0, 0, 0, 0], 0, 0, false) { return }
+    control(slot, [0x21, 10, 0, 0, interface, 0, 0, 0], 0, 0, false)
+    if !control(slot, [0x21, 11, 0, 0, interface, 0, 0, 0], 0, 0, false) { return }
+    unsafe {
+        let index = slot as i64 - 1
+        var exponent: u32 = 0
+        if SPEEDS[index] == 3 {
+            if interval > 16 { return }
+            exponent = interval as u32 - 1
+        } else {
+            var value = interval as u32
+            while value > 1 { value >>= 1; exponent += 1 }
+            exponent += 3
+        }
+        let ring_base = required_page(CONTEXT.dma64)
+        KEY_RINGS[index] = ring.Ring.new(ring_base as *ring.Trb, 4096)
+        REPORTS[index] = required_page(CONTEXT.dma64)
+        mem_fill(input(0) as *u8, 0, 4096)
+        write32(input(0) + 4, 1 | (1 << endpoint))
+        copy_context(DEVICES[index], input(1))
+        write32(input(1), (read32(input(1)) & !(31 << 27)) | (endpoint as u32 << 27))
+        let ep = input(endpoint as u64 + 1)
+        write32(ep, exponent << 16)
+        write32(ep + 4, (7 << 3) | (packet as u32 << 16) | 6)
+        write64(ep + 8, ring_base | 1)
+        write32(ep + 16, 8 | (packet as u32 << 16))
+        if !command(input(0), 12, slot) { log("xHCI: configure endpoint failed\n"); return }
+        ENDPOINTS[index] = endpoint
+        CONTEXT.keyboards += 1
+        log("xHCI: boot keyboard ready\n")
+        queue_report(slot)
+    }
+}
+
+fn describe(slot: u8) {
+    unsafe {
+        let buffer = CONTEXT.data as *u8
+        mem_fill(buffer, 0, 4096)
+        if !control(slot, [0x80, 6, 0, 1, 0, 0, 18, 0], buffer as u64, 18, true) { return }
+        let packet = buffer[7] as u32
+        if packet != 8 && packet != 16 && packet != 32 && packet != 64 { return }
+        if SPEEDS[slot as i64 - 1] == 1 && packet != 8 {
+            mem_fill(input(0) as *u8, 0, 4096)
+            write32(input(0) + 4, 2)
+            copy_context(DEVICES[slot as i64 - 1] + CONTEXT.context_size, input(2))
+            write32(input(2) + 4, (read32(input(2) + 4) & 0xffff) | (packet << 16))
+            if !command(input(0), 13, slot) { return }
+        }
+        mem_fill(buffer, 0, 4096)
+        if !control(slot, [0x80, 6, 0, 2, 0, 0, 9, 0], buffer as u64, 9, true) { return }
+        let length = buffer[2] as u16 | (buffer[3] as u16 << 8)
+        if length < 9 || length > 4096 { log("xHCI: invalid config length\n"); return }
+        mem_fill(buffer, 0, 4096)
+        if !control(slot, [0x80, 6, 0, 2, 0, 0, length as u8, (length >> 8) as u8], buffer as u64, length, true) { return }
+        let configuration = buffer[5]
+        var interface: Option(u8) = None
+        var offset: i64 = 0
+        while offset + 2 <= length as i64 {
+            let bytes = buffer[offset] as i64
+            let kind = buffer[offset + 1]
+            if bytes < 2 || offset + bytes > length as i64 { log("xHCI: malformed descriptor\n"); return }
+            if kind == 4 {
+                interface = None
+                if bytes >= 9 && buffer[offset + 3] == 0 && buffer[offset + 5] == 3 &&
+                    buffer[offset + 6] == 1 && buffer[offset + 7] == 1 { interface = Some(buffer[offset + 2]) }
+            } else if kind == 5 && bytes >= 7 && interface.is_some() {
+                let address = buffer[offset + 2]
+                let attributes = buffer[offset + 3]
+                let packet = buffer[offset + 4] as u16 | (buffer[offset + 5] as u16 << 8)
+                let interval = buffer[offset + 6]
+                if address & 0x80 != 0 && address & 15 != 0 && attributes & 3 == 3 &&
+                    packet >= 8 && packet <= 1024 && interval != 0 {
+                    configure_keyboard(slot, (address & 15) * 2 + 1, packet, interval, configuration, interface.unwrap())
+                    return
+                }
+            }
+            offset += bytes
+        }
+        log("xHCI: no supported boot keyboard interface (hubs unsupported)\n")
+    }
+}
+
+fn address_device(slot: u8, port: u8, speed: u32) {
+    unsafe {
+        let index = slot as i64 - 1
+        SPEEDS[index] = speed
+        DEVICES[index] = required_page(CONTEXT.dma64)
+        let transfer = required_page(CONTEXT.dma64)
+        CONTROL_RINGS[index] = ring.Ring.new(transfer as *ring.Trb, 4096)
+        mem_fill(input(0) as *u8, 0, 4096)
+        write32(input(0) + 4, 3)
+        write32(input(1), (1 << 27) | (speed << 20))
+        write32(input(1) + 4, port as u32 << 16)
+        let packet: u32 = if speed == 3 { 64 } else { 8 }
+        write32(input(2) + 4, (4 << 3) | (packet << 16) | 6)
+        write64(input(2) + 8, transfer | 1)
+        write32(input(2) + 16, 8)
+        write_volatile(CONTEXT.dcbaa + slot as i64, DEVICES[index])
+        if command(input(0), 11, slot) { describe(slot) }
+    }
+}
+
+fn elapsed(start: u32, current: u32) -> u32 { ((current & 0x3fff) + 0x4000 - (start & 0x3fff)) & 0x3fff }
+
+fn poll_ports() {
+    unsafe {
+        for i in 0..CONTEXT.max_ports as i64 {
+            if CONTEXT.failed { return }
+            let port = CONTEXT.op + 0x400 + i as u64 * 16
+            let state = read32(port)
+            if state & 1 == 0 || (state >> 10) & 15 >= 4 { continue }
+            write32(port, ring.neutral_port(state) | (1 << 4) | (1 << 21))
+            let start = read32(CONTEXT.runtime)
+            var ready = false
+            for _ in 0..LIMIT as i64 {
+                let state = read32(port)
+                if state & 19 == 3 { ready = true; break }
+                if state & 1 == 0 || elapsed(start, read32(CONTEXT.runtime)) >= 8000 { break }
+                jihoo_pause()
+            }
+            if !ready { log("xHCI: port reset timeout\n"); continue }
+            let start = read32(CONTEXT.runtime)
+            ready = false
+            for _ in 0..LIMIT as i64 {
+                if elapsed(start, read32(CONTEXT.runtime)) >= 80 { ready = true; break }
+                jihoo_pause()
+            }
+            if !ready { log("xHCI: reset recovery clock stalled\n"); continue }
+            write32(port, ring.neutral_port(read32(port)) | (1 << 21))
+            let state = read32(port)
+            let speed = (state >> 10) & 15
+            if state & 2 == 0 || speed < 1 || speed > 3 { continue }
+            if command(0, 9, 0) {
+                let slot = CONTEXT.slot
+                log("xHCI: Assigned Slot ID: " + (slot as u64).to_string().as_str() + "\n")
+                if slot > 0 && slot <= 64 { address_device(slot, (i + 1) as u8, speed) }
+                if CONTEXT.keyboards != 0 {
+                    log("xHCI: first boot keyboard ready; stopping port enumeration\n")
+                    return
+                }
+            }
+        }
+    }
+}
+
+pub fn init(index: u64) {
+    unsafe {
+        if CONTEXT != null { panic("xHCI already initialized") }
+        var device: pci.Device = zeroed(pci.Device)
+        if !pci.jihoo_pci_find_xhci(index, &device) { log("USB: selected xHCI controller not found\n"); return }
+        if device.bar0 & 1 != 0 { log("USB: I/O BAR unsupported\n"); return }
+        let base = pci.jihoo_pci_bar0(device.bar0, device.bar1)
+        if base == 0 || base & 4095 != 0 || base > 0x00007fffffff0000 || !kaguya_map_mmio(base, 65536) { log("USB: invalid MMIO BAR\n"); return }
+        let command = pci.jihoo_pci_read16(device.bus, device.device, device.function, 4)
+        pci.jihoo_pci_write32(device.bus, device.device, device.function, 4, command as u32 | 6 | (1 << 10))
+        let length = read_volatile(base as *u8) as u64
+        let runtime = read32(base + 0x18) as u64 & 0xffffffe0
+        let doorbell = read32(base + 0x14) as u64 & 0xfffffffc
+        if length < 0x20 || length + 0x400 + 255 * 16 > 65536 || runtime + 64 > 65536 || doorbell + 1024 > 65536 {
+            log("xHCI: unsupported register layout\n"); return
+        }
+        let capability = read32(base + 0x10)
+        var extended = (capability >> 16) as u64 * 4
+        for _ in 0..256 {
+            if extended == 0 { break }
+            if extended + 8 > 65536 { log("xHCI: extended capability out of range\n"); return }
+            let value = read32(base + extended)
+            if value & 255 == 1 {
+                write32(base + extended, value | (1 << 24))
+                if !wait_register(base + extended, 1 << 16, 0) { log("xHCI: firmware ownership timeout\n"); return }
+                write32(base + extended + 4, 0xe0000000)
+            }
+            let next = ((value >> 8) & 255) as u64 * 4
+            if next == 0 { extended = 0; break }
+            extended += next
+        }
+        if extended != 0 { log("xHCI: extended capability chain too long\n"); return }
+        let op = base + length
+        if !wait_register(op + 4, 1 << 11, 0) { log("xHCI: initial ready timeout\n"); return }
+        write32(op, read32(op) & !5)
+        if !wait_register(op + 4, 1, 1) { log("xHCI: halt timeout\n"); return }
+        write32(op, 2)
+        if !wait_register(op, 2, 0) || !wait_register(op + 4, 1 << 11, 0) { log("xHCI: reset timeout\n"); return }
+        if read32(op + 8) & 1 == 0 { log("xHCI: 4 KiB pages unsupported\n"); return }
+        let dma64 = capability & 1 != 0
+        let commands = required_page(dma64)
+        let events = required_page(dma64)
+        let dcbaa = required_page(dma64)
+        let segments = required_page(dma64)
+        let context_size: u64 = if capability & 4 != 0 { 64 } else { 32 }
+        let parameters = read32(base + 4)
+        write32(op + 0x38, (read32(op + 0x38) & !255) | min(parameters & 255, 64))
+        let commands = ring.Ring.new(commands as *ring.Trb, 4096)
+        write64(op + 0x18, commands.base as u64 | 1)
+        let parameters2 = read32(base + 8)
+        let scratchpads = (((parameters2 >> 21) & 31) << 5) | ((parameters2 >> 27) & 31)
+        if scratchpads > 256 { log("xHCI: scratchpad count exceeds 256\n"); return }
+        if scratchpads != 0 {
+            let array = required_page(dma64) as *u64
+            for i in 0..scratchpads as i64 { write_volatile(array + i, required_page(dma64)) }
+            write64(dcbaa, array as u64)
+        }
+        write64(op + 0x30, dcbaa)
+        write64(segments, events)
+        write32(segments + 8, 256)
+        write32(base + runtime + 0x20, 0)
+        write32(base + runtime + 0x28, 1)
+        write64(base + runtime + 0x30, segments)
+        write64(base + runtime + 0x38, events)
+        let context = mem.alloc(Context, 1)
+        write(context, Context { op: op, runtime: base + runtime, doorbells: (base + doorbell) as *u32,
+            commands: commands, events: events as *ring.Trb, dequeue: 0, cycle: true, dcbaa: dcbaa as *u64,
+            input: required_page(dma64), data: required_page(dma64), context_size: context_size,
+            max_ports: parameters >> 24, dma64: dma64, failed: false, expected: 0, completion: 0, slot: 0, keyboards: 0 })
+        CONTEXT = context
+        jihoo_dma_fence()
+        write32(op, read32(op) | 1)
+        if !wait_register(op + 4, 1, 0) { log("xHCI: start timeout\n"); CONTEXT.failed = true; return }
+        log("xHCI: Controller started\n")
+        poll_ports()
+    }
+}
+
+pub fn keyboard_count() -> u64 { unsafe { if CONTEXT == null { 0 } else { CONTEXT.keyboards } } }
+pub fn has_key() -> bool { unsafe { KEYS.has_key() } }
+pub fn get_key() -> Option(u8) { unsafe { KEYS.pop() } }
+pub fn shutdown() {
+    unsafe {
+        if CONTEXT == null { return }
+        write32(CONTEXT.op, read32(CONTEXT.op) & !1)
+        if !wait_register(CONTEXT.op + 4, 1, 1) { log("xHCI: Shutdown timeout\n") }
+    }
+}

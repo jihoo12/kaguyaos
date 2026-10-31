@@ -453,14 +453,19 @@ bounds, and rebuilding an empty filesystem for a new session.
 
 The complete Rust-free port is in progress; ordinary builds still use Rust.
 See [the migration tracker](docs/jihoo-full-port.md) for the verified scope.
-The standalone Jihoo scheduler checkpoint builds without Cargo or rustc:
+The standalone Jihoo diskless USB shell builds the kernel and all seven
+user programs without Cargo or rustc:
 
 ```bash
-CC=clang bash tools/build-jihoo-kernel.sh scheduler-test
-python3 tools/gpu-smoke.py --scheduler-test --output /tmp/kaguya-jihoo-scheduler
+CC=clang bash tools/build-jihoo-kernel.sh shell
+python3 tools/gpu-smoke.py --jihoo-shell --shell-io --shutdown --output /tmp/kaguya-jihoo-standalone-shell
 ```
 
-It tests UEFI handoff, CPU tables, memory ownership, a temporary RAM
-filesystem, scheduled ring-3 programs, descriptor I/O, blocking pipes,
-timer preemption and user-fault containment. It has no device drivers or
-interactive keyboard input yet and does not access physical disks.
+The artifact is `target/jihoo-kernel/shell/esp/EFI/BOOT/BOOTX64.EFI`.
+QEMU checks pass USB keyboard input, RAM file utilities, eight-stage
+pipelines, redirection, repeated execution, timer preemption and shutdown.
+The new image uses the BSP PIT and has not been tested on physical hardware;
+keep the original physical-hardware milestone artifacts separate. It never
+accesses physical disks. NVMe, virtio GPU, SMP and networking remain to be
+connected or ported. Ping/wget compile, but network services are unavailable
+in this standalone shell.

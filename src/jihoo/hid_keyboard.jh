@@ -1,0 +1,59 @@
+pub struct Keyboard {
+    previous: [u8; 8]
+    buffer: [u8; 256]
+    head: u64
+    tail: u64
+}
+
+pub fn ascii(key: u8, modifiers: u8) -> u8 {
+    let shifted = modifiers & 0x22 != 0
+    if key >= 4 && key <= 29 { return (if shifted { 'A' } else { 'a' }) + key - 4 }
+    let plain = "1234567890"
+    let shift = "!@#$%^&*()"
+    if key >= 30 && key <= 39 {
+        let index = key as i64 - 30
+        return if shifted { shift[index] } else { plain[index] }
+    }
+    if key >= 45 && key <= 56 && key != 50 {
+        let plain = "-=[]\\#;'`,./"
+        let shift = "_+{}|#:\"~<>?"
+        let index = key as i64 - 45
+        return if shifted { shift[index] } else { plain[index] }
+    }
+    match key { 40 => 10, 41 => 27, 42 => 8, 43 => 9, 44 => 32,
+                79 => 0x80, 80 => 0x81, 81 => 0x82, 82 => 0x83, _ => 0 }
+}
+
+impl Keyboard {
+    pub fn new() -> Keyboard { Keyboard { previous: [0; 8], buffer: [0; 256], head: 0, tail: 0 } }
+
+    pub fn report(inout self, bytes: [u8; 8]) {
+        var rollover = false
+        for i in 2..8 { if bytes[i] >= 1 && bytes[i] <= 3 { rollover = true } }
+        if !rollover {
+            for i in 2..8 {
+                let key = bytes[i]
+                if key <= 3 { continue }
+                var repeated = false
+                for j in 2..8 { if self.previous[j] == key { repeated = true } }
+                if repeated { continue }
+                let byte = ascii(key, bytes[0])
+                let next = (self.head + 1) % 256
+                if byte != 0 && next != self.tail {
+                    self.buffer[self.head as i64] = byte
+                    self.head = next
+                }
+            }
+        }
+        self.previous = bytes
+    }
+
+    pub fn has_key(self) -> bool { self.head != self.tail }
+
+    pub fn pop(inout self) -> Option(u8) {
+        if self.head == self.tail { return None }
+        let byte = self.buffer[self.tail as i64]
+        self.tail = (self.tail + 1) % 256
+        Some(byte)
+    }
+}

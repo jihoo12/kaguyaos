@@ -23,6 +23,7 @@ parser.add_argument('--usb-mouse', action='store_true', help='Add a mouse before
 parser.add_argument('--no-keyboard', action='store_true', help='Hardware-shell boot with an empty xHCI controller')
 parser.add_argument('--resolution', help='Preferred GOP resolution, e.g. 2560x1440 (GOP only)')
 parser.add_argument('--hardware-shell', action='store_true', help='Test diskless ring-3 shell with a USB keyboard')
+parser.add_argument('--jihoo-shell', action='store_true', help='Test the standalone Jihoo diskless USB shell')
 parser.add_argument('--shell-io', action='store_true', help='Check diskless shell pipes, redirection and exec arguments')
 parser.add_argument('--network', action='store_true', help='Check ping and wget against a local HTTP fixture')
 parser.add_argument('--disk-image', type=Path, help='Use a prepared NVMe image instead of nvme.img')
@@ -35,6 +36,10 @@ parser.add_argument('--scheduler-test', action='store_true', help='Test standalo
 parser.add_argument('--backend', choices=['virtio', 'gop'], default='virtio')
 parser.add_argument('--output', type=Path, default=Path('/tmp/kaguya-gpu-smoke'))
 args = parser.parse_args()
+if args.jihoo_shell:
+    if args.hardware_shell or args.hardware_test or args.cpu_test or args.ring3_test or args.filesystem_test or args.scheduler_test:
+        parser.error('choose jihoo-shell or another boot mode')
+    args.hardware_shell = True
 if args.scheduler_test:
     if args.filesystem_test or args.ring3_test or args.cpu_test or args.hardware_test or args.hardware_shell:
         parser.error('choose scheduler-test or another boot mode')
@@ -116,6 +121,8 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
         kernel = 'target/jihoo-kernel/scheduler-test/os.efi'
     if args.hardware_shell:
         kernel = 'target/hardware-shell/build/x86_64-unknown-uefi/debug/os.efi'
+    if args.jihoo_shell:
+        kernel = 'target/jihoo-kernel/shell/os.efi'
     shutil.copyfile(args.kernel_image.resolve() if args.kernel_image else root / kernel, boot / 'BOOTX64.EFI')
     qmp = tmp / 'qmp.sock'
     if isolated:
@@ -405,6 +412,8 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
                     label = 'hardware-shell: no-keyboard boot passed' if args.no_keyboard else 'hardware-shell: USB keyboard, clear and help passed'
                     if args.keyboard_stress:
                         label += '; Shift, Backspace and ring-wrap stress passed'
+                if args.jihoo_shell:
+                    label = label.replace('hardware-shell:', 'jihoo-shell:')
                 print(f'{label}; artifacts: {out}')
                 if args.shutdown:
                     print('Guest-initiated shutdown passed')
