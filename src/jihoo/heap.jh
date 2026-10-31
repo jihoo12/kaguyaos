@@ -12,7 +12,7 @@ static LARGE: *Block = null
 static ARENA: u64 = 0
 static END: u64 = 0
 
-export fn jihoo_heap_init(start: u64, size: u64) {
+pub export fn jihoo_heap_init(start: u64, size: u64) {
     unsafe {
         for i in 0..10 { FREE[i] = null }
         LARGE = null
@@ -99,7 +99,7 @@ unsafe fn alloc_small(bucket: i64) -> *u8 {
     slab + 8
 }
 
-export fn jihoo_heap_alloc(size: u64, alignment: u64) -> *u8 {
+pub export fn jihoo_heap_alloc(size: u64, alignment: u64) -> *u8 {
     if alignment == 0 || alignment & (alignment - 1) != 0 { return null }
     unsafe {
         if alignment <= 8 {
@@ -123,7 +123,7 @@ export fn jihoo_heap_alloc(size: u64, alignment: u64) -> *u8 {
     }
 }
 
-export fn jihoo_heap_free(payload: *u8) {
+pub export fn jihoo_heap_free(payload: *u8) {
     if payload == null { return }
     unsafe {
         let address = payload as u64
@@ -146,7 +146,7 @@ unsafe fn capacity(payload: *u8) -> u64 {
     tag + HEADER + block.size - address
 }
 
-export fn jihoo_heap_realloc(payload: *u8, size: u64, alignment: u64) -> *u8 {
+pub export fn jihoo_heap_realloc(payload: *u8, size: u64, alignment: u64) -> *u8 {
     let next = jihoo_heap_alloc(size, alignment)
     if next != null && payload != null {
         unsafe {

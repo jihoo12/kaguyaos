@@ -113,6 +113,7 @@ pub unsafe fn init(start: usize, size: usize) {
         unsafe { jihoo_heap_init(start, size) };
     }
     crate::println!("Kernel heap initialised at {:#x}, size {}", start, size);
+    crate::jihoo::runtime::check();
 }
 
 pub unsafe fn alloc(size: usize) -> *mut u8 {

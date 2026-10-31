@@ -1,0 +1,20 @@
+pub export fn jihoo_runtime_check() -> u64 {
+    var values = Vec(u64).new()
+    for i in 0..128 { values.push((127 - i) as u64) }
+    let copied = values.clone()
+    sort(&values)
+    var sum: u64 = 0
+    for i in 0..128 {
+        if values[i] != i as u64 || copied[i] != (127 - i) as u64 { return 0 }
+        sum += values[i]
+    }
+    var names = Map(String, Box(u64)).new()
+    for i in 0..24 { names.insert(i.to_string(), Box.new(i as u64)) }
+    var text = String.from("kernel")
+    for _ in 0..100 { text.push_str(" runtime") }
+    if text.len() != 806 || names.len() != 24 { return 0 }
+    if names.get("17".to_string()).unwrap().deref() != 17 { return 0 }
+    drop(names.remove("17".to_string()))
+    if names.len() != 23 { return 0 }
+    sum
+}

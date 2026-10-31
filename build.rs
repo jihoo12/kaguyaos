@@ -41,6 +41,8 @@ fn main() {
             "-O2",
             "-mno-red-zone",
             "-mgeneral-regs-only",
+            "-I",
+            "src/jihoo/runtime",
             "src/jihoo/kernel.jh",
             "-o",
         ])

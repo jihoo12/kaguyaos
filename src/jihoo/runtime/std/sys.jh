@@ -1,0 +1,117 @@
+// Kernel std.sys adapter. No firmware or Linux calls are made here.
+import std.rt
+
+extern fn kaguya_runtime_alloc(size: u64, alignment: u64) -> *u8
+extern fn kaguya_runtime_realloc(pointer: *u8, size: u64, alignment: u64) -> *u8
+extern fn kaguya_runtime_free(pointer: *u8)
+extern fn kaguya_runtime_write(fd: i32, bytes: *u8, length: u64) -> i64
+extern fn kaguya_kernel_panic(bytes: *u8, length: u64) -> never
+
+pub fn write_fd(fd: i32, text: str) -> i64 {
+    unsafe { kaguya_runtime_write(fd, text.ptr, text.len as u64) }
+}
+
+pub fn write_err(text: str) { write_fd(2, text) }
+pub unsafe fn read_fd(fd: i32, buffer: *u8, count: i64) -> i64 { -1 }
+pub fn open_read(path: str) -> i32 { -1 }
+pub fn open_write(path: str) -> i32 { -1 }
+pub fn close(fd: i32) {}
+
+pub fn abort() -> never {
+    let message = "kernel runtime aborted"
+    unsafe { kaguya_kernel_panic(message.ptr, message.len as u64) }
+}
+
+pub fn exit(code: i32) -> never { abort() }
+
+pub unsafe fn alloc_bytes(count: i64) -> *u8 {
+    if count < 0 { panic("negative allocation size") }
+    let pointer = kaguya_runtime_alloc(count as u64, 16)
+    if pointer == null { panic("kernel allocation failed") }
+    pointer
+}
+
+pub unsafe fn free_bytes(pointer: *u8) {
+    if pointer != null { kaguya_runtime_free(pointer) }
+}
+
+pub unsafe fn realloc_bytes(pointer: *u8, count: i64) -> *u8 {
+    if count < 0 { panic("negative allocation size") }
+    let next = kaguya_runtime_realloc(pointer, count as u64, 16)
+    if next == null { panic("kernel reallocation failed") }
+    next
+}
+
+// A file descriptor to wait on, and what happened to it.
+pub struct PollFd {
+    pub fd: i32
+    pub events: i16
+    pub revents: i16
+}
+
+pub fn is_executable(path: str) -> bool {
+    false
+}
+
+pub unsafe fn read_dir_fd(fd: i32, buf: *u8, n: i64) -> i64 {
+    -1
+}
+
+pub fn remove_file(path: str) -> bool {
+    false
+}
+
+// ---- calls that report failure as minus the error number ----
+//
+// What `std.os` builds on. Standard output and error can be written; the
+// rest fails with ENOSYS.
+
+const ENOSYS: i64 = 38
+
+pub unsafe fn read_raw(fd: i32, buf: *u8, n: i64) -> i64 {
+    0 - ENOSYS
+}
+
+pub unsafe fn write_raw(fd: i32, buf: *u8, n: i64) -> i64 {
+    if fd != 1 && fd != 2 {
+        return 0 - ENOSYS
+    }
+    let r = write_fd(fd, make_str(buf, n))
+    if r < 0 { 0 - ENOSYS } else { r }
+}
+
+pub fn open_raw(path: str, flags: i32, mode: i32) -> i64 {
+    0 - ENOSYS
+}
+
+pub fn close_raw(fd: i32) -> i64 {
+    0 - ENOSYS
+}
+
+pub fn fcntl_raw(fd: i32, cmd: i32, arg: i64) -> i64 {
+    0 - ENOSYS
+}
+
+pub unsafe fn poll_raw(fds: *PollFd, n: i64, timeout_ms: i64) -> i64 {
+    0 - ENOSYS
+}
+
+pub fn pipe_raw(inout fds: [i32; 2]) -> i64 {
+    0 - ENOSYS
+}
+
+pub unsafe fn read_dir_raw(fd: i32, buf: *u8, n: i64) -> i64 {
+    0 - ENOSYS
+}
+
+pub fn unlink_raw(path: str) -> i64 {
+    0 - ENOSYS
+}
+
+pub unsafe fn spawn_raw(path: *u8, argv: **u8, envp: **u8, stdio: [i32; 3], report: i32) -> i64 {
+    0 - ENOSYS
+}
+
+pub fn wait_raw(pid: i32, inout status: i32) -> i64 {
+    0 - ENOSYS
+}
