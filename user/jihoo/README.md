@@ -148,3 +148,12 @@ The jihoo file-table owner passes native descriptor/offset/stdio inheritance,
 lifetime, capacity/rollback and close-during-blocked-write tests. It remains
 excluded from kernel builds until the real scheduler/event callbacks and
 syscall integration are connected; socket descriptors await the network port.
+
+The next scheduler step is stopped at
+[compiler issue #23](https://github.com/jihoolang/jihoo/issues/23): boxed-field
+assignment does not pass the `Option` type to `None`. Minimal native/UEFI
+cases and four executable controls confirm it on `d0b3d31`. The scheduler
+is an excluded, unverified draft; previously verified userspace, standalone
+CPU/ring-3/RAM-filesystem and native descriptor/pipe checkpoints are preserved.
+Resume scheduler checking and integration after the compiler fix. Full Rust
+removal has not been completed.

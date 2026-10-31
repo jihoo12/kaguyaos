@@ -1,0 +1,11 @@
+pub struct PerCpu {
+    pub kernel_stack: u64
+    pub user_stack: u64
+    pub scratch: u64
+    pub apic_id: u8
+    pub cpu_index: u8
+    pub current_task: u64
+    pub idle_stack: u64
+    pub ticks_left: u32
+    pub need_reschedule: bool
+}

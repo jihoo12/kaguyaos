@@ -1,0 +1,7 @@
+struct Row { value: Option(u64) }
+fn main() {
+    var row = Box.new(Row { value: Some(1) })
+    let empty: Option(u64) = None
+    row.value = empty
+    println(row.value.is_none())
+}

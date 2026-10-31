@@ -1,0 +1,7 @@
+struct Row { value: Option(u64) }
+fn main() {
+    var rows = Vec(Box(Row)).new()
+    rows.push(Box.new(Row { value: Some(1) }))
+    rows[0].value = None
+    println(rows[0].value.is_none())
+}

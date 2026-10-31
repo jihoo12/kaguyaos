@@ -507,3 +507,31 @@ This module is not yet imported by either kernel build. The native fixture
 supplies console I/O and scheduler event callbacks; actual scheduling,
 syscall/descriptor integration, and USB keyboard input remain next. Socket
 variants and network descriptor methods are deferred to the network port.
+
+## Current stop: compiler issue #23
+
+The unconnected `task.jh` draft carries task states, CPU-local queues,
+claim/steal selection, deferred runnable handoffs, acknowledged zombie
+reclamation, address-space/file-table ownership, wait generations, sleep,
+wait/exit and timer quanta. `cpu_state.jh` drafts its shared CPU record.
+Neither file is imported by either kernel; the verified standalone CPU
+record and EFI paths remain unchanged. The scheduler's assembly/runtime
+bridges, syscall integration and runtime behavior are not yet implemented
+or verified.
+
+On compiler `d0b3d3182a33e602ef687561633d6e2be9d0472b`, checking the draft fails
+at `scheduler.tasks[i].address_space = None`. A minimal `Box(Row)` case and
+`Vec(Box(Row))` case lose the `Option(u64)` field's contextual type and
+report `unknown name None`, in both native and UEFI checking. Four controls
+(local struct, raw pointer, explicit `deref_mut()`, typed RHS) compile/run
+and print `true`. See [issue #23](https://github.com/jihoolang/jihoo/issues/23)
+and its [reproductions](../../tools/jihoo-regressions/box-field-assignment/README.md).
+
+An ordinary untyped zero branch in the draft was annotated `u64` separately;
+it is not part of the compiler report. No workaround is connected. Migration
+is stopped pending the compiler fix. Then rebuild the compiler, rerun the
+reproductions/controls and `check --lib -I src/jihoo/runtime -I src/jihoo
+src/jihoo/task.jh`, resolve any remaining ordinary port errors, implement the
+bridges, and exercise real scheduling and descriptor/pipe blocking in QEMU.
+Complete Rust removal, the full standalone shell, drivers, networking and
+SMP remain unfinished.

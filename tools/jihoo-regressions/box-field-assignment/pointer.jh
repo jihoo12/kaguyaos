@@ -1,0 +1,9 @@
+struct Row { value: Option(u64) }
+fn main() {
+    var row = Row { value: Some(1) }
+    unsafe {
+        let pointer = &row
+        pointer.value = None
+    }
+    println(row.value.is_none())
+}

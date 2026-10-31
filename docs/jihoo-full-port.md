@@ -141,3 +141,23 @@ optimization levels, with full owner/wait-key cleanup. This module is still
 excluded from the kernel; its console and scheduling callbacks are native
 test fixtures. Connect real scheduler handoffs/events and the syscall table
 next. Socket variants remain part of the later network port.
+
+## Current stop: compiler issue #23
+
+The unconnected scheduler draft is `src/jihoo/task.jh`, with a draft CPU
+record in `cpu_state.jh`. It has not passed checking or runtime validation;
+architecture bridges and syscall integration still need implementation.
+Automatic boxed-field assignment loses the expected type of `None` in
+`Vec(Box(Task))`. Minimal Box/vector cases fail native and UEFI checking on
+`d0b3d31`, while local/pointer/explicit-projection/typed-RHS controls run and
+print `true`. This is reported as
+[jihoo issue #23](https://github.com/jihoolang/jihoo/issues/23), with files in
+`tools/jihoo-regressions/box-field-assignment/`.
+
+No workaround is connected. Migration is stopped as requested until the
+compiler fix. The preceding verified file-table checkpoint is `aa91345`;
+the standalone RAM-filesystem/CPU/ring-3 checkpoints remain available.
+Rebuild the compiler, rerun the cases, continue scheduler checking/bridges,
+then connect descriptor/pipe syscalls and test scheduling/blocking in QEMU.
+The ordinary OS build still requires Rust; the complete migration is not
+finished.
