@@ -166,7 +166,7 @@ Heap initialization requires the existing page-aligned region and page-multiple
 size supplied by the kernel. Firmware descriptors must satisfy the existing
 UEFI memory-map validity requirements.
 
-## Issue #19 and remaining work
+## Compiler issues and remaining work
 
 [Issue #19](https://github.com/jihoolang/jihoo/issues/19) is fixed in
 `84d4a54`. The minimal static-pointer-array null assignment (constant and
@@ -203,6 +203,33 @@ and block-I/O backends remain in Rust bridges.
 Rust ABI bridges, address-space bookkeeping, frame-source objects, CR3/TLB
 assembly, boot assembly, and UEFI setup also remain. This is not a completed
 kernel port.
+
+## Current stop: issue #20
+
+Further file-data migration stopped at
+[jihoo issue #20](https://github.com/jihoolang/jihoo/issues/20) on compiler
+commit `84d4a54a0de4a8c12f7584ee390e64083ac3a8b8`. Calling a `fnptr` field
+through a raw struct pointer, such as `callbacks.call(value)`, is rejected
+as a missing method. Calling the field on a borrowed struct, loading it
+into a local first, and explicitly dereferencing the pointer all check and
+run successfully. The three executable controls each print `42`.
+The minimal reproduction fails in both native and UEFI profiles before
+code generation. See the
+[reproduction and controls](../../tools/jihoo-regressions/fnptr-field/README.md).
+
+[drafts/fat_file_data.jh](drafts/fat_file_data.jh) preserves the unfinished
+file-data source fragment intended for the `fat.jh` module. It is not a
+standalone module, is not imported by the kernel, and has not passed
+compilation, allocator/I/O failure tests, or QEMU checks. No successful
+control has been applied as a workaround. The selected `fat.jh` and all
+other runtime sources remain those of the last completed, QEMU-verified
+migration, commit `833b1e9`.
+
+After the compiler fix, incorporate the fragment into `fat.jh`, resolve
+any remaining ordinary porting errors, connect the Rust buffer/handle
+bridge, and test cross-cluster reads/writes, sparse gaps, partial writes,
+callback errors, and the existing diskless/network regressions. Continue
+using disposable disk copies with QEMU snapshots.
 
 If a new language/compiler problem appears, reduce it, compare control
 cases, file an issue in `jihoolang/jihoo` with `gh`, and stop migration.

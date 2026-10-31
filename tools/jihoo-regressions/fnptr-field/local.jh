@@ -1,0 +1,15 @@
+struct Callbacks { call: fnptr(i64) -> i64 }
+
+export fn invoke(callbacks: *Callbacks, value: i64) -> i64 {
+    unsafe {
+        let callback = callbacks.call
+        callback(value)
+    }
+}
+
+fn increment(value: i64) -> i64 { value + 1 }
+
+fn main() {
+    var callbacks = Callbacks { call: increment }
+    println(invoke(&callbacks, 41))
+}

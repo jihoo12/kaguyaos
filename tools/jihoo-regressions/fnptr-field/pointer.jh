@@ -1,0 +1,5 @@
+struct Callbacks { call: fnptr(i64) -> i64 }
+
+export fn invoke(callbacks: *Callbacks, value: i64) -> i64 {
+    unsafe { callbacks.call(value) }
+}

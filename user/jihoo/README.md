@@ -92,3 +92,12 @@ entry/cluster/root-directory helpers. Descriptor ownership and scheduling
 waits remain in Rust bridges, as do the filesystem's higher-level file
 operations and formatting policy. Disk regressions use disposable copies
 and QEMU snapshots; unrecognized disks are not automatically formatted.
+
+Further kernel file-data migration is currently stopped at
+[jihoo issue #20](https://github.com/jihoolang/jihoo/issues/20): a function
+pointer field called through a raw struct pointer is treated as a missing
+method. The minimal reproduction fails on compiler `84d4a54`, while three
+controls check and run successfully. The new file-data fragment is excluded
+from the build; the completed userspace and kernel implementations remain
+those verified at `833b1e9`. See the kernel README for the draft and resume
+instructions.
