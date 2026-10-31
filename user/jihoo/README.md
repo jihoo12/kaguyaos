@@ -136,3 +136,10 @@ pipe handles also pass native blocking/streaming/closure-race tests with a
 mock scheduler. These owned handles are not yet connected to the kernel
 scheduler or shell descriptor tables; existing shell checkpoints continue
 using the mixed kernel's Rust ownership bridges.
+
+A standalone `filesystem-test` image now owns FAT metadata/buffers in jihoo
+and passes native memory-disk edge/failure tests plus real-heap RAM-filesystem
+and ring-3 QEMU checks. Its only formatted volume is a newly allocated
+8 MiB temporary RAM disk, mapped before process creation. It does not yet
+supply the shell's descriptor table, scheduler, USB input or storage/network
+drivers; the ordinary mixed kernel's Rust metadata path is unchanged.

@@ -122,3 +122,14 @@ partial-close/generation-race tests with complete allocation/wait-key
 cleanup. Its scheduler callbacks are still host fixtures; it is not yet
 connected to kernel scheduling or descriptor ownership. Next finish
 filesystem/descriptor ownership and the real scheduler/device integration.
+
+FAT metadata and buffer ownership are now implemented by `filesystem.jh`.
+C memory-disk tests pass at both optimization levels for formatting policy,
+metadata/slot generations, stale handles, full directories/disks, UTF-8,
+append/sparse/partial I/O and injected failures. The separate
+`filesystem-test` EFI creates only a new temporary kernel-only NX RAM disk
+before process creation, passes its real-heap filesystem checks, then passes
+all ring-3 regressions. Artifacts are in `/tmp/kaguya-jihoo-filesystem`.
+No physical/virtual disk is connected or automatically formatted. The
+standalone file table and scheduler still need integration; NVMe, USB,
+network, virtio GPU and AP startup remain to be ported/connected.

@@ -30,9 +30,14 @@ parser.add_argument('--kernel-image', type=Path, help='Use an alternate EFI arti
 parser.add_argument('--hardware-test', action='store_true', help='Test the isolated diagnostic EFI without NVMe, USB or network devices')
 parser.add_argument('--cpu-test', action='store_true', help='Test the standalone jihoo CPU/page-table EFI without disks or external devices')
 parser.add_argument('--ring3-test', action='store_true', help='Test standalone jihoo KEF execution and syscall round trips without disks')
+parser.add_argument('--filesystem-test', action='store_true', help='Test standalone jihoo RAM filesystem and ring-3 checks without disks')
 parser.add_argument('--backend', choices=['virtio', 'gop'], default='virtio')
 parser.add_argument('--output', type=Path, default=Path('/tmp/kaguya-gpu-smoke'))
 args = parser.parse_args()
+if args.filesystem_test:
+    if args.ring3_test or args.cpu_test or args.hardware_test or args.hardware_shell:
+        parser.error('choose filesystem-test, ring3-test, cpu-test, hardware-test or hardware-shell')
+    args.ring3_test = True
 if args.ring3_test:
     if args.cpu_test or args.hardware_test or args.hardware_shell:
         parser.error('choose ring3-test, cpu-test, hardware-test or hardware-shell')
@@ -100,6 +105,8 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
         kernel = 'target/jihoo-kernel/cpu-test/os.efi'
     if args.ring3_test:
         kernel = 'target/jihoo-kernel/ring3-test/os.efi'
+    if args.filesystem_test:
+        kernel = 'target/jihoo-kernel/filesystem-test/os.efi'
     if args.hardware_shell:
         kernel = 'target/hardware-shell/build/x86_64-unknown-uefi/debug/os.efi'
     shutil.copyfile(args.kernel_image.resolve() if args.kernel_image else root / kernel, boot / 'BOOTX64.EFI')
@@ -173,7 +180,7 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
                 execute('qmp_capabilities')
                 while True:
                     serial = (out / 'serial.log').read_text(errors='replace') if (out / 'serial.log').exists() else ''
-                    marker = 'RING3 TEST READY' if args.ring3_test else ('CPU TEST READY' if args.cpu_test else ('HARDWARE TEST READY' if args.hardware_test else 'kaguya>'))
+                    marker = 'FILESYSTEM TEST READY' if args.filesystem_test else ('RING3 TEST READY' if args.ring3_test else ('CPU TEST READY' if args.cpu_test else ('HARDWARE TEST READY' if args.hardware_test else 'kaguya>')))
                     if marker in serial:
                         break
                     if time.monotonic() > deadline or process.poll() is not None:
@@ -227,7 +234,12 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
                                     'Ring3: NX execution rejected and user-mode timer return passed']
                         if any(marker not in serial for marker in required):
                             raise RuntimeError('Standalone ring-3 self-check missing; see serial.log')
-                    name = 'ring3-test.png' if args.ring3_test else ('cpu-test.png' if args.cpu_test else 'hardware-test.png')
+                    if args.filesystem_test:
+                        required = ['RAM filesystem: new temporary 8 MiB volume initialized; no disk devices accessed',
+                                    'RAM filesystem: create/list/read/sparse write/delete/stale handle and cleanup passed']
+                        if any(marker not in serial for marker in required):
+                            raise RuntimeError('Standalone RAM filesystem check missing; see serial.log')
+                    name = 'filesystem-test.png' if args.filesystem_test else ('ring3-test.png' if args.ring3_test else ('cpu-test.png' if args.cpu_test else 'hardware-test.png'))
                     execute('screendump', {'filename': str(out / name), 'format': 'png'})
                     if args.hardware_shell and 'kaguya>' not in serial:
                         raise RuntimeError('Missing userspace prompt')
@@ -370,7 +382,7 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
                 else:
                     execute('quit')
                 process.wait(timeout=10)
-                label = 'ring3-test: KEF/syscall checks passed' if args.ring3_test else ('cpu-test: CPU/page-table checks passed' if args.cpu_test else ('hardware-test: diagnostic boot passed' if args.hardware_test else f'{args.backend}: boot, GPU/console and shell help passed'))
+                label = 'filesystem-test: RAM filesystem/KEF/syscall checks passed' if args.filesystem_test else ('ring3-test: KEF/syscall checks passed' if args.ring3_test else ('cpu-test: CPU/page-table checks passed' if args.cpu_test else ('hardware-test: diagnostic boot passed' if args.hardware_test else f'{args.backend}: boot, GPU/console and shell help passed')))
                 if args.hardware_shell:
                     label = 'hardware-shell: no-keyboard boot passed' if args.no_keyboard else 'hardware-shell: USB keyboard, clear and help passed'
                     if args.keyboard_stress:

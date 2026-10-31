@@ -443,3 +443,41 @@ callbacks currently come from the host test fixture. Real kernel blocking,
 file-table ownership, scheduler handoffs and pipeline regression checks
 remain to be connected and verified. The mixed kernel still owns pipes
 through its Rust bridge.
+
+## Standalone FAT metadata and RAM filesystem
+
+```sh
+CC=clang bash tools/test-jihoo-filesystem.sh
+CC=clang bash tools/build-jihoo-kernel.sh filesystem-test
+python3 tools/gpu-smoke.py --filesystem-test --output /tmp/kaguya-jihoo-filesystem
+```
+
+`filesystem.jh` owns the formerly Rust FAT orchestration: explicit format,
+create/replace/delete/open/truncate/list, per-slot generations, stale-handle
+checks, directory metadata commits, whole-file buffer ownership, append and
+sparse/partial writes. It reuses the existing jihoo FAT/data algorithms and
+synchronous block callbacks. Packed on-disk records remain raw bytes.
+The caller serializes a `Volume`; the standalone owner uses a jihoo guard.
+
+C tests pass at `-O0` and `-O2` against an 8 MiB memory disk and a four-cluster
+full-disk fixture. They check the exact boot-sector/FAT layout, unchanged
+unrecognized volumes (zero writes), multi-cluster/offset/append/sparse I/O,
+empty and oversized names, 21-byte UTF-8 names and lossy corrupt-name display,
+replace/delete/format invalidation, truncate preserving an open handle,
+root-directory capacity, full-disk partial writes, range overflow, invalid
+handles, injected read/data-write/metadata-write errors, and allocation
+cleanup. A create payload above the 32-bit on-disk size limit is explicitly
+rejected rather than truncating its recorded length.
+
+The standalone `filesystem-test` image reserves a zeroed 8 MiB RAM mapping
+in a kernel-only NX slot before making any process address space. Only this
+new temporary RAM volume is explicitly formatted. QEMU passes real-heap
+create/list/read/sparse-write/delete/stale-handle/cleanup checks, then all
+ring-3/KEF/syscall/NX/timer/reclamation checks. No disk, storage controller,
+USB, network or virtio GPU is attached/started. The ordinary mixed kernel
+still uses Rust metadata ownership; file-descriptor and real scheduler
+integration are next.
+
+Create/format failures retain the existing nontransactional behavior; this
+stage does not add crash recovery or atomic metadata commits. NVMe I/O and
+physical media have not been tested with this standalone volume owner.

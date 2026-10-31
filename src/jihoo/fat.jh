@@ -3,7 +3,7 @@ const FAT_ENTRIES: u64 = 16384
 const ROOT_START: u64 = 65
 const ROOT_ENTRIES: u64 = 256
 
-export fn jihoo_fat_read(cluster: u16, output: *u16, context: *u8,
+pub export fn jihoo_fat_read(cluster: u16, output: *u16, context: *u8,
                          read: fnptr(*u8, u64, *u8) -> i32) -> i32 {
     if cluster as u64 >= FAT_ENTRIES { return -2 }
     var sector: [u8; 512] = unsafe { zeroed([u8; 512]) }
@@ -16,7 +16,7 @@ export fn jihoo_fat_read(cluster: u16, output: *u16, context: *u8,
     0
 }
 
-export fn jihoo_fat_write(cluster: u16, value: u16, context: *u8,
+pub export fn jihoo_fat_write(cluster: u16, value: u16, context: *u8,
                           read: fnptr(*u8, u64, *u8) -> i32,
                           write: fnptr(*u8, u64, *u8) -> i32) -> i32 {
     if cluster as u64 >= FAT_ENTRIES { return -2 }
@@ -32,7 +32,7 @@ export fn jihoo_fat_write(cluster: u16, value: u16, context: *u8,
     }
 }
 
-export fn jihoo_fat_alloc(data_clusters: u32, output: *u16, context: *u8,
+pub export fn jihoo_fat_alloc(data_clusters: u32, output: *u16, context: *u8,
                           read: fnptr(*u8, u64, *u8) -> i32,
                           write: fnptr(*u8, u64, *u8) -> i32) -> i32 {
     let limit = data_clusters as u64 + 1
@@ -53,7 +53,7 @@ export fn jihoo_fat_alloc(data_clusters: u32, output: *u16, context: *u8,
     -5
 }
 
-export fn jihoo_fat_free(first: u16, context: *u8,
+pub export fn jihoo_fat_free(first: u16, context: *u8,
                          read: fnptr(*u8, u64, *u8) -> i32,
                          write: fnptr(*u8, u64, *u8) -> i32) -> i32 {
     var cluster = first
@@ -68,7 +68,7 @@ export fn jihoo_fat_free(first: u16, context: *u8,
     0
 }
 
-export fn jihoo_fat_walk(first: u16, steps: u64, previous: *u16, output: *u16,
+pub export fn jihoo_fat_walk(first: u16, steps: u64, previous: *u16, output: *u16,
                          context: *u8, read: fnptr(*u8, u64, *u8) -> i32) -> i32 {
     var cluster = first
     var prev: u16 = 0
@@ -87,7 +87,7 @@ export fn jihoo_fat_walk(first: u16, steps: u64, previous: *u16, output: *u16,
     0
 }
 
-export fn jihoo_dir_read(index: u64, output: *u8, context: *u8,
+pub export fn jihoo_dir_read(index: u64, output: *u8, context: *u8,
                          read: fnptr(*u8, u64, *u8) -> i32) -> i32 {
     if index >= ROOT_ENTRIES { return -2 }
     var sector: [u8; 512] = unsafe { zeroed([u8; 512]) }
@@ -99,7 +99,7 @@ export fn jihoo_dir_read(index: u64, output: *u8, context: *u8,
     0
 }
 
-export fn jihoo_dir_write(index: u64, input: *u8, context: *u8,
+pub export fn jihoo_dir_write(index: u64, input: *u8, context: *u8,
                           read: fnptr(*u8, u64, *u8) -> i32,
                           write: fnptr(*u8, u64, *u8) -> i32) -> i32 {
     if index >= ROOT_ENTRIES { return -2 }
@@ -113,7 +113,7 @@ export fn jihoo_dir_write(index: u64, input: *u8, context: *u8,
     }
 }
 
-export fn jihoo_dir_find(name: *u8, length: u64, output: *u8, context: *u8,
+pub export fn jihoo_dir_find(name: *u8, length: u64, output: *u8, context: *u8,
                          read: fnptr(*u8, u64, *u8) -> i32) -> i32 {
     if length == 0 || length > 21 { return -2 }
     var entry: [u8; 32] = unsafe { zeroed([u8; 32]) }
@@ -136,7 +136,7 @@ export fn jihoo_dir_find(name: *u8, length: u64, output: *u8, context: *u8,
     256
 }
 
-export fn jihoo_dir_free(context: *u8, read: fnptr(*u8, u64, *u8) -> i32) -> i32 {
+pub export fn jihoo_dir_free(context: *u8, read: fnptr(*u8, u64, *u8) -> i32) -> i32 {
     var entry: [u8; 32] = unsafe { zeroed([u8; 32]) }
     for index in 0..256 {
         let status = jihoo_dir_read(index as u64, &entry[0], context, read)
@@ -146,16 +146,16 @@ export fn jihoo_dir_free(context: *u8, read: fnptr(*u8, u64, *u8) -> i32) -> i32
     256
 }
 
-struct FileData {
-    first: u16
-    size: u32
+pub struct FileData {
+    pub first: u16
+    pub size: u32
 }
 
-struct DataIo {
-    context: *u8
-    read: fnptr(*u8, u64, u32, *u8) -> i32
-    write: fnptr(*u8, u64, u32, *u8) -> i32
-    clusters: u32
+pub struct DataIo {
+    pub context: *u8
+    pub read: fnptr(*u8, u64, u32, *u8) -> i32
+    pub write: fnptr(*u8, u64, u32, *u8) -> i32
+    pub clusters: u32
 }
 
 fn minimum(a: u64, b: u64) -> u64 { if a < b { a } else { b } }
@@ -176,7 +176,7 @@ fn write_sector(context: *u8, lba: u64, input: *u8) -> i32 {
     }
 }
 
-export fn jihoo_file_read(file: *FileData, offset: u64, output: *u8, length: u64,
+pub export fn jihoo_file_read(file: *FileData, offset: u64, output: *u8, length: u64,
                           workspace: *u8, io: *DataIo, whole: bool) -> i64 {
     unsafe {
         if offset >= file.size as u64 || length == 0 { return 0 }
@@ -251,7 +251,7 @@ unsafe fn write_range(file: *FileData, offset: u64, input: *u8, length: u64,
     0
 }
 
-export fn jihoo_file_write(file: *FileData, offset: u64, input: *u8, length: u64,
+pub export fn jihoo_file_write(file: *FileData, offset: u64, input: *u8, length: u64,
                            workspace: *u8, io: *DataIo, written: *u64) -> i32 {
     unsafe {
         *written = 0

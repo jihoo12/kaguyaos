@@ -2,6 +2,7 @@ import frame
 import paging
 import sync
 import runtime
+import processor
 
 extern fn jihoo_read_cr3() -> u64
 extern fn jihoo_write_cr3(root: u64)
@@ -31,6 +32,16 @@ export fn allocate_table(context: *u8) -> u64 { kaguya_alloc_frame() }
 
 pub fn root() -> u64 { unsafe { ROOT } }
 
+pub fn map_fresh(address: u64, flags: u64) -> u64 {
+    let physical = kaguya_alloc_frame()
+    if physical == 0 { return 0 }
+    if !paging.jihoo_page_map(root() as *u64, address, physical, flags, null, allocate_table) {
+        kaguya_free_frame(physical)
+        return 0
+    }
+    physical
+}
+
 pub fn init(map: *u8, map_size: u64, stride: u64, framebuffer: u64, framebuffer_size: u64) {
     frame.jihoo_pool_commit(map, map_size, stride, 0, 0)
     let address = paging.jihoo_paging_init(map, map_size, stride, framebuffer, framebuffer_size,
@@ -38,6 +49,7 @@ pub fn init(map: *u8, map_size: u64, stride: u64, framebuffer: u64, framebuffer_
     if address == 0 { panic("boot page tables out of memory") }
     unsafe {
         ROOT = address
+        processor.jihoo_write_msr(0xc0000080, processor.jihoo_read_msr(0xc0000080) | 0x800)
         jihoo_write_cr3(address)
         if jihoo_read_cr3() != address { panic("CR3 switch failed") }
         if !paging.jihoo_range_mapped(address as *u64, map as u64, map_size, false) ||

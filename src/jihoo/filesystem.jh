@@ -1,0 +1,295 @@
+import fat
+
+#[derive(Eq)]
+pub struct FileId {
+    slot: u64
+    generation: u32
+}
+
+pub struct FileEntry {
+    pub name: String
+    pub size: u64
+    pub first_cluster: u16
+}
+
+pub struct Volume {
+    io: fat.DataIo
+    generations: [u32; 256]
+}
+
+impl Drop for Volume {
+    fn drop(inout self) {}
+}
+
+fn status(code: i32) -> Result((), i32) {
+    if code == 0 { Ok(()) } else { Err(code) }
+}
+
+unsafe fn get(bytes: *u8, offset: i64, count: i64) -> u64 {
+    var value: u64 = 0
+    for i in 0..count { value |= (bytes[offset + i] as u64) << (i * 8) }
+    value
+}
+
+unsafe fn put(bytes: *u8, offset: i64, value: u64, count: i64) {
+    for i in 0..count { bytes[offset + i] = (value >> (i * 8)) as u8 }
+}
+
+export fn read_sector(context: *u8, lba: u64, output: *u8) -> i32 {
+    unsafe {
+        let io = context as *fat.DataIo
+        io.read(io.context, lba, 1, output)
+    }
+}
+
+export fn write_sector(context: *u8, lba: u64, input: *u8) -> i32 {
+    unsafe {
+        let io = context as *fat.DataIo
+        io.write(io.context, lba, 1, input)
+    }
+}
+
+fn lossy_name(bytes: *u8, length: i64) -> String {
+    var text = String.new()
+    var at: i64 = 0
+    unsafe {
+        while at < length {
+            let b = bytes[at]
+            if b < 128 { text.push(b); at += 1; continue }
+            let width: i64 = if b >= 0xc2 && b <= 0xdf { 2 } else if b >= 0xe0 && b <= 0xef { 3 }
+                            else if b >= 0xf0 && b <= 0xf4 { 4 } else { 1 }
+            var count: i64 = 1
+            while count < width && at + count < length {
+                let next = bytes[at + count]
+                if next < 0x80 || next > 0xbf { break }
+                if count == 1 && ((b == 0xe0 && next < 0xa0) || (b == 0xed && next > 0x9f) ||
+                                 (b == 0xf0 && next < 0x90) || (b == 0xf4 && next > 0x8f)) { break }
+                count += 1
+            }
+            if width > 1 && count == width { text.push_str(make_str(bytes + at, count)) }
+            else { text.push_str("�") }
+            at += count
+        }
+    }
+    text
+}
+
+impl Volume {
+    // Callbacks and backing context must remain valid while the volume is used.
+    pub unsafe fn new(io: fat.DataIo) -> Volume {
+        Volume { io: io, generations: zeroed([u32; 256]) }
+    }
+
+    fn context(self) -> *u8 { unsafe { &self.io as *u8 } }
+
+    pub fn check(self) -> Result((), i32) {
+        var sector: [u8; 512] = [0; 512]
+        status(read_sector(self.context(), 0, &sector[0]))?
+        if (unsafe { get(&sector[0], 0, 8) }) != 0x4b41474641543136 { return Err(-4) }
+        Ok(())
+    }
+
+    fn retire(inout self, slot: u64) {
+        let old = self.generations[slot as i64]
+        self.generations[slot as i64] = if old == 0xffffffff { 0 } else { old + 1 }
+    }
+
+    fn read_entry(self, slot: u64) -> Result([u8; 32], i32) {
+        var entry: [u8; 32] = [0; 32]
+        status(fat.jihoo_dir_read(slot, &entry[0], self.context(), read_sector))?
+        Ok(entry)
+    }
+
+    fn write_entry(inout self, slot: u64, entry: [u8; 32]) -> Result((), i32) {
+        if slot >= 256 { return Err(-2) }
+        if entry[28] == 0 { self.retire(slot) }
+        status(unsafe { fat.jihoo_dir_write(slot, &entry[0], self.context(), read_sector, write_sector) })
+    }
+
+    fn find(self, name: str) -> Result(Option((u64, [u8; 32])), i32) {
+        var entry: [u8; 32] = [0; 32]
+        let code = fat.jihoo_dir_find(name.ptr, name.len as u64, &entry[0], self.context(), read_sector)
+        if code < 0 { return Err(code) }
+        if code == 256 { return Ok(None) }
+        Ok(Some((code as u64, entry)))
+    }
+
+    fn free_slot(self) -> Result(u64, i32) {
+        let code = fat.jihoo_dir_free(self.context(), read_sector)
+        if code < 0 { return Err(code) }
+        if code == 256 { return Err(-5) }
+        Ok(code as u64)
+    }
+
+    fn free_chain(self, first: u16) -> Result((), i32) {
+        status(fat.jihoo_fat_free(first, self.context(), read_sector, write_sector))
+    }
+
+    // Explicit operation only. Never call this merely because check() failed.
+    pub fn format(inout self) -> Result((), i32) {
+        var sector: [u8; 512] = [0; 512]
+        unsafe {
+            put(&sector[0], 0, 0x4b41474641543136, 8)
+            put(&sector[0], 8, 512, 2)
+            put(&sector[0], 10, 8, 4)
+            put(&sector[0], 14, 1, 4)
+            put(&sector[0], 18, 64, 4)
+            put(&sector[0], 22, 65, 4)
+            put(&sector[0], 26, 16, 4)
+            put(&sector[0], 30, 81, 4)
+            put(&sector[0], 34, self.io.clusters as u64, 4)
+        }
+        status(write_sector(self.context(), 0, &sector[0]))?
+        sector = [0; 512]
+        for i in 1..65 { status(write_sector(self.context(), i as u64, &sector[0]))? }
+        status(fat.jihoo_fat_write(0, 0xfff8, self.context(), read_sector, write_sector))?
+        status(fat.jihoo_fat_write(1, 0xffff, self.context(), read_sector, write_sector))?
+        for i in 0..256 { self.retire(i as u64) }
+        for i in 65..81 { status(write_sector(self.context(), i as u64, &sector[0]))? }
+        Ok(())
+    }
+
+    pub fn create(inout self, name: str, input: *u8, length: u64) -> Result((), i32) {
+        if name.len == 0 || name.len > 21 { return Err(-2) }
+        if length > 0xffffffff { return Err(-5) }
+        self.check()?
+        match self.find(name)? {
+            Some((slot, entry)) => {
+                let first = unsafe { get(&entry[0], 22, 2) as u16 }
+                if first >= 2 { self.free_chain(first)? }
+                self.write_entry(slot, [0; 32])?
+            }
+            None => {}
+        }
+        let slot = self.free_slot()?
+        var first: u16 = 0
+        var previous: u16 = 0
+        var offset: u64 = 0
+        while offset < length {
+            var cluster: u16 = 0
+            status(fat.jihoo_fat_alloc(self.io.clusters, &cluster, self.context(), read_sector, write_sector))?
+            if first == 0 { first = cluster }
+            if previous != 0 {
+                status(fat.jihoo_fat_write(previous, cluster, self.context(), read_sector, write_sector))?
+            }
+            var workspace: [u8; 4096] = [0; 4096]
+            let count = min(length - offset, 4096)
+            unsafe {
+                mem_copy(&workspace[0], input + offset as i64, count as i64)
+                status(self.io.write(self.io.context, 81 + (cluster as u64 - 2) * 8, 8, &workspace[0]))?
+            }
+            previous = cluster
+            offset += count
+        }
+        var entry: [u8; 32] = [0; 32]
+        unsafe {
+            mem_copy(&entry[0], name.ptr, name.len)
+            put(&entry[0], 22, first as u64, 2)
+            put(&entry[0], 24, length, 4)
+        }
+        entry[28] = 1
+        self.write_entry(slot, entry)
+    }
+
+    pub fn delete(inout self, name: str) -> Result((), i32) {
+        let (slot, entry) = match self.find(name)? { Some(found) => found, None => return Err(-6) }
+        let first = unsafe { get(&entry[0], 22, 2) as u16 }
+        if first >= 2 { self.free_chain(first)? }
+        self.write_entry(slot, [0; 32])
+    }
+
+    pub fn open(inout self, name: str, create: bool, truncate: bool) -> Result(FileId, i32) {
+        self.check()?
+        let found = self.find(name)?
+        let slot = match found {
+            Some((slot, entry)) => {
+                var record = entry
+                let first = unsafe { get(&record[0], 22, 2) as u16 }
+                let size = unsafe { get(&record[0], 24, 4) }
+                if truncate && (first != 0 || size != 0) {
+                    unsafe { put(&record[0], 22, 0, 6) }
+                    self.write_entry(slot, record)?
+                    if first >= 2 && first < 0xfff0 { self.free_chain(first)? }
+                }
+                slot
+            }
+            None => {
+                if !create { return Err(-6) }
+                let slot = self.free_slot()?
+                var entry: [u8; 32] = [0; 32]
+                unsafe { mem_copy(&entry[0], name.ptr, name.len) }
+                entry[28] = 1
+                self.write_entry(slot, entry)?
+                slot
+            }
+        }
+        Ok(FileId { slot: slot, generation: self.generations[slot as i64] })
+    }
+
+    fn opened(self, id: FileId) -> Result([u8; 32], i32) {
+        if id.slot >= 256 || self.generations[id.slot as i64] != id.generation { return Err(-6) }
+        let entry = self.read_entry(id.slot)?
+        if entry[28] != 1 { return Err(-6) }
+        Ok(entry)
+    }
+
+    pub fn size(self, id: FileId) -> Result(u64, i32) {
+        let entry = self.opened(id)?
+        Ok(unsafe { get(&entry[0], 24, 4) })
+    }
+
+    fn read_data(self, entry: [u8; 32], offset: u64, output: *u8, length: u64, whole: bool) -> Result(u64, i32) {
+        var data = fat.FileData { first: unsafe { get(&entry[0], 22, 2) as u16 },
+                                  size: unsafe { get(&entry[0], 24, 4) as u32 } }
+        var workspace: [u8; 4096] = [0; 4096]
+        let code = unsafe { fat.jihoo_file_read(&data, offset, output, length, &workspace[0], &self.io, whole) }
+        if code < 0 { return Err(code as i32) }
+        Ok(code as u64)
+    }
+
+    pub fn read_at(self, id: FileId, offset: u64, output: *u8, length: u64) -> Result(u64, i32) {
+        self.read_data(self.opened(id)?, offset, output, length, false)
+    }
+
+    pub fn read_file(self, name: str) -> Result(Vec(u8), i32) {
+        let (_, entry) = match self.find(name)? { Some(found) => found, None => return Err(-6) }
+        let size = unsafe { get(&entry[0], 24, 4) as i64 }
+        var bytes = Vec(u8).filled(size, 0)
+        if size > 0 { self.read_data(entry, 0, &bytes[0], size as u64, true)? }
+        Ok(bytes)
+    }
+
+    pub fn write_at(inout self, id: FileId, requested: Option(u64), input: *u8, length: u64) -> Result((u64, u64), i32) {
+        var entry = self.opened(id)?
+        let size = unsafe { get(&entry[0], 24, 4) }
+        let offset = requested.unwrap_or(size)
+        if length == 0 { return Ok((offset, 0)) }
+        if offset > 0xffffffff || length > 0xffffffff - offset { return Err(-5) }
+        var data = fat.FileData { first: unsafe { get(&entry[0], 22, 2) as u16 }, size: size as u32 }
+        var workspace: [u8; 4096] = [0; 4096]
+        var written: u64 = 0
+        let code = unsafe { fat.jihoo_file_write(&data, offset, input, length, &workspace[0], &self.io, &written) }
+        unsafe {
+            put(&entry[0], 22, data.first as u64, 2)
+            put(&entry[0], 24, data.size as u64, 4)
+        }
+        self.write_entry(id.slot, entry)?
+        if code == 0 { return Ok((offset, length)) }
+        if written > 0 { return Ok((offset, written)) }
+        Err(code)
+    }
+
+    pub fn list(self) -> Result(Vec(FileEntry), i32) {
+        self.check()?
+        var entries = Vec(FileEntry).new()
+        for slot in 0..256 {
+            let entry = self.read_entry(slot as u64)?
+            if entry[28] != 1 { continue }
+            var length: i64 = 0
+            while length < 22 && entry[length] != 0 { length += 1 }
+            entries.push(FileEntry { name: unsafe { lossy_name(&entry[0], length) },
+                size: unsafe { get(&entry[0], 24, 4) }, first_cluster: unsafe { get(&entry[0], 22, 2) as u16 } })
+        }
+        Ok(entries)
+    }
+}

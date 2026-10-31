@@ -6,7 +6,8 @@ case "$mode" in
     hardware-test) entry=boot ;;
     cpu-test) entry=cpu_test ;;
     ring3-test) entry=ring3_test ;;
-    *) echo 'Standalone build supports hardware-test, cpu-test or ring3-test' >&2; exit 2 ;;
+    filesystem-test) entry=filesystem_test ;;
+    *) echo 'Standalone build supports hardware-test, cpu-test, ring3-test or filesystem-test' >&2; exit 2 ;;
 esac
 if [[ -z "${JIHOO_BIN:-}" ]]; then
     compiler_package="$(nix build path:../jihoo#jihoo --no-link --print-out-paths)"
@@ -15,7 +16,7 @@ fi
 output="$PWD/target/jihoo-kernel/$mode"
 mkdir -p "$output/esp/EFI/BOOT"
 compiler="${CC:-clang}"
-if [[ "$mode" == ring3-test ]]; then
+if [[ "$mode" == ring3-test || "$mode" == filesystem-test ]]; then
     JIHOO_BIN="$JIHOO_BIN" KAGUYA_USER_OUTPUT="$output/user" bash user/build-jihoo.sh verify
 fi
 python3 - "$output" "$mode" <<'PY'
@@ -24,7 +25,7 @@ import json
 import sys
 output = Path(sys.argv[1])
 image = output / 'user/verify.kef'
-data = '.incbin ' + json.dumps(str(image)) + '\n' if sys.argv[2] == 'ring3-test' else ''
+data = '.incbin ' + json.dumps(str(image)) + '\n' if sys.argv[2] in ('ring3-test', 'filesystem-test') else ''
 (output / 'probe.S').write_text('''
 .text
 .globl jihoo_probe_data

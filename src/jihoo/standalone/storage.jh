@@ -1,0 +1,94 @@
+import std.mem
+import filesystem
+import fat
+import kernel_sync
+import memory
+import runtime
+
+const RAM_BASE: u64 = 0xffffb00000000000
+const RAM_BYTES: u64 = 8388608
+
+struct RamDisk {
+    base: *u8
+    sectors: u64
+}
+
+static RAM: RamDisk = zeroed(RamDisk)
+static VOLUME: *kernel_sync.Spinlock(filesystem.Volume) = null
+
+export fn ram_read(context: *u8, lba: u64, count: u32, output: *u8) -> i32 {
+    unsafe {
+        let disk = context as *RamDisk
+        if disk.base == null { return -1 }
+        if output == null || count == 0 || lba > disk.sectors || count as u64 > disk.sectors - lba { return -2 }
+        mem_copy(output, disk.base + (lba * 512) as i64, count as i64 * 512)
+        0
+    }
+}
+
+export fn ram_write(context: *u8, lba: u64, count: u32, input: *u8) -> i32 {
+    unsafe {
+        let disk = context as *RamDisk
+        if disk.base == null { return -1 }
+        if input == null || count == 0 || lba > disk.sectors || count as u64 > disk.sectors - lba { return -2 }
+        mem_copy(disk.base + (lba * 512) as i64, input, count as i64 * 512)
+        0
+    }
+}
+
+pub fn volume() -> *kernel_sync.Spinlock(filesystem.Volume) { unsafe { VOLUME } }
+
+pub fn init_ram() {
+    // All kernel top-level slots must exist before the first process is made.
+    for i in 0..2048 {
+        if memory.map_fresh(RAM_BASE + i as u64 * 4096, 0x8000000000000002) == 0 { panic("RAM disk mapping OOM") }
+    }
+    unsafe {
+        RAM = RamDisk { base: RAM_BASE as *u8, sectors: RAM_BYTES / 512 }
+        let io = fat.DataIo { context: &RAM as *u8, read: ram_read, write: ram_write,
+                               clusters: ((RAM_BYTES / 512 - 81) / 8) as u32 }
+        let pointer = mem.alloc(kernel_sync.Spinlock(filesystem.Volume), 1)
+        write(pointer, kernel_sync.Spinlock.new(filesystem.Volume.new(io)))
+        VOLUME = pointer
+        var guard = (*pointer).lock()
+        // This allocation is a new zeroed temporary RAM filesystem only.
+        guard.deref_mut().format().unwrap()
+        let welcome = "kaguyaOS diskless shell\nChanges disappear on reboot.\n"
+        guard.deref_mut().create("welcome.txt", welcome.ptr, welcome.len as u64).unwrap()
+    }
+    runtime.output("RAM filesystem: new temporary 8 MiB volume initialized; no disk devices accessed\n")
+}
+
+pub fn check() {
+    let baseline = runtime.live_allocations()
+    unsafe {
+        {
+            var guard = (*volume()).lock()
+            let message = "jihoo filesystem"
+            guard.deref_mut().create("check", message.ptr, message.len as u64).unwrap()
+            let id = guard.deref_mut().open("check", false, false).unwrap()
+            let tail = "tail"
+            let written = guard.deref_mut().write_at(id, Some(5000), tail.ptr, 4).unwrap()
+            if written.0 != 5000 || written.1 != 4 { panic("RAM write result failed") }
+            let bytes = guard.read_file("check").unwrap()
+            if bytes.len() != 5004 { panic("RAM file size failed") }
+            for i in 0..message.len {
+                if bytes[i] != message[i] { panic("RAM file data failed") }
+            }
+            for i in message.len..5000 {
+                if bytes[i] != 0 { panic("RAM file gap failed") }
+            }
+            for i in 0..4 {
+                if bytes[5000 + i] != tail[i] { panic("RAM file tail failed") }
+            }
+            let listing = guard.list().unwrap()
+            if listing.len() != 2 { panic("RAM directory listing failed") }
+            guard.deref_mut().delete("check").unwrap()
+            if guard.size(id).is_ok() { panic("RAM stale handle accepted") }
+            let welcome = guard.read_file("welcome.txt").unwrap()
+            if welcome.len() == 0 { panic("RAM seed missing") }
+        }
+        if runtime.live_allocations() != baseline { panic("RAM filesystem temporary allocation leak") }
+    }
+    runtime.output("RAM filesystem: create/list/read/sparse write/delete/stale handle and cleanup passed\n")
+}

@@ -1,0 +1,119 @@
+import filesystem
+import fat
+import std.mem
+
+extern fn kaguya_kernel_panic(message: *u8, length: u64) -> never
+
+#[panic_handler]
+fn on_panic(message: str) -> never {
+    unsafe { kaguya_kernel_panic(message.ptr, message.len as u64) }
+}
+
+fn code(result: Result((), i32)) -> i32 { match result { Ok(()) => 0, Err(error) => error } }
+
+export fn jihoo_volume_new(context: *u8, sectors: u64,
+                            read_callback: fnptr(*u8, u64, u32, *u8) -> i32,
+                            write_callback: fnptr(*u8, u64, u32, *u8) -> i32) -> *filesystem.Volume {
+    unsafe {
+        let pointer = mem.alloc(filesystem.Volume, 1)
+        write(pointer, filesystem.Volume.new(fat.DataIo { context: context, read: read_callback, write: write_callback,
+                            clusters: ((sectors - 81) / 8) as u32 }))
+        pointer
+    }
+}
+
+export fn jihoo_volume_close(pointer: *filesystem.Volume) {
+    unsafe {
+        mem.drop_at(filesystem.Volume, pointer)
+        mem.dealloc(filesystem.Volume, pointer, 1)
+    }
+}
+
+export fn jihoo_volume_check(pointer: *filesystem.Volume) -> i32 { unsafe { code((*pointer).check()) } }
+export fn jihoo_volume_format(pointer: *filesystem.Volume) -> i32 { unsafe { code((*pointer).format()) } }
+
+export fn jihoo_volume_create(pointer: *filesystem.Volume, name: *u8, count: u64, data: *u8, length: u64) -> i32 {
+    unsafe { code((*pointer).create(make_str(name, count as i64), data, length)) }
+}
+
+export fn jihoo_volume_delete(pointer: *filesystem.Volume, name: *u8, count: u64) -> i32 {
+    unsafe { code((*pointer).delete(make_str(name, count as i64))) }
+}
+
+export fn jihoo_volume_open(pointer: *filesystem.Volume, name: *u8, count: u64,
+                            create: bool, truncate: bool, output: *filesystem.FileId) -> i32 {
+    unsafe {
+        match (*pointer).open(make_str(name, count as i64), create, truncate) {
+            Ok(id) => { *output = id; 0 }
+            Err(error) => error
+        }
+    }
+}
+
+export fn jihoo_volume_read(pointer: *filesystem.Volume, id: *filesystem.FileId,
+                            offset: u64, output: *u8, length: u64) -> i64 {
+    unsafe {
+        match (*pointer).read_at(*id, offset, output, length) {
+            Ok(count) => count as i64
+            Err(error) => error as i64
+        }
+    }
+}
+
+export fn jihoo_volume_write(pointer: *filesystem.Volume, id: *filesystem.FileId,
+                             offset: u64, append: bool, input: *u8, length: u64,
+                             used_offset: *u64, written: *u64) -> i32 {
+    let requested: Option(u64) = if append { None } else { Some(offset) }
+    unsafe {
+        match (*pointer).write_at(*id, requested, input, length) {
+            Ok((start, count)) => { *used_offset = start; *written = count; 0 }
+            Err(error) => error
+        }
+    }
+}
+
+export fn jihoo_volume_size(pointer: *filesystem.Volume, id: *filesystem.FileId) -> i64 {
+    unsafe {
+        match (*pointer).size(*id) { Ok(size) => size as i64, Err(error) => error as i64 }
+    }
+}
+
+export fn jihoo_volume_read_file(pointer: *filesystem.Volume, name: *u8, count: u64,
+                                 output: *u8, capacity: u64) -> i64 {
+    unsafe {
+        match (*pointer).read_file(make_str(name, count as i64)) {
+            Ok(bytes) => {
+                if bytes.len() as u64 > capacity { return -2 }
+                if !bytes.is_empty() { mem_copy(output, &bytes[0], bytes.len()) }
+                bytes.len()
+            }
+            Err(error) => error as i64
+        }
+    }
+}
+
+pub struct Listing {
+    pub name: [u8; 96]
+    pub length: u64
+    pub size: u64
+    pub first: u16
+}
+
+export fn jihoo_volume_list(pointer: *filesystem.Volume, output: *Listing, capacity: u64) -> i64 {
+    unsafe {
+        match (*pointer).list() {
+            Ok(entries) => {
+                if entries.len() as u64 > capacity { return -2 }
+                for i in 0..entries.len() {
+                    let entry = entries[i]
+                    let target = output + i
+                    *target = Listing { name: [0; 96], length: entry.name.len() as u64,
+                                         size: entry.size, first: entry.first_cluster }
+                    mem_copy(&target.name[0], entry.name.as_str().ptr, entry.name.len())
+                }
+                entries.len()
+            }
+            Err(error) => error as i64
+        }
+    }
+}

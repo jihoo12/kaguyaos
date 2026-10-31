@@ -1,0 +1,4 @@
+#![uefi]
+import platform
+
+fn main() -> i32 { platform.run(3) }
