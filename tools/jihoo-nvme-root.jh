@@ -1,0 +1,19 @@
+import nvme_queue as nvme
+extern fn kaguya_kernel_panic(message: *u8, length: u64) -> never
+#[panic_handler]
+fn on_panic(message: str) -> never { unsafe { kaguya_kernel_panic(message.ptr, message.len as u64) } }
+static QUEUE: nvme.Queue = zeroed(nvme.Queue)
+export fn jihoo_nvme_queue(sq: u64, cq: u64, doorbells: u64, stride: u64, id: u64, size: u32) {
+    unsafe { QUEUE = nvme.Queue.new(sq, cq, doorbells, stride, id, size) }
+}
+export fn jihoo_nvme_submit(words: *u32) {
+    var command = nvme.Command.new(0, 0, 0)
+    unsafe { for i in 0..16 { command.words[i] = words[i] }; QUEUE.submit(command) }
+}
+export fn jihoo_nvme_poll(id: u16) -> i32 { unsafe { match QUEUE.poll(id) { Some(code) => code as i32, None => -1 } } }
+export fn jihoo_nvme_prps(buffer: u64, count: u32, list: *u64, output: *u32) -> bool {
+    var command = nvme.Command.new(2, 100, 1)
+    if !nvme.set_prps(&command, buffer, count, list) { return false }
+    unsafe { for i in 0..16 { output[i] = command.words[i] } }
+    true
+}

@@ -9,6 +9,7 @@ case "$mode" in
     filesystem-test) entry=filesystem_test ;;
     scheduler-test) entry=scheduler_test ;;
     shell) entry=shell ;;
+    nvme-shell) entry=nvme_shell ;;
     *) echo 'Standalone build supports hardware-test, cpu-test, ring3-test, filesystem-test, scheduler-test or shell' >&2; exit 2 ;;
 esac
 if [[ -z "${JIHOO_BIN:-}" ]]; then
@@ -18,7 +19,7 @@ fi
 output="$PWD/target/jihoo-kernel/$mode"
 mkdir -p "$output/esp/EFI/BOOT"
 compiler="${CC:-clang}"
-if [[ "$mode" == shell ]]; then
+if [[ "$mode" == shell || "$mode" == nvme-shell ]]; then
     JIHOO_BIN="$JIHOO_BIN" KAGUYA_USER_OUTPUT="$output/user" bash user/build-jihoo.sh verify init ls cat write rm ping wget
 elif [[ "$mode" == ring3-test || "$mode" == filesystem-test || "$mode" == scheduler-test ]]; then
     JIHOO_BIN="$JIHOO_BIN" KAGUYA_USER_OUTPUT="$output/user" bash user/build-jihoo.sh verify
@@ -33,7 +34,7 @@ xhci_index = int(os.environ.get('KAGUYA_XHCI_INDEX', '0'))
 if not 0 <= xhci_index <= 65535:
     raise SystemExit('KAGUYA_XHCI_INDEX must be in 0..65535')
 image = output / 'user/verify.kef'
-data = '.incbin ' + json.dumps(str(image)) + '\n' if sys.argv[2] in ('ring3-test', 'filesystem-test', 'scheduler-test', 'shell') else ''
+data = '.incbin ' + json.dumps(str(image)) + '\n' if sys.argv[2] in ('ring3-test', 'filesystem-test', 'scheduler-test', 'shell', 'nvme-shell') else ''
 (output / 'probe.S').write_text('''
 .text
 .globl jihoo_probe_data

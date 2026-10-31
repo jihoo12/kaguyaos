@@ -118,7 +118,7 @@ pub fn run(stage: u32) -> i32 {
         if descriptor_size < 40 || map_size % descriptor_size != 0 { panic("invalid memory map") }
         heap.jihoo_heap_init(&HEAP[0] as u64, 1048576)
         runtime.init_console(framebuffer as *u32, stride as u64, width as u64, height as u64, format)
-        runtime.output(if cpu_test { "kaguyaOS - CPU TEST (storage writes disabled)\n" } else { "kaguyaOS - HARDWARE TEST (storage writes disabled)\n" })
+        runtime.output(if stage >= 6 { "kaguyaOS - jihoo NVMe boot\n" } else if cpu_test { "kaguyaOS - CPU TEST (storage writes disabled)\n" } else { "kaguyaOS - HARDWARE TEST (storage writes disabled)\n" })
         println("UEFI ExitBootServices: OK")
         println("GOP: " + width.to_string().as_str() + " x " + height.to_string().as_str())
         println("Memory map: " + (map_size / descriptor_size).to_string().as_str() + " entries")
@@ -133,7 +133,8 @@ pub fn run(stage: u32) -> i32 {
             memory.init(map as *u8, map_size, descriptor_size, framebuffer, framebuffer_size)
             if stage >= 5 { usb.init(jihoo_xhci_index()) }
             cpu.check()
-            if stage >= 3 {
+            if stage >= 6 { storage.init_nvme() }
+            else if stage >= 3 {
                 storage.init_ram()
                 storage.check()
             }

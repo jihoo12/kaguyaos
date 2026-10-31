@@ -1,0 +1,157 @@
+import nvme_queue as queue
+import pci
+import sync
+
+extern fn kaguya_alloc_frame() -> u64
+extern fn kaguya_map_mmio(base: u64, bytes: u64) -> bool
+extern fn kaguya_dma_range(base: u64, bytes: u64) -> bool
+extern fn kaguya_device_log(bytes: *u8, length: u64)
+extern fn jihoo_dma_fence()
+extern fn jihoo_pause()
+
+const LIMIT: i64 = 20000000
+static ADMIN: queue.Queue = zeroed(queue.Queue)
+static IO: queue.Queue = zeroed(queue.Queue)
+static BASE: u64 = 0
+static BLOCKS: u64 = 0
+static LIST: u64 = 0
+static READY: bool = false
+static FAILED: bool = false
+static LOCK: u8 = 0
+
+fn log(message: str) { unsafe { kaguya_device_log(message.ptr, message.len as u64) } }
+fn read32(offset: u64) -> u32 { unsafe { read_volatile((BASE + offset) as *u32) } }
+fn write32(offset: u64, value: u32) { unsafe { write_volatile((BASE + offset) as *u32, value) } }
+fn write64(offset: u64, value: u64) { unsafe { write_volatile((BASE + offset) as *u64, value) } }
+
+fn page() -> u64 {
+    let address = unsafe { kaguya_alloc_frame() }
+    if address == 0 { panic("NVMe DMA allocation failed") }
+    address
+}
+
+fn wait_ready(value: u32) -> bool {
+    for _ in 0..LIMIT {
+        let status = read32(0x1c)
+        if status & 2 != 0 { return false }
+        if status & 1 == value { return true }
+        unsafe { jihoo_pause() }
+    }
+    false
+}
+
+fn execute(inout q: queue.Queue, command: queue.Command, id: u16) -> bool {
+    q.submit(command)
+    for _ in 0..LIMIT {
+        match q.poll(id) { Some(status) => return status == 0, None => {} }
+        unsafe { jihoo_pause() }
+    }
+    unsafe { FAILED = true }
+    log("NVMe: completion timeout; further I/O disabled\n")
+    false
+}
+
+pub fn init() -> bool {
+    unsafe {
+        if BASE != 0 { return READY }
+        var found: Option(pci.Device) = None
+        for bus in 0..256 {
+            for device in 0..32 {
+                for function in 0..8 {
+                    let b = bus as u8; let d = device as u8; let f = function as u8
+                    if pci.jihoo_pci_read16(b, d, f, 0) == 0xffff { continue }
+                    if pci.jihoo_pci_read8(b, d, f, 11) != 1 || pci.jihoo_pci_read8(b, d, f, 10) != 8 || pci.jihoo_pci_read8(b, d, f, 9) != 2 { continue }
+                    found = Some(pci.Device { bus: b, device: d, function: f,
+                        vendor_id: pci.jihoo_pci_read16(b, d, f, 0), device_id: pci.jihoo_pci_read16(b, d, f, 2),
+                        bar0: pci.jihoo_pci_read32(b, d, f, 16), bar1: pci.jihoo_pci_read32(b, d, f, 20),
+                        interrupt_line: 0, interrupt_pin: 0 })
+                    break
+                }
+                if found.is_some() { break }
+            }
+            if found.is_some() { break }
+        }
+        let device = match found { Some(value) => value, None => { log("NVMe: no controller\n"); return false } }
+        let base = pci.jihoo_pci_bar0(device.bar0, device.bar1)
+        if device.bar0 & 1 != 0 || base == 0 || base & 4095 != 0 || base > 0x7fffffff0000 || !kaguya_map_mmio(base, 65536) { return false }
+        BASE = base
+        log("NVMe: Init started\n")
+        let pci_command = pci.jihoo_pci_read16(device.bus, device.device, device.function, 4)
+        pci.jihoo_pci_write32(device.bus, device.device, device.function, 4, pci_command as u32 | 6 | (1 << 10))
+        let capabilities = read_volatile(BASE as *u64)
+        let stride = 4 as u64 << ((capabilities >> 32) & 15)
+        if (capabilities >> 48) & 15 != 0 || capabilities & 65535 < 63 || stride * 4 + 0x1000 > 65536 || capabilities & (1 as u64 << 37) == 0 {
+            log("NVMe: unsupported controller capabilities\n"); return false
+        }
+        write32(0x14, read32(0x14) & !1)
+        if !wait_ready(0) { log("NVMe: disable timeout\n"); return false }
+        write32(0xc, 0xffffffff)
+        let admin_sq = page(); let admin_cq = page()
+        ADMIN = queue.Queue.new(admin_sq, admin_cq, base + 0x1000, stride, 0, 64)
+        write32(0x24, (63 << 16) | 63)
+        write64(0x28, admin_sq); write64(0x30, admin_cq)
+        jihoo_dma_fence()
+        write32(0x14, (4 << 20) | (6 << 16) | 1)
+        if !wait_ready(1) { log("NVMe: enable timeout\n"); return false }
+        let identify = page()
+        var command = queue.Command.new(6, 1, 0)
+        command.prp1(identify); command.words[10] = 1
+        if !execute(&ADMIN, command, 1) { return false }
+        var command = queue.Command.new(6, 2, 1)
+        mem_fill(identify as *u8, 0, 4096)
+        command.prp1(identify)
+        if !execute(&ADMIN, command, 2) { return false }
+        let data = identify as *u8
+        let format = (data[26] & 15) as i64
+        let format_offset = 128 + format * 4
+        if data[format_offset] != 0 || data[format_offset + 1] != 0 || data[format_offset + 2] != 9 || data[26] & 16 != 0 {
+            log("NVMe: only 512-byte namespaces without metadata are supported\n"); return false
+        }
+        BLOCKS = read_volatile(identify as *u64)
+        if BLOCKS < 89 { return false }
+        let io_sq = page(); let io_cq = page()
+        var command = queue.Command.new(5, 3, 0)
+        command.prp1(io_cq); command.words[10] = (63 << 16) | 1; command.words[11] = 1
+        if !execute(&ADMIN, command, 3) { return false }
+        var command = queue.Command.new(1, 4, 0)
+        command.prp1(io_sq); command.words[10] = (63 << 16) | 1; command.words[11] = (1 << 16) | 1
+        if !execute(&ADMIN, command, 4) { return false }
+        IO = queue.Queue.new(io_sq, io_cq, base + 0x1000, stride, 1, 64)
+        LIST = page()
+        READY = true
+        log("NVMe: Init complete\n")
+        true
+    }
+}
+
+pub fn sectors() -> u64 { unsafe { BLOCKS } }
+
+pub fn transfer(writing: bool, lba: u64, count: u32, buffer: *u8) -> i32 {
+    unsafe {
+        let saved = sync.jihoo_lock_acquire(&LOCK)
+        var result: i32 = -1
+        if READY && !FAILED && count > 0 && count <= 65536 && lba < BLOCKS && count as u64 <= BLOCKS - lba &&
+            kaguya_dma_range(buffer as u64, count as u64 * 512) {
+            let opcode: u8 = if writing { 1 } else { 2 }
+            var command = queue.Command.new(opcode, 100, 1)
+            if queue.set_prps(&command, buffer as u64, count, LIST as *u64) {
+                command.words[10] = lba as u32; command.words[11] = (lba >> 32) as u32; command.words[12] = count - 1
+                if execute(&IO, command, 100) { result = 0 }
+            }
+        }
+        sync.jihoo_lock_release(&LOCK, saved & 0x200 != 0)
+        result
+    }
+}
+
+pub fn shutdown() {
+    unsafe {
+        if BASE == 0 || !READY { return }
+        write32(0x14, (read32(0x14) & !(3 << 14)) | (1 << 14))
+        for _ in 0..LIMIT {
+            if (read32(0x1c) >> 2) & 3 == 2 { log("NVMe: Shutdown complete\n"); return }
+            jihoo_pause()
+        }
+        log("NVMe: Shutdown timeout\n")
+    }
+}

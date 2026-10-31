@@ -5,6 +5,7 @@ import kernel_sync
 import memory
 import runtime
 import shared
+import nvme
 
 const RAM_BASE: u64 = 0xffffb00000000000
 const RAM_BYTES: u64 = 8388608
@@ -16,6 +17,26 @@ struct RamDisk {
 
 static RAM: RamDisk = zeroed(RamDisk)
 static VOLUME: *shared.Shared(kernel_sync.Spinlock(filesystem.Volume)) = null
+static TEMPORARY: bool = false
+
+pub fn temporary() -> bool { unsafe { TEMPORARY } }
+
+export fn nvme_read(context: *u8, lba: u64, count: u32, output: *u8) -> i32 { nvme.transfer(false, lba, count, output) }
+export fn nvme_write(context: *u8, lba: u64, count: u32, input: *u8) -> i32 { nvme.transfer(true, lba, count, input) }
+
+pub fn init_nvme() {
+    if !nvme.init() { panic("NVMe initialization failed") }
+    unsafe {
+        let pointer = mem.alloc(shared.Shared(kernel_sync.Spinlock(filesystem.Volume)), 1)
+        write(pointer, shared.Shared.new(kernel_sync.Spinlock.new(filesystem.Volume.new(fat.DataIo {
+            context: null, read: nvme_read, write: nvme_write, clusters: min((nvme.sectors() - 81) / 8, 16382) as u32 }))))
+        if (*pointer).lock().check().is_err() { panic("NVMe filesystem unrecognized; refusing automatic format") }
+        VOLUME = pointer
+    }
+    runtime.output("NVMe filesystem: existing volume mounted; no automatic formatting\n")
+}
+
+pub fn shutdown() { nvme.shutdown() }
 
 export fn ram_read(context: *u8, lba: u64, count: u32, output: *u8) -> i32 {
     unsafe {
@@ -51,6 +72,7 @@ pub fn init_ram() {
         let pointer = mem.alloc(shared.Shared(kernel_sync.Spinlock(filesystem.Volume)), 1)
         write(pointer, shared.Shared.new(kernel_sync.Spinlock.new(filesystem.Volume.new(io))))
         VOLUME = pointer
+        TEMPORARY = true
         var guard = (*pointer).lock()
         // This allocation is a new zeroed temporary RAM filesystem only.
         guard.deref_mut().format().unwrap()

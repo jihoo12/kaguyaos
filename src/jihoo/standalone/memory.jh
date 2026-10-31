@@ -32,6 +32,11 @@ export fn allocate_table(context: *u8) -> u64 { kaguya_alloc_frame() }
 
 pub fn root() -> u64 { unsafe { ROOT } }
 
+export fn kaguya_dma_range(base: u64, bytes: u64) -> bool {
+    if base == 0 || base >= 0x400000000000 || bytes > 0x400000000000 - base { return false }
+    paging.jihoo_range_mapped(root() as *u64, base, bytes, false)
+}
+
 export fn kaguya_map_mmio(base: u64, bytes: u64) -> bool {
     if base & 4095 != 0 || bytes == 0 || bytes & 4095 != 0 || base > 0xffffffffffffffff - bytes { return false }
     var offset: u64 = 0

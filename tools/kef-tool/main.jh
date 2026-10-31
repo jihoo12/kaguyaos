@@ -1,0 +1,86 @@
+import std.env
+import std.os
+import std.fs
+import filesystem
+import fat
+
+extern fn pread(fd: i32, buffer: *u8, count: u64, offset: i64) -> i64
+extern fn pwrite(fd: i32, buffer: *u8, count: u64, offset: i64) -> i64
+extern fn lseek(fd: i32, offset: i64, origin: i32) -> i64
+extern fn fsync(fd: i32) -> i32
+
+struct Disk { fd: i32, sectors: u64 }
+
+export fn image_read(context: *u8, lba: u64, count: u32, output: *u8) -> i32 {
+    unsafe {
+        let disk = context as *Disk
+        if count == 0 || lba > disk.sectors || count as u64 > disk.sectors - lba { return -2 }
+        let length = count as u64 * 512
+        var done: u64 = 0
+        while done < length {
+            let result = pread(disk.fd, output + done as i64, length - done, (lba * 512 + done) as i64)
+            if result <= 0 { return -1 }
+            done += result as u64
+        }
+        0
+    }
+}
+
+export fn image_write(context: *u8, lba: u64, count: u32, input: *u8) -> i32 {
+    unsafe {
+        let disk = context as *Disk
+        if count == 0 || lba > disk.sectors || count as u64 > disk.sectors - lba { return -2 }
+        let length = count as u64 * 512
+        var done: u64 = 0
+        while done < length {
+            let result = pwrite(disk.fd, input + done as i64, length - done, (lba * 512 + done) as i64)
+            if result <= 0 { return -1 }
+            done += result as u64
+        }
+        0
+    }
+}
+
+fn operation() -> Result((), str) {
+    let args = env.args()
+    if args.len() < 3 { return Err("usage: kef-tool format|check|list|insert|extract|delete IMAGE [SOURCE NAME]") }
+    let command = args[1]
+    let file = match os.File.open_with(args[2], 2, 0) { Ok(file) => file, Err(_) => return Err("cannot open image") }
+    let bytes = unsafe { lseek(file.fd(), 0, 2) }
+    if bytes < 89 * 512 || bytes % 512 != 0 { return Err("image must contain whole sectors and at least one data cluster") }
+    let sectors = bytes as u64 / 512
+    var disk = Disk { fd: file.fd(), sectors: sectors }
+    var volume = unsafe { filesystem.Volume.new(fat.DataIo { context: &disk as *u8,
+        read: image_read, write: image_write, clusters: min((sectors - 81) / 8, 16382) as u32 }) }
+    if command == "format" {
+        if args.len() != 3 { return Err("usage: kef-tool format IMAGE") }
+        if volume.format().is_err() { return Err("format failed") }
+        println("Disk formatted with KAGFAT16 layout.")
+    } else {
+        if volume.check().is_err() { return Err("unrecognized image; use the explicit format command to initialize it") }
+        if command == "check" { println("KAGFAT16 image recognized") }
+        else if command == "list" {
+            let entries = match volume.list() { Ok(entries) => entries, Err(_) => return Err("list failed") }
+            for entry in entries { println(entry.name.as_str() + " " + entry.size.to_string().as_str()) }
+        } else if command == "insert" {
+            if args.len() != 5 { return Err("usage: kef-tool insert IMAGE SOURCE NAME") }
+            let data = match fs.read_bytes(args[3]) { Ok(bytes) => bytes, Err(_) => return Err("cannot read source") }
+            let pointer: *u8 = if data.len() == 0 { null } else { unsafe { &data[0] } }
+            if volume.create(args[4], pointer, data.len() as u64).is_err() { return Err("insert failed") }
+            println("Inserted " + args[4] + " (" + (data.len() as u64).to_string().as_str() + " bytes)")
+        } else if command == "extract" {
+            if args.len() != 5 { return Err("usage: kef-tool extract IMAGE NAME DESTINATION") }
+            let data = match volume.read_file(args[3]) { Ok(bytes) => bytes, Err(_) => return Err("read failed") }
+            if fs.write_bytes(args[4], data).is_err() { return Err("cannot write destination") }
+        } else if command == "delete" {
+            if args.len() != 4 { return Err("usage: kef-tool delete IMAGE NAME") }
+            if volume.delete(args[3]).is_err() { return Err("delete failed") }
+        } else { return Err("unknown command") }
+    }
+    if unsafe { fsync(file.fd()) } != 0 { return Err("image sync failed") }
+    Ok(())
+}
+
+fn main() -> i32 {
+    match operation() { Ok(()) => 0, Err(message) => { println("kef-tool: " + message); 1 } }
+}

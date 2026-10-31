@@ -89,6 +89,8 @@ pub fn serial(text: str) {
     }
 }
 
+export fn kaguya_device_log(bytes: *u8, length: u64) { unsafe { output(make_str(bytes, length as i64)) } }
+
 pub export fn kaguya_runtime_write(fd: i32, bytes: *u8, length: u64) -> i64 {
     if fd != 1 && fd != 2 { return -1 }
     output(unsafe { make_str(bytes, length as i64) })

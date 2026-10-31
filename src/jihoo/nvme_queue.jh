@@ -1,0 +1,80 @@
+extern fn jihoo_dma_fence()
+
+pub struct Command { pub words: [u32; 16] }
+
+impl Command {
+    pub fn new(opcode: u8, id: u16, namespace: u32) -> Command {
+        var words: [u32; 16] = [0; 16]
+        words[0] = opcode as u32 | (id as u32 << 16)
+        words[1] = namespace
+        Command { words: words }
+    }
+
+    pub fn prp1(inout self, address: u64) { self.words[6] = address as u32; self.words[7] = (address >> 32) as u32 }
+    pub fn prp2(inout self, address: u64) { self.words[8] = address as u32; self.words[9] = (address >> 32) as u32 }
+}
+
+pub struct Queue {
+    pub submission: *u32
+    pub completion: *u32
+    pub tail_doorbell: *u32
+    pub head_doorbell: *u32
+    pub size: u32
+    pub tail: u32
+    pub head: u32
+    pub phase: u32
+}
+
+impl Queue {
+    pub fn new(submission: u64, completion: u64, doorbells: u64, stride: u64, id: u64, size: u32) -> Queue {
+        Queue { submission: submission as *u32, completion: completion as *u32,
+            tail_doorbell: (doorbells + id * 2 * stride) as *u32,
+            head_doorbell: (doorbells + (id * 2 + 1) * stride) as *u32,
+            size: size, tail: 0, head: 0, phase: 1 }
+    }
+
+    pub fn submit(inout self, command: Command) {
+        if self.size < 2 || self.tail >= self.size { panic("invalid NVMe submission queue") }
+        unsafe {
+            let destination = self.submission + self.tail as i64 * 16
+            for i in 0..16 { write_volatile(destination + i, command.words[i]) }
+            self.tail += 1
+            if self.tail == self.size { self.tail = 0 }
+            jihoo_dma_fence()
+            write_volatile(self.tail_doorbell, self.tail)
+        }
+    }
+
+    pub fn poll(inout self, id: u16) -> Option(u16) {
+        if self.size < 2 || self.head >= self.size { panic("invalid NVMe completion queue") }
+        unsafe {
+            let entry = self.completion + self.head as i64 * 4
+            let tag = read_volatile(entry + 3)
+            if (tag >> 16) & 1 != self.phase { return None }
+            jihoo_dma_fence()
+            self.head += 1
+            if self.head == self.size { self.head = 0; self.phase ^= 1 }
+            write_volatile(self.head_doorbell, self.head)
+            if tag as u16 != id { return None }
+            Some((tag >> 17) as u16)
+        }
+    }
+}
+
+pub fn set_prps(inout command: Command, buffer: u64, sectors: u32, list: *u64) -> bool {
+    if buffer == 0 || sectors == 0 || sectors > 65536 { return false }
+    let bytes = sectors as u64 * 512
+    if buffer > 0xffffffffffffffff - bytes { return false }
+    let first = buffer & !4095
+    let pages = ((buffer - first) + bytes + 4095) / 4096
+    if pages > 513 { return false }
+    command.prp1(buffer)
+    if pages == 1 { command.prp2(0) }
+    else if pages == 2 { command.prp2(first + 4096) }
+    else {
+        if list == null || list as u64 & 4095 != 0 { return false }
+        unsafe { for i in 1..pages as i64 { write_volatile(list + i - 1, first + i as u64 * 4096) } }
+        command.prp2(list as u64)
+    }
+    true
+}

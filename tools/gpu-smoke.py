@@ -24,6 +24,7 @@ parser.add_argument('--no-keyboard', action='store_true', help='Hardware-shell b
 parser.add_argument('--resolution', help='Preferred GOP resolution, e.g. 2560x1440 (GOP only)')
 parser.add_argument('--hardware-shell', action='store_true', help='Test diskless ring-3 shell with a USB keyboard')
 parser.add_argument('--jihoo-shell', action='store_true', help='Test the standalone Jihoo diskless USB shell')
+parser.add_argument('--jihoo-nvme', action='store_true', help='Test the standalone Jihoo shell on an existing disposable NVMe image')
 parser.add_argument('--shell-io', action='store_true', help='Check diskless shell pipes, redirection and exec arguments')
 parser.add_argument('--network', action='store_true', help='Check ping and wget against a local HTTP fixture')
 parser.add_argument('--disk-image', type=Path, help='Use a prepared NVMe image instead of nvme.img')
@@ -36,10 +37,14 @@ parser.add_argument('--scheduler-test', action='store_true', help='Test standalo
 parser.add_argument('--backend', choices=['virtio', 'gop'], default='virtio')
 parser.add_argument('--output', type=Path, default=Path('/tmp/kaguya-gpu-smoke'))
 args = parser.parse_args()
-if args.jihoo_shell:
+if args.jihoo_shell or args.jihoo_nvme:
+    if args.jihoo_shell and args.jihoo_nvme:
+        parser.error('choose jihoo-shell or jihoo-nvme')
     if args.hardware_shell or args.hardware_test or args.cpu_test or args.ring3_test or args.filesystem_test or args.scheduler_test:
         parser.error('choose jihoo-shell or another boot mode')
     args.hardware_shell = True
+    if args.jihoo_nvme:
+        args.backend = 'gop'
 if args.scheduler_test:
     if args.filesystem_test or args.ring3_test or args.cpu_test or args.hardware_test or args.hardware_shell:
         parser.error('choose scheduler-test or another boot mode')
@@ -64,7 +69,7 @@ if args.no_keyboard and (not args.hardware_shell or args.keyboard_stress):
     parser.error('--no-keyboard requires hardware-shell and cannot be combined with stress')
 if args.shell_io and (not args.hardware_shell or args.no_keyboard):
     parser.error('--shell-io requires hardware-shell with a keyboard')
-isolated = args.hardware_test or args.hardware_shell
+isolated = args.hardware_test or (args.hardware_shell and not args.jihoo_nvme)
 if args.network and isolated:
     parser.error('--network requires the normal kernel')
 if args.disk_image and isolated:
@@ -123,6 +128,8 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
         kernel = 'target/hardware-shell/build/x86_64-unknown-uefi/debug/os.efi'
     if args.jihoo_shell:
         kernel = 'target/jihoo-kernel/shell/os.efi'
+    if args.jihoo_nvme:
+        kernel = 'target/jihoo-kernel/nvme-shell/os.efi'
     shutil.copyfile(args.kernel_image.resolve() if args.kernel_image else root / kernel, boot / 'BOOTX64.EFI')
     qmp = tmp / 'qmp.sock'
     if isolated:
@@ -381,7 +388,12 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
                         expected_slots = 2 if args.usb_mouse else 1
                         if serial.count('xHCI: Assigned Slot ID:') != expected_slots:
                             raise RuntimeError('Unexpected devices enumerated around the keyboard')
-                    if any(marker in final for marker in ['NVMe: Init', 'Formatting...', 'EXCEPTION OCCURRED', 'panicked']):
+                    forbidden = ['Formatting...', 'EXCEPTION OCCURRED', 'panicked']
+                    if not args.jihoo_nvme:
+                        forbidden.append('NVMe: Init')
+                    if args.jihoo_nvme and 'NVMe filesystem: existing volume mounted; no automatic formatting' not in final:
+                        raise RuntimeError('NVMe filesystem was not mounted')
+                    if any(marker in final for marker in forbidden):
                         raise RuntimeError('Diskless shell failure or storage initialization')
                     execute('screendump', {'filename': str(out / 'hardware-shell.png'), 'format': 'png'})
                 if args.shutdown:
@@ -414,6 +426,8 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
                         label += '; Shift, Backspace and ring-wrap stress passed'
                 if args.jihoo_shell:
                     label = label.replace('hardware-shell:', 'jihoo-shell:')
+                if args.jihoo_nvme:
+                    label = label.replace('hardware-shell:', 'jihoo-nvme:')
                 print(f'{label}; artifacts: {out}')
                 if args.shutdown:
                     print('Guest-initiated shutdown passed')
