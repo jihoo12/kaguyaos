@@ -60,11 +60,23 @@ builds when doing so.
 The kernel `std.sys` adapter is connected to the mixed kernel and passes
 host collection-lifetime tests plus diskless and normal QEMU regressions.
 That verified checkpoint is commit `0112a08`.
-An independent jihoo UEFI diagnostic entry and build script are drafted,
-but image generation stops at
-[jihoo issue #21](https://github.com/jihoolang/jihoo/issues/21): matching
-external declarations and imported exported definitions generate duplicate
-LLVM function entries. Native and UEFI reproductions fail; two controls
-compile, run, and print `42`. No compiler fix or production workaround is
-applied. Resume with the standalone diagnostic after the compiler fix, then
-continue the work order above. The complete migration has not been achieved.
+Compiler issue #21 is fixed in `c8014f4b1d3bbc22bfc4c267193b47737268bf1a`.
+The matching extern/export reproductions now emit native and UEFI objects;
+combined, separate-object, and ordinary-call controls run successfully.
+Signature mismatches and duplicate export definitions are rejected.
+
+The independent jihoo UEFI diagnostic builds without Cargo or rustc:
+
+```sh
+CC=clang bash tools/build-jihoo-kernel.sh
+python3 tools/gpu-smoke.py --hardware-test --kernel-image target/jihoo-kernel/hardware-test/os.efi --output /tmp/kaguya-standalone-diagnostic
+```
+
+QEMU reaches `HARDWARE TEST READY` after ExitBootServices, GOP/memory-map
+validation, and collection/allocation-cleanup checks on the jihoo heap.
+Artifacts are in `/tmp/kaguya-standalone-diagnostic`. This initial diagnostic
+uses serial output and a solid GOP background; a visible text console and
+replacement page tables, interrupts, drivers, scheduling, and userspace are
+not yet connected to this standalone image. Continue with console and CPU
+initialization. The ordinary kernel remains Rust and the complete migration
+has not been achieved.

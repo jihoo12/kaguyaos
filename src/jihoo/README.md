@@ -7,9 +7,8 @@ selects `JIHOO_BIN`, the adjacent `../jihoo` checkout through Nix, or
 
 The complete Rust-free migration is tracked in
 [docs/jihoo-full-port.md](../../docs/jihoo-full-port.md). The current ordinary
-kernel still uses Rust bridges; the standalone UEFI build is blocked by
-[compiler issue #21](https://github.com/jihoolang/jihoo/issues/21), described
-below.
+kernel still uses Rust bridges. A separate Rust-free UEFI diagnostic now
+builds and boots in QEMU; its limited scope is described below.
 
 The feature currently selects jihoo implementations of:
 
@@ -279,23 +278,25 @@ by this stage.
 If a new language/compiler problem appears, reduce it, compare control
 cases, file an issue in `jihoolang/jihoo` with `gh`, and stop migration.
 
-## Current stop: issue #21
+## Issue #21 resolution and standalone diagnostic
 
-On compiler `12f3827bd2574255934b7c730c1746ace14e5197`, an `extern fn`
-declaration and a matching `export fn` definition from an imported jihoo
-module both appear in the same LLVM IR, causing `invalid redefinition of
-function`. Checking succeeds, but native and UEFI object emission fail.
-Separately compiling the export provider and making an ordinary public
-jihoo module call both succeed and print `42`. See the
-[minimal reproduction and controls](../../tools/jihoo-regressions/extern-export/README.md)
-and [issue #21](https://github.com/jihoolang/jihoo/issues/21).
+[Issue #21](https://github.com/jihoolang/jihoo/issues/21) is fixed in compiler
+`c8014f4b1d3bbc22bfc4c267193b47737268bf1a`. Matching external declarations and
+imported exported definitions emit native and UEFI objects. Executable
+controls print `42`, and mismatching signatures and duplicate definitions
+are rejected. See the [regression cases](../../tools/jihoo-regressions/extern-export/README.md).
 
-The standalone sources in `standalone/` and `tools/build-jihoo-kernel.sh`
-are an unverified diagnostic draft. They implement a jihoo UEFI entry,
-GOP/memory-map capture, ExitBootServices retry, serial diagnostics, and a
-jihoo heap/runtime provider, but their image cannot yet be emitted. They
-are separate from the mixed-kernel runtime checkpoint `0112a08`, do not replace its EFI artifact,
-and have not passed QEMU. No production separate-object workaround is
-connected. After the compiler fix, build the standalone diagnostic with
-Clang, pass it to `gpu-smoke.py --hardware-test --kernel-image ...`, then
-continue the full-port checklist. Migration is stopped until that fix.
+```sh
+CC=clang bash tools/build-jihoo-kernel.sh
+python3 tools/gpu-smoke.py --hardware-test --kernel-image target/jihoo-kernel/hardware-test/os.efi --output /tmp/kaguya-standalone-diagnostic
+```
+
+This build invokes jihoo, Clang for assembly, and the linker, without Cargo
+or rustc. It produces a separate image under `target/jihoo-kernel/` and
+preserves the ordinary mixed/Rust build. QEMU passes ExitBootServices,
+GOP/memory-map validation, and collections/cleanup on the jihoo heap, then
+halts at `HARDWARE TEST READY`. The initial framebuffer is a solid background;
+diagnostics are serial-only. Replacement page tables, a text console,
+interrupts, drivers, scheduling, and userspace are not yet connected to this
+standalone image. No physical hardware has been tested. Continue using the
+[full-port checklist](../../docs/jihoo-full-port.md).

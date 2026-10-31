@@ -17,9 +17,9 @@ cases=tools/jihoo-regressions/extern-export
 "$compiler" emit-obj --lib "$cases/library-uefi.jh" -o /tmp/kaguya-combined.obj
 ```
 
-The check currently exits 0, while each object command exits 1. `combined.jh`
-also checks successfully and fails `build`. Emitting LLVM directly exposes
-the duplicate entries:
+On the reported compiler, checking exits 0 while object emission exits 1;
+`combined.jh` also checks but fails to build. Emitting LLVM exposes the
+duplicate entries:
 
 ```sh
 "$compiler" emit-llvm --lib "$cases/library.jh" -o /tmp/kaguya-combined.ll
@@ -37,3 +37,13 @@ Each run prints `42` and exits 0. The first control keeps the C ABI but puts
 the provider in a separately compiled object; the second uses an ordinary
 public jihoo module function. These are diagnostic controls, not workarounds
 connected to the standalone kernel build.
+
+## Resolution
+
+Fixed in `c8014f4b1d3bbc22bfc4c267193b47737268bf1a`, freshly built through
+Nix. Both object commands now succeed. `combined.jh`, `ordinary.jh`, and
+the separate-object control each run and print `42`. The compiler's
+`extern_export` execution regression passes, while its signature-mismatch
+and duplicate-export failure cases are rejected. The standalone kernel uses
+the matching declarations/definitions directly, without a separate-object
+workaround.

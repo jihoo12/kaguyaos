@@ -104,8 +104,8 @@ for verification coverage and remaining work.
 
 The full Rust-free migration now has a kernel standard-library adapter for
 jihoo collections and formatting. Its mixed-kernel host and QEMU checks pass.
-Standalone UEFI linking is stopped at
-[jihoo issue #21](https://github.com/jihoolang/jihoo/issues/21), involving an
-`extern fn` declaration and imported `export fn` definition producing duplicate
-LLVM entries. The userspace and mixed-kernel builds remain usable; see the
+Compiler [issue #21](https://github.com/jihoolang/jihoo/issues/21) is fixed in
+`c8014f4`. A standalone jihoo UEFI diagnostic now builds without Rust tools
+and boots in QEMU through ExitBootServices and heap/collection checks. This
+image does not run userspace yet. The ordinary kernel remains Rust; see the
 kernel README and [full-port checklist](../../docs/jihoo-full-port.md).
