@@ -1,26 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+bash tools/build-jihoo-kernel.sh hardware-shell
 mkdir -p target/hardware-shell/esp/EFI/BOOT
-for program in init ls cat write rm; do
-    rustc --target x86_64-unknown-none -C linker-flavor=ld.lld -C linker=rust-lld \
-        -C link-arg=-Tuser/linker.ld -C link-arg=--oformat=binary -C link-arg=--apply-dynamic-relocs -O \
-        -o "target/hardware-shell/$program.kef" "user/src/$program.rs"
-done
-if [[ "${KAGUYA_USER_LANGUAGE:-rust}" == jihoo ]]; then
-    KAGUYA_USER_OUTPUT="$PWD/target/hardware-shell" bash user/build-jihoo.sh init ls cat write rm
-fi
-export KAGUYA_PROGRAM_DIR="$PWD/target/hardware-shell"
-export KAGUYA_XHCI_INDEX="${KAGUYA_XHCI_INDEX:-0}"
-if [[ ! "$KAGUYA_XHCI_INDEX" =~ ^[0-9]+$ ]]; then
-    echo 'KAGUYA_XHCI_INDEX must be a nonnegative integer' >&2
-    exit 1
-fi
-export KAGUYA_INIT_KEF="$PWD/target/hardware-shell/init.kef"
-kernel_features=hardware-shell
-if [[ "${KAGUYA_KERNEL_LANGUAGE:-rust}" == jihoo ]]; then
-    kernel_features+=,jihoo-kernel
-fi
-cargo build --target x86_64-unknown-uefi --features "$kernel_features" --target-dir target/hardware-shell/build
-cp target/hardware-shell/build/x86_64-unknown-uefi/debug/os.efi target/hardware-shell/esp/EFI/BOOT/BOOTX64.EFI
-printf '%s\n' 'Diskless shell EFI: target/hardware-shell/esp/EFI/BOOT/BOOTX64.EFI' 'Polled USB boot keyboard enabled. This script does not write to physical disks.'
+cp target/jihoo-kernel/hardware-shell/os.efi target/hardware-shell/esp/EFI/BOOT/BOOTX64.EFI
+printf '%s\n' 'Diskless shell EFI: target/hardware-shell/esp/EFI/BOOT/BOOTX64.EFI' 'Polled USB keyboard enabled; storage, network, timers and APs remain off.'

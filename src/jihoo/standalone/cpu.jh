@@ -17,6 +17,8 @@ extern fn jihoo_read_cr2() -> u64
 extern fn kaguya_user_fault() -> never
 extern fn jihoo_irq_enable()
 extern fn jihoo_disable_interrupts()
+extern fn kaguya_irq_eoi(irq: u8)
+extern fn kaguya_lapic_interrupt(vector: u64, user: bool) -> bool
 
 static GDT: [u64; 448] = zeroed([u64; 448])
 static TSS: [u64; 832] = zeroed([u64; 832])
@@ -105,6 +107,7 @@ fn hex(value: u64) {
 export fn jihoo_interrupt_dispatch(frame: *InterruptFrame) {
     unsafe {
         let vector = frame.vector
+        if kaguya_lapic_interrupt(vector, frame.cs & 3 == 3) { return }
         if vector == 3 {
             atomic_add(&BREAKPOINTS, 1)
             return
@@ -117,7 +120,7 @@ export fn jihoo_interrupt_dispatch(frame: *InterruptFrame) {
                 task.kaguya_scheduler_clock_tick()
                 if frame.cs & 3 == 3 { atomic_add(&USER_TICKS, 1) }
             }
-            pic.jihoo_pic_eoi((vector - 32) as u8)
+            kaguya_irq_eoi((vector - 32) as u8)
             if vector == 32 { task.kaguya_scheduler_interrupt(frame.cs & 3 == 3) }
             return
         }
@@ -140,11 +143,18 @@ export fn jihoo_interrupt_dispatch(frame: *InterruptFrame) {
     }
 }
 
-pub fn check() {
+pub fn check_polled() {
     unsafe {
         let previous = atomic_load(&BREAKPOINTS)
         jihoo_breakpoint()
         if atomic_load(&BREAKPOINTS) != previous + 1 { panic("breakpoint return failed") }
+    }
+    runtime.output("CPU interrupts: breakpoint return passed; external interrupts remain disabled\n")
+}
+
+pub fn check() {
+    check_polled()
+    unsafe {
         pic.jihoo_pic_init()
         io.jihoo_outb(0x21, 0xfe)
         let start = atomic_load(&TICKS)

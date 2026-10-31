@@ -18,6 +18,9 @@ import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--shutdown', action='store_true', help='Type shutdown and require guest-initiated QEMU power off')
+parser.add_argument('--cpus', type=int, default=2, choices=range(1, 65), help='Number of emulated CPUs')
+parser.add_argument('--require-smp', action='store_true', help='Require all CPUs online and AP context switches before shutdown')
+parser.add_argument('--abi', action='store_true', help='Run verify.kef compatibility, shared-thread and timer-preemption checks')
 parser.add_argument('--keyboard-stress', action='store_true', help='Exercise Shift, Backspace and more than one USB ring wrap')
 parser.add_argument('--usb-mouse', action='store_true', help='Add a mouse before the keyboard to test HID filtering')
 parser.add_argument('--no-keyboard', action='store_true', help='Hardware-shell boot with an empty xHCI controller')
@@ -68,6 +71,10 @@ if args.no_keyboard and (not args.hardware_shell or args.keyboard_stress):
 if args.shell_io and (not args.hardware_shell or args.no_keyboard):
     parser.error('--shell-io requires hardware-shell with a keyboard')
 isolated = args.hardware_test or (args.hardware_shell and not args.jihoo_nvme)
+if args.require_smp and (args.cpus < 2 or not args.shutdown or isolated):
+    parser.error('--require-smp requires a normal kernel, at least two CPUs and --shutdown')
+if args.abi and (args.hardware_test or args.no_keyboard):
+    parser.error('--abi requires a shell with a keyboard and verify.kef')
 if args.network and isolated:
     parser.error('--network requires the normal kernel')
 if args.disk_image and isolated:
@@ -113,7 +120,7 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
         resources.callback(http_server.shutdown)
     boot = tmp / 'esp/EFI/BOOT'
     boot.mkdir(parents=True)
-    kernel = 'target/hardware-test/build/x86_64-unknown-uefi/debug/os.efi' if args.hardware_test else 'target/x86_64-unknown-uefi/debug/os.efi'
+    kernel = 'target/hardware-test/esp/EFI/BOOT/BOOTX64.EFI' if args.hardware_test else 'target/kaguya/os.efi'
     if args.cpu_test:
         kernel = 'target/jihoo-kernel/cpu-test/os.efi'
     if args.ring3_test:
@@ -123,7 +130,7 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
     if args.scheduler_test:
         kernel = 'target/jihoo-kernel/scheduler-test/os.efi'
     if args.hardware_shell:
-        kernel = 'target/hardware-shell/build/x86_64-unknown-uefi/debug/os.efi'
+        kernel = 'target/hardware-shell/esp/EFI/BOOT/BOOTX64.EFI'
     if args.jihoo_shell:
         kernel = 'target/jihoo-kernel/shell/os.efi'
     if args.jihoo_nvme:
@@ -138,7 +145,7 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
             parser.error('--resolution requires GOP and WIDTHxHEIGHT')
         width, height = map(int, args.resolution.split('x'))
         gpu = ['-vga', 'none', '-device', f'VGA,xres={width},yres={height},vgamem_mb=64']
-    command = ['qemu-system-x86_64', '-smp', '2', '-m', '256', '-bios', os.environ['OVMF_BIOS'],
+    command = ['qemu-system-x86_64', '-smp', str(args.cpus), '-m', '256', '-bios', os.environ['OVMF_BIOS'],
                '-drive', f'format=raw,file=fat:ro:{tmp / "esp"}',
                '-snapshot', '-display', 'none', '-serial', f'file:{out / "serial.log"}',
                '-qmp', f'unix:{qmp},server=on,wait=off', '-no-reboot', *gpu]
@@ -324,6 +331,28 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
                     if len({load.group(1) for load in loads}) != 1:
                         raise RuntimeError(f'Exited program frames were not reclaimed: {[l.group(1) for l in loads]}')
                     print('Exec memory: 40 sequential programs used a constant number of frames')
+                if args.abi:
+                    result = shell_command('exec verify.kef compat', timeout=30)
+                    if 'Compatibility: legacy files, exec and shared-address-space threads passed' not in result or 'Task terminated with exit code 0' not in result:
+                        raise RuntimeError('Syscall compatibility or shared-thread test failed')
+                    execute('screendump', {'filename': str(out / 'abi.ppm')})
+                    magic, dimensions, maximum, pixels = (out / 'abi.ppm').read_bytes().split(b'\n', 3)
+                    image_width, image_height = map(int, dimensions.split())
+                    if magic != b'P6' or maximum != b'255' or len(pixels) != image_width * image_height * 3:
+                        raise RuntimeError('Unexpected ABI capture format')
+                    origins = []
+                    for color in [b'\x12\x34\xab', b'\x23\x45\xbc', b'\x34\x56\xcd']:
+                        offsets = [i // 3 for i in range(0, len(pixels), 3) if pixels[i:i+3] == color]
+                        if not offsets:
+                            raise RuntimeError('Terminal region cell was not drawn')
+                        origins.append((min(i % image_width for i in offsets), min(i // image_width for i in offsets)))
+                    x, y = origins[0]
+                    if origins != [(x, y), (x + 8, y), (x, y + 16)]:
+                        raise RuntimeError(f'Terminal region length/width ABI mismatch: {origins}')
+                    result = shell_command('exec verify.kef preemption', timeout=30)
+                    if result.count('Task terminated with exit code 0') != 3:
+                        raise RuntimeError('Concurrent user timer preemption failed')
+                    print('ABI: legacy files, exec, shared threads, terminal region and concurrent timer preemption passed')
                 if args.network:
                     ping = shell_command('ping 10.0.2.2', timeout=30)
                     if '10 packets transmitted, 10 received, 0% packet loss' not in ping:
@@ -412,6 +441,13 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
                     final = (out / 'serial.log').read_text(errors='replace')
                     if not shutdown_event or process.returncode != 0 or 'Shutdown: requesting UEFI power off' not in final:
                         raise RuntimeError('Guest did not complete UEFI shutdown; see serial.log')
+                    if args.require_smp:
+                        if f'[SMP] online CPUs: {args.cpus}' not in final:
+                            raise RuntimeError('Expected CPU count did not come online')
+                        switches = re.findall(r'\[SMP\] CPU (\d+) context switches: (\d+)', final)
+                        if not any(int(cpu) > 0 and int(count) > 0 for cpu, count in switches):
+                            raise RuntimeError('No AP ran scheduled tasks')
+                        print(f'SMP: {args.cpus} CPUs online, AP scheduling and shutdown parking passed')
                 else:
                     execute('quit')
                 process.wait(timeout=10)

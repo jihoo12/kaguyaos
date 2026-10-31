@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-set -e
-
+set -euo pipefail
 cd "$(dirname "$0")/.."
-
-PROGRAMS="init ls cat rm write ping wget"
-
-for prog in $PROGRAMS; do
-    if [ -f "user/${prog}.kef" ]; then
-        cargo run --manifest-path tools/kef-tool/Cargo.toml -- insert nvme.img "user/${prog}.kef" "${prog}.kef"
+source tools/jihoo-env.sh
+image="${KAGUYA_DISK_IMAGE:-nvme.img}"
+output="${KAGUYA_USER_OUTPUT:-$PWD/target/jihoo-user}"
+for program in init ls cat write rm ping wget; do
+    if [[ ! -f "$output/$program.kef" ]]; then
+        echo "Missing $output/$program.kef; run ./user/build.sh first" >&2
+        exit 1
     fi
 done
-
-echo "All programs inserted into nvme.img"
+bash tools/prepare-image.sh "$image"
+for program in init ls cat write rm ping wget; do
+    target/jihoo-tools/kef-tool insert "$image" "$output/$program.kef" "$program.kef"
+done
+printf 'All programs inserted into %s\n' "$image"

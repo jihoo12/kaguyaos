@@ -7,6 +7,10 @@ after its replacement passes the applicable host and QEMU checks. Assembly
 continues to provide CPU entry, interrupt, syscall, and context-switch ABI
 boundaries.
 
+## Current status (2026-10-31)
+
+The supported kernel, all seven programs, host image tool, ordinary build/run scripts and both hardware images now use Jihoo and assembly without Rust tools. Four-CPU NVMe/virtio/network and polled diskless QEMU checks pass. The final checkpoint at the end of this document records verification and remaining hardware limits. Earlier checkpoints below are historical; their statements about unfinished components describe the state at that time.
+
 ## Work order
 
 1. Supply a kernel `std.sys` implementation so jihoo collections, ownership,
@@ -55,7 +59,7 @@ and controls, report it to `jihoolang/jihoo` with `gh`, and stop migration
 until it is fixed. Record the exact compiler commit and preserve completed
 builds when doing so.
 
-## Current checkpoint
+## Historical checkpoints
 
 The kernel `std.sys` adapter is connected to the mixed kernel and passes
 host collection-lifetime tests plus diskless and normal QEMU regressions.
@@ -332,3 +336,31 @@ python3 tools/gpu-smoke.py --jihoo-nvme --disk-image /tmp/kaguya-jihoo-port-nvme
 Physical NIC hardware, loss/reordering and multi-CPU protocol execution
 have not been exercised here. ACPI/APIC/SMP and ordinary build-script
 replacement remain unfinished. The ordinary build still requires Rust.
+
+## Completed SMP and supported-build checkpoint (2026-10-31)
+
+Compiler `ea3c2e0b87f8177058b4a8dcfa97588960cf6d96` fixes issue #24. No new compiler problem was found while completing this checkpoint.
+
+`acpi.jh` validates RSDP/root/child checksums and lengths, bounds firmware mapping and parses enabled MADT CPUs, IOAPICs, interrupt overrides and LAPIC overrides. FADT, HPET and MCFG helpers retain the relevant firmware queries. Native fixtures pass checksums, invalid pointers, malformed records, duplicate/disabled CPUs, FADT extended addresses and ECAM bounds at O0/O2.
+
+The normal EFI now starts APs through a firmware-allocated low LoaderData page, rather than overwriting a fixed physical address. Each AP has its own GDT/TSS, GS state and stack, loads the shared IDT/root, enables its LAPIC timer and joins the scheduler. E1000 INTx uses the IOAPIC. A bounded startup handshake prevents reuse of a trampoline that an unacknowledged AP might still access. Shutdown parks all other CPUs before stopping devices and requesting UEFI power-off.
+
+The scheduler's outgoing task remains unavailable to other CPUs until assembly has saved its stack and acknowledged release. Event wakeups cannot resume the outgoing context early. Task-exit waiters wake after retirement acknowledgement and frame/stack reclamation. Native stack-switch tests pass; four-CPU QEMU tests show actual AP context switches, constant frames across 40 sequential loads, eight-stage pipelines, sleep/waits and network protocol progress.
+
+All syscall IDs `0..41` are implemented, including the legacy print, file, exec and shared-address-space-thread paths. The `verify.kef compat` probe checks legacy file calls, invalid user pointers, exec/exec2, shared address-space memory and shared descriptor offsets; separate busy children exercise user timer return. Formatting remains an explicit syscall/tool request only.
+
+The supported scripts now select Jihoo directly: `build.sh`, `run.sh`, `build_insert_run.sh`, `user/build.sh`, `user/insert.sh`, and both hardware wrappers. Nix provides Clang/LLVM/QEMU/OVMF without installing or initializing Rust. The image tool is Jihoo. New regular host images are initialized explicitly; existing unrecognized images fail without modification. Default artifacts are `target/kaguya/os.efi` and `esp/EFI/BOOT/BOOTX64.EFI`.
+
+The hardware diagnostic remains isolated. A separate `hardware-shell` mode keeps IF clear in kernel and userspace, polls USB on the BSP and never initializes storage, network, timers or APs. The public hardware artifact paths are preserved. The timer-driven diskless `shell` checkpoint remains separate.
+
+`tools/check-rust-free-build.sh` traps `rustc`, Cargo, `rustup` and `rust-lld`, then builds the kernel, seven programs, Jihoo image tool and both hardware images. It also compares an existing invalid image before/after rejection. This check passes with zero trapped calls. `nix flake check --no-build` and the same trapped build inside `nix develop` pass. Rust sources and differential harnesses remain optional historical references, excluded from the supported OS build.
+
+Recorded QEMU artifacts:
+
+- `/tmp/kaguya-jihoo-smp-port`: two CPUs, USB/files, 40 constant-frame loads and shutdown.
+- `/tmp/kaguya-jihoo-smp-network`: four CPUs, AP scheduling, eight-stage pipelines, IRQ receive, gateway ping, large HTTP bodies, redirects/errors, bounded-pipe output and shutdown parking.
+- `/tmp/kaguya-jihoo-hardware-polled`: restricted diskless USB shell, pipelines, constant frames and shutdown with timers/APs off.
+- `/tmp/kaguya-jihoo-default-final`: the ordinary Rust-tool-blocked build, legacy ABI/shared-thread checks, four CPUs and local network fixtures.
+- `/tmp/kaguya-jihoo-abi-gop-final`: single-CPU GOP, shared-thread/legacy ABI checks, terminal region pixel placement and user timer preemption.
+
+The ordinary build no longer requires Rust. Replacement Jihoo images still need physical-hardware validation; the older physical successes belong to the Rust reference. Protocol loss/reordering and physical NIC/NVMe/GPU/SMP behavior have not been validated here. See the root README for remaining runtime limits.

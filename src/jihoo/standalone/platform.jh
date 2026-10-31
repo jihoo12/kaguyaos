@@ -10,6 +10,7 @@ import storage
 import scheduler
 import usb
 import network
+import smp
 
 struct GopInfo {
     version: u32
@@ -76,7 +77,7 @@ fn rsdp(table: *uefi.SystemTable) -> u64 {
 
 pub fn run(stage: u32) -> i32 {
     let cpu_test = stage > 0
-    runtime.serial("kaguyaOS jihoo-only diagnostic entry\n")
+    runtime.serial(if stage == 6 { "kaguyaOS Jihoo UEFI entry\n" } else { "kaguyaOS jihoo-only diagnostic entry\n" })
     let table = uefi.system_table()
     uefi.disable_watchdog()
     var guid = uefi.Guid { a: 0x9042a9de, b: 0x23dc, c: 0x4a38,
@@ -100,6 +101,7 @@ pub fn run(stage: u32) -> i32 {
             stride < width || format > 1 || required > 0x3fffffffffffffff ||
             required * 4 > framebuffer_size || framebuffer_size > 0xffffffffffffffff - framebuffer { return 3 }
         let acpi = rsdp(table)
+        if stage == 6 { smp.reserve(services) }
         var map_size: u64 = 262144
         var key: u64 = 0
         var descriptor_size: u64 = 0
@@ -119,7 +121,7 @@ pub fn run(stage: u32) -> i32 {
         if descriptor_size < 40 || map_size % descriptor_size != 0 { panic("invalid memory map") }
         heap.jihoo_heap_init(&HEAP[0] as u64, 1048576)
         runtime.init_console(framebuffer as *u32, stride as u64, width as u64, height as u64, format)
-        runtime.output(if stage >= 6 { "kaguyaOS - jihoo NVMe boot\n" } else if cpu_test { "kaguyaOS - CPU TEST (storage writes disabled)\n" } else { "kaguyaOS - HARDWARE TEST (storage writes disabled)\n" })
+        runtime.output(if stage == 6 { "kaguyaOS - jihoo NVMe boot\n" } else if cpu_test { "kaguyaOS - CPU TEST (storage writes disabled)\n" } else { "kaguyaOS - HARDWARE TEST (storage writes disabled)\n" })
         println("UEFI ExitBootServices: OK")
         println("GOP: " + width.to_string().as_str() + " x " + height.to_string().as_str())
         println("Memory map: " + (map_size / descriptor_size).to_string().as_str() + " entries")
@@ -132,17 +134,18 @@ pub fn run(stage: u32) -> i32 {
         if cpu_test {
             cpu.init()
             memory.init(map as *u8, map_size, descriptor_size, framebuffer, framebuffer_size)
-            if stage >= 6 { runtime.init_display(framebuffer, stride as u64, width as u64, height as u64, format) }
+            if stage == 6 { runtime.init_display(framebuffer, stride as u64, width as u64, height as u64, format) }
             if stage >= 5 { usb.init(jihoo_xhci_index()) }
-            cpu.check()
-            if stage >= 6 { network.init() }
-            if stage >= 6 { storage.init_nvme() }
+            if stage == 7 { cpu.check_polled() } else { cpu.check() }
+            if stage == 6 { network.init() }
+            if stage == 6 { storage.init_nvme() }
             else if stage >= 3 {
                 storage.init_ram()
                 storage.check()
             }
-            if stage >= 2 { ring3.check() }
-            if stage >= 5 { scheduler.shell() }
+            if stage == 6 { smp.prepare(acpi) }
+            if stage >= 2 && stage != 7 { ring3.check() }
+            if stage >= 5 { scheduler.shell(stage == 7) }
             if stage == 4 { scheduler.check() }
         }
         runtime.output("PCI/NVMe/USB/network/GPU drivers: NOT STARTED\n")

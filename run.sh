@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-cargo build --target x86_64-unknown-uefi
-mkdir -p esp/EFI/BOOT
-cp target/x86_64-unknown-uefi/debug/os.efi esp/EFI/BOOT/BOOTX64.EFI
-if [ ! -f nvme.img ]; then
-    qemu-img create -f raw nvme.img 1G
+source tools/jihoo-env.sh
+bash build.sh
+image="${KAGUYA_DISK_IMAGE:-nvme.img}"
+if [[ ! -e "$image" ]]; then
+    KAGUYA_USER_OUTPUT="$PWD/target/jihoo-kernel/nvme-shell/user" bash user/insert.sh
 fi
 
 gpu_args=(-vga none -device virtio-vga)
@@ -13,12 +13,12 @@ if [[ "${GPU:-virtio}" == gop ]]; then
     gpu_args=(-vga std)
 fi
 qemu-system-x86_64 \
-    -smp 2 \
+    -smp "${KAGUYA_CPUS:-2}" \
     -m 256 \
     "${gpu_args[@]}" \
     -bios "${OVMF_BIOS}" \
     -drive format=raw,file=fat:rw:esp \
-    -drive file=nvme.img,if=none,id=nvm,format=raw \
+    -drive "file=$image,if=none,id=nvm,format=raw" \
     -device nvme,serial=deadbeef,drive=nvm \
     -device qemu-xhci,id=xhci,msi=off,msix=off \
     -device usb-kbd,bus=xhci.0 \

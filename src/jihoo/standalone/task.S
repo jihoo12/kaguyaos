@@ -3,6 +3,7 @@
 kaguya_context_switch:
     movq 40(%rsp), %r10
     movq 48(%rsp), %r11
+    movq 56(%rsp), %rax
     pushq %r15
     pushq %r14
     pushq %r13
@@ -13,6 +14,10 @@ kaguya_context_switch:
     pushq %rsi
     movq %rsp, (%rcx)
     movq %rdx, %rsp
+    testq %rax, %rax
+    jz 9f
+    movb $0, (%rax)
+9:
     testq %r9, %r9
     jz 1f
     xchgq %r9, (%r8)

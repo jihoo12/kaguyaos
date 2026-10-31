@@ -47,6 +47,18 @@ export fn kaguya_map_mmio(base: u64, bytes: u64) -> bool {
     true
 }
 
+export fn kaguya_firmware_range(base: u64, bytes: u64) -> bool {
+    if bytes == 0 || base > 0x7ffffffff000 || bytes > 0x7ffffffff000 - base { return false }
+    var page = base & !4095
+    let end = (base + bytes + 4095) & !4095
+    while page < end {
+        if !paging.jihoo_range_mapped(root() as *u64, page, 4096, false) &&
+            !paging.jihoo_page_map(root() as *u64, page, page, 0x8000000000000002, null, allocate_table) { return false }
+        page += 4096
+    }
+    true
+}
+
 pub fn map_fresh(address: u64, flags: u64) -> u64 {
     let physical = kaguya_alloc_frame()
     if physical == 0 { return 0 }

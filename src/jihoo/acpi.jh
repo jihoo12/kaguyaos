@@ -1,0 +1,173 @@
+extern fn kaguya_firmware_range(base: u64, bytes: u64) -> bool
+
+pub struct Tables { pub rsdp: u64, pub root: u64, pub madt: u64, pub fadt: u64, pub hpet: u64, pub mcfg: u64 }
+pub struct Madt {
+    pub lapic: u64
+    pub cpus: [u8; 64]
+    pub count: u64
+    pub ioapic: u64
+    pub gsi_base: u32
+    pub irq_gsi: [u32; 16]
+    pub irq_flags: [u16; 16]
+}
+
+fn mapped(base: u64, bytes: u64) -> bool {
+    if bytes == 0 || base > 0x7fffffffffff || bytes > 0x800000000000 - base { return false }
+    unsafe { kaguya_firmware_range(base, bytes) }
+}
+pub fn read(base: u64, offset: u64, bytes: u64) -> u64 {
+    var value: u64 = 0
+    unsafe { for i in 0..bytes as i64 { value |= (base as *u8)[offset as i64 + i] as u64 << (i * 8) } }
+    value
+}
+pub fn checksum(base: u64, length: u64) -> bool {
+    var sum: u8 = 0
+    unsafe { for i in 0..length as i64 { sum = sum +% (base as *u8)[i] } }
+    sum == 0
+}
+pub fn signature(base: u64, text: str) -> bool {
+    unsafe { for i in 0..text.len { if (base as *u8)[i] != text[i] { return false } } }
+    true
+}
+
+pub fn table_length(base: u64) -> u64 {
+    if base == 0 || !mapped(base, 36) { return 0 }
+    let length = read(base, 4, 4)
+    if length < 36 || length > 1048576 || !mapped(base, length) || !checksum(base, length) { return 0 }
+    length
+}
+
+pub fn valid_rsdp(address: u64) -> bool {
+    if address == 0 || !mapped(address, 20) || !signature(address, "RSD PTR ") || !checksum(address, 20) { return false }
+    if read(address, 15, 1) >= 2 {
+        if !mapped(address, 36) { return false }
+        let length = read(address, 20, 4)
+        if length < 36 || length > 4096 || !mapped(address, length) || !checksum(address, length) { return false }
+    }
+    true
+}
+
+fn scan(start: u64, length: u64) -> u64 {
+    if !mapped(start, length) { return 0 }
+    var offset: u64 = 0
+    while offset + 20 <= length { if valid_rsdp(start + offset) { return start + offset }; offset += 16 }
+    0
+}
+
+pub fn discover(supplied: u64) -> Option(Tables) {
+    var address = supplied
+    if !valid_rsdp(address) {
+        address = 0
+        if mapped(0, 4096) {
+            let ebda = read(0, 0x40e, 2) << 4
+            if ebda != 0 { address = scan(ebda, 1024) }
+        }
+        if address == 0 { address = scan(0xe0000, 131072) }
+        if address == 0 { return None }
+    }
+    var root: u64 = 0
+    var stride: u64 = 4
+    if read(address, 15, 1) >= 2 {
+        let candidate = read(address, 24, 8)
+        if table_length(candidate) != 0 && signature(candidate, "XSDT") { root = candidate; stride = 8 }
+    }
+    if root == 0 {
+        let candidate = read(address, 16, 4)
+        if table_length(candidate) == 0 || !signature(candidate, "RSDT") { return None }
+        root = candidate
+    }
+    let length = table_length(root)
+    if (length - 36) % stride != 0 { return None }
+    var tables = Tables { rsdp: address, root: root, madt: 0, fadt: 0, hpet: 0, mcfg: 0 }
+    var offset: u64 = 36
+    while offset < length {
+        let child = read(root, offset, stride)
+        if table_length(child) != 0 {
+            if signature(child, "APIC") { tables.madt = child }
+            else if signature(child, "FACP") { tables.fadt = child }
+            else if signature(child, "HPET") { tables.hpet = child }
+            else if signature(child, "MCFG") { tables.mcfg = child }
+        }
+        offset += stride
+    }
+    Some(tables)
+}
+
+pub fn madt(address: u64) -> Option(Madt) {
+    let length = table_length(address)
+    if length < 44 || !signature(address, "APIC") { return None }
+    var info = Madt { lapic: read(address, 36, 4), cpus: [0; 64], count: 0, ioapic: 0, gsi_base: 0,
+                      irq_gsi: [0; 16], irq_flags: [0; 16] }
+    for i in 0..16 { info.irq_gsi[i] = i as u32 }
+    var offset: u64 = 44
+    while offset < length {
+        if length - offset < 2 { return None }
+        let kind = read(address, offset, 1)
+        let size = read(address, offset + 1, 1)
+        if size < 2 || size > length - offset { return None }
+        if kind == 0 {
+            if size < 8 { return None }
+            if read(address, offset + 4, 4) & 1 != 0 && info.count < 64 {
+                let id = read(address, offset + 3, 1) as u8
+                var duplicate = false
+                for i in 0..info.count as i64 { if info.cpus[i] == id { duplicate = true } }
+                if !duplicate { info.cpus[info.count as i64] = id; info.count += 1 }
+            }
+        } else if kind == 1 {
+            if size < 12 { return None }
+            if info.ioapic == 0 { info.ioapic = read(address, offset + 4, 4); info.gsi_base = read(address, offset + 8, 4) as u32 }
+        } else if kind == 2 {
+            if size < 10 { return None }
+            let source = read(address, offset + 3, 1)
+            if read(address, offset + 2, 1) == 0 && source < 16 {
+                info.irq_gsi[source as i64] = read(address, offset + 4, 4) as u32
+                info.irq_flags[source as i64] = read(address, offset + 8, 2) as u16
+            }
+        } else if kind == 5 {
+            if size < 12 { return None }
+            info.lapic = read(address, offset + 4, 8)
+        }
+        offset += size
+    }
+    Some(info)
+}
+
+pub fn dsdt(fadt: u64) -> u64 {
+    let length = table_length(fadt)
+    if length >= 148 { let value = read(fadt, 140, 8); if value != 0 { return value } }
+    if length >= 44 { read(fadt, 40, 4) } else { 0 }
+}
+pub fn pm_control(fadt: u64) -> u16 {
+    let length = table_length(fadt)
+    if length >= 184 && read(fadt, 172, 1) == 1 {
+        let value = read(fadt, 176, 8)
+        if value != 0 && value <= 65535 { return value as u16 }
+    }
+    if length >= 68 { read(fadt, 64, 4) as u16 } else { 0 }
+}
+pub fn pm_timer(fadt: u64) -> u16 {
+    let length = table_length(fadt)
+    if length >= 220 && read(fadt, 208, 1) == 1 {
+        let value = read(fadt, 212, 8)
+        if value != 0 && value <= 65535 { return value as u16 }
+    }
+    if length >= 80 { read(fadt, 76, 4) as u16 } else { 0 }
+}
+pub fn hpet_base(table: u64) -> u64 { if table_length(table) >= 56 && read(table, 40, 1) == 0 { read(table, 44, 8) } else { 0 } }
+pub fn ecam(table: u64, segment: u16, bus: u8, device: u8, function: u8, register: u16) -> u64 {
+    let length = table_length(table)
+    if length < 44 || !signature(table, "MCFG") || (length - 44) % 16 != 0 || device > 31 || function > 7 || register > 4095 { return 0 }
+    var offset: u64 = 44
+    while offset < length {
+        let first = read(table, offset + 10, 1)
+        let last = read(table, offset + 11, 1)
+        if read(table, offset + 8, 2) == segment as u64 && bus as u64 >= first && bus as u64 <= last {
+            let delta = ((bus as u64 - first) << 20) | (device as u64 << 15) | (function as u64 << 12) | register as u64
+            let base = read(table, offset, 8)
+            if base > 0xffffffffffffffff - delta { return 0 }
+            return base + delta
+        }
+        offset += 16
+    }
+    0
+}

@@ -1,5 +1,5 @@
 {
-  description = "Rust UEFI development environment";
+  description = "Jihoo x86_64 UEFI development environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -15,30 +15,19 @@
     {
       devShells.${system}.default = pkgs.mkShell {
         packages = with pkgs; [
-          rustup
           qemu
           OVMF
           python3
           binutils
-          clang
-          lld
+          llvmPackages_21.clang
+          llvmPackages_21.lld
         ];
 
         shellHook = ''
-          export RUSTUP_HOME="$PWD/.rustup"
-          export CARGO_HOME="$PWD/.cargo"
-          export PATH="$CARGO_HOME/bin:$PATH"
-
           export OVMF_BIOS="${pkgs.OVMF.fd}/FV/OVMF.fd"
-
-          # Rust toolchain이 없을 때만 초기화
-          if [ ! -x "$CARGO_HOME/bin/cargo" ]; then
-            echo "Initializing Rust toolchain..."
-            rustup default stable
-            rustup target add x86_64-unknown-uefi
-          fi
-
-          echo "🦀 UEFI dev environment ready"
+          export CC=clang
+          export JIHOO_LD=ld.lld
+          echo "Jihoo UEFI environment ready; compiler source: ../jihoo"
         '';
       };
     };

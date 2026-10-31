@@ -97,6 +97,6 @@ A TCP socket is a client stream: `connect` blocks until the handshake completes,
 - **Argument passing**: Syscall number in `RAX`, up to 6 args in `RDI`, `RSI`, `RDX`, `R10`, `R8`, `R9`.
 - **Clobbers**: `RCX`, `R11` and all argument registers (`RDI`, `RSI`, `RDX`, `R10`, `R8`, `R9`) are clobbered; inline-asm wrappers must declare them as outputs.
 - **String args**: Pass a pointer and length (e.g., `RDI=name_ptr, RSI=name_len`).
-- **Packed IP**: For `net_send_ping`, pack 4 bytes of IPv4 into a single `u32` (e.g., `0x0A000202` for `10.0.2.2`).
+- **Packed IP**: For `net_send_ping`, pack 4 bytes of IPv4 into a single `u32` (e.g., `0x0202000A` for `10.0.2.2`).
 - **Task IDs**: Returned by `add_task`, `exec`, `exec2`. Use with `wait_task`, `get_task_status`, or `get_task_exit_code`.
 - **ICMP replies**: `net_recv_ping` is non-blocking. Call `yield` in a loop to poll for replies.

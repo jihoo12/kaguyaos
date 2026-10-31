@@ -19,10 +19,12 @@ import net_wire
 import net_udp
 import net_dns
 import net_base
+import smp
 
 extern fn jihoo_probe_data() -> *u8
 extern fn jihoo_probe_size() -> u64
 extern fn jihoo_wait_interrupt()
+extern fn jihoo_pause()
 extern fn jihoo_program_count() -> u64
 extern fn jihoo_program_table() -> *u64
 
@@ -60,16 +62,63 @@ pub fn spawn(name: str, arguments: str, files: shared.Shared(file_table.FileTabl
 }
 
 pub fn dispatch(id: u64, a: u64, b: u64, c: u64, d: u64, e: u64) -> u64 {
+    if id == 0 {
+        if user_range(a, b) {
+            let text = unsafe { make_str(a as *u8, b as i64) }
+            if utf8.validate(text).is_ok() { runtime.output(text) }
+        }
+        return 0
+    }
+    if id == 3 {
+        if !user_range(a, 1) || b < 8 || !user_range(b - 8, 8) { return 0xffffffffffffffff }
+        let owner = match task.current_space() { Some(value) => value, None => return 0xffffffffffffffff }
+        let files = match task.current_files() { Some(value) => value, None => return 0xffffffffffffffff }
+        return task.add_user(a, b, 0, 0, owner, files)
+    }
+    if id == 6 { usb.poll(); return 0 }
+    if id == 8 {
+        var byte: u8 = 0
+        return if usb.available(&byte, 1) == 0 { 0 } else { byte as u64 }
+    }
+    if id == 11 { return unsafe { match (*storage.volume()).lock().deref_mut().format() { Ok(()) => 0, Err(error) => error as u64 } } }
+    if id == 13 || id == 14 {
+        if b == 0 || b > 47 || !user_range(a, b) { return (-2 as i64) as u64 }
+        let name = unsafe { make_str(a as *u8, b as i64) }
+        if utf8.validate(name).is_err() { return (-2 as i64) as u64 }
+        if id == 13 {
+            if d == 0 || !user_range(c, d) { return (-2 as i64) as u64 }
+            return unsafe { match (*storage.volume()).lock().deref_mut().create(name, c as *u8, d) { Ok(()) => 0, Err(error) => error as u64 } }
+        }
+        return unsafe { match (*storage.volume()).lock().read_file(name) {
+            Ok(data) => {
+                if c == 0 || d == 0 { return data.len() as u64 }
+                let count = min(d, data.len() as u64)
+                if !user_range(c, count) { return (-2 as i64) as u64 }
+                if count != 0 { mem_copy(c as *u8, &data[0], count as i64) }
+                count
+            }
+            Err(error) => error as u64
+        } }
+    }
+    if id == 18 { loop { network.poll(); task.schedule(); unsafe { jihoo_wait_interrupt() } } }
+    if id == 21 || id == 22 {
+        if b == 0 || b > 255 || !user_range(a, b) ||
+            (id == 22 && d != 0 && c != 0 && (d > 2048 || !user_range(c, d))) { return 0xffffffffffffffff }
+        let name = unsafe { make_str(a as *u8, b as i64) }
+        if utf8.validate(name).is_err() { return 0xffffffffffffffff }
+        let arguments = unsafe { if id == 21 || c == 0 || d == 0 { "" } else { make_str(c as *u8, d as i64) } }
+        let files = unsafe { file_table.FileTable.with_console((*storage.volume()).clone()) }
+        return spawn(name, arguments, files)
+    }
     if id == 19 { runtime.cell(a, b, c as u32, d as u32, e as u32); return 0 }
     if id == 20 {
         if d == 0 || e == 0 { return 0 }
-        if d > 0x7fffffffffffffff / e { return 0 }
-        let count = d * e
-        if count > 0x7fffffffffffffff / 12 || !user_range(c, count * 12) { return 0 }
-        runtime.region(a, b, c as *console.Cell, count, d)
+        if c & 3 != 0 || d > 0x7fffffffffffffff / 12 || !user_range(c, d * 12) { return 0 }
+        runtime.region(a, b, c as *console.Cell, d, e)
         return 0
     }
     if id == 7 {
+        smp.shutdown()
         usb.shutdown()
         network.shutdown()
         storage.shutdown()
@@ -196,7 +245,7 @@ fn list(pointer: u64, capacity: u64) -> u64 {
     }
 }
 
-pub fn shell() -> never {
+pub fn shell(polled: bool) -> never {
     unsafe {
         let programs = jihoo_program_table()
         for i in 0..(if storage.temporary() { jihoo_program_count() as i64 } else { 0 }) {
@@ -205,15 +254,17 @@ pub fn shell() -> never {
             (*storage.volume()).lock().deref_mut().create(name, entry[2] as *u8, entry[3]).unwrap()
         }
         processor.init(0, 0)
+        if polled { task.polled() }
         task.init()
         task.enter_idle()
+        if !storage.temporary() { smp.start() }
         let files = file_table.FileTable.with_console((*storage.volume()).clone())
         if spawn("init.kef", "", files) == 0xffffffffffffffff { panic("shell load failed") }
         loop {
             usb.poll()
             network.poll()
             task.schedule()
-            jihoo_wait_interrupt()
+            if polled { jihoo_pause() } else { jihoo_wait_interrupt() }
         }
     }
 }

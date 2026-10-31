@@ -1,0 +1,20 @@
+import acpi
+export fn jihoo_acpi_discover(address: u64, out: *u64) -> bool {
+    match acpi.discover(address) {
+        Some(value) => { unsafe { out[0] = value.root; out[1] = value.madt; out[2] = value.fadt; out[3] = value.hpet; out[4] = value.mcfg }; true }
+        None => false
+    }
+}
+export fn jihoo_acpi_madt(address: u64, out: *u64) -> bool {
+    match acpi.madt(address) {
+        Some(value) => {
+            unsafe { out[0] = value.lapic; out[1] = value.count; out[2] = value.ioapic; out[3] = value.gsi_base as u64
+                out[4] = value.irq_gsi[9] as u64; out[5] = value.irq_flags[9] as u64
+                for i in 0..value.count as i64 { out[6 + i] = value.cpus[i] as u64 }
+            }; true
+        }
+        None => false
+    }
+}
+export fn jihoo_acpi_controls(address: u64, out: *u64) { unsafe { out[0] = acpi.dsdt(address); out[1] = acpi.pm_control(address) as u64; out[2] = acpi.pm_timer(address) as u64 } }
+export fn jihoo_acpi_ecam(address: u64, bus: u8, device: u8, function: u8, register: u16) -> u64 { acpi.ecam(address, 0, bus, device, function, register) }

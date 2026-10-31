@@ -3,14 +3,15 @@ import processor
 import cpu
 import memory
 import task
+import smp
 
 extern fn jihoo_write_cr3(root: u64)
 extern fn jihoo_user_trampoline_address() -> u64
 extern fn jihoo_kernel_return_address() -> u64
 
 pub export fn kaguya_cpu_state() -> *cpu_state.PerCpu { processor.current() }
-pub export fn kaguya_online_cpus() -> u64 { 1 }
-export fn kaguya_kick_cpu(index: u64) { panic("standalone AP is offline") }
+pub export fn kaguya_online_cpus() -> u64 { smp.online() }
+export fn kaguya_kick_cpu(index: u64) { smp.kick(index) }
 export fn kaguya_kernel_root() -> u64 { memory.root() }
 
 export fn kaguya_prepare_switch(index: u64, stack: u64, user_stack: u64, user_gs: u64, root: u64) {

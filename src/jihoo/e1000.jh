@@ -87,6 +87,7 @@ pub fn init() -> bool {
 pub fn address() -> [u8; 6] { unsafe { MAC } }
 pub fn ready() -> bool { unsafe { atomic_load(&BASE) != 0 && IRQ < 16 } }
 pub fn interrupts() -> u64 { unsafe { atomic_load(&INTERRUPTS) } }
+pub fn irq_line() -> u8 { unsafe { IRQ } }
 
 pub fn interrupt(irq: u8) {
     unsafe {

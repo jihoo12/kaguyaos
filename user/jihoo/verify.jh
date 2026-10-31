@@ -2,12 +2,59 @@
 
 import kaguya as os
 
+static THREAD_STACK: [u64; 2048] = [0; 2048]
+static THREAD_VALUE: u64 = 0
+static THREAD_FD: i64 = -1
+
+fn compatibility_thread() -> never {
+    require(os.write_fd(unsafe { THREAD_FD }, "thread") == 6, 70)
+    unsafe { atomic_store(&THREAD_VALUE, 123) }
+    os.exit(71)
+}
+
 fn require(condition: bool, code: i64) {
     if !condition { os.exit(code) }
 }
 
 export fn kaguya_main(arguments: *u8, count: i64) -> never {
     let args = unsafe { make_str(arguments, count) }
+    if args == "compat-child" { os.exit(72) }
+    if args == "compat" {
+        let name = "abi-test"
+        let data = "legacy"
+        require(os.call(13, name.ptr as i64, name.len, data.ptr as i64, data.len, 0) == 0, 60)
+        require(os.call(14, name.ptr as i64, name.len, 0, 0, 0) == 6, 61)
+        var buffer: [u8; 6] = [0; 6]
+        require(os.call(14, name.ptr as i64, name.len, &buffer[0] as i64, 6, 0) == 6, 62)
+        require(unsafe { make_str(&buffer[0], 6) } == data, 63)
+        require(os.call(14, name.ptr as i64, name.len, 4096, 6, 0) == -2, 64)
+        require(os.call(3, 4096, 4096, 0, 0, 0) == -1, 65)
+        let fd = os.open(name, os.O_READ | os.O_WRITE | os.O_TRUNC)
+        require(fd >= 3, 66)
+        unsafe { THREAD_FD = fd }
+        let entry: fnptr() -> never = compatibility_thread
+        let top = unsafe { ((&THREAD_STACK[0] as u64 + 16384) & !15) - 8 }
+        let thread = os.call(3, entry as i64, top as i64, 0, 0, 0)
+        require(thread > 0 && os.call(26, thread, 0, 0, 0, 0) == 71, 67)
+        require(unsafe { atomic_load(&THREAD_VALUE) } == 123, 68)
+        require(os.call(33, fd, 0, 0, 0, 0) == 0, 69)
+        require(unsafe { os.read_fd(fd, &buffer[0], 6) } == 6 && unsafe { make_str(&buffer[0], 6) } == "thread", 73)
+        os.close(fd)
+        require(os.call(15, name.ptr as i64, name.len, 0, 0, 0) == 0, 74)
+        let program = "verify.kef"
+        let child_args = "compat-child"
+        let child = os.call(22, program.ptr as i64, program.len, child_args.ptr as i64, child_args.len, 0)
+        require(child > 0 && os.call(26, child, 0, 0, 0, 0) == 72, 75)
+        let utility = "ls.kef"
+        let listing = os.call(21, utility.ptr as i64, utility.len, 0, 0, 0)
+        require(listing > 0 && os.call(26, listing, 0, 0, 0, 0) == 0, 76)
+        require(os.call(6, 0, 0, 0, 0, 0) == 0, 77)
+        let message = "Compatibility: legacy files, exec and shared-address-space threads passed\n"
+        os.call(0, message.ptr as i64, message.len, 0, 0, 0)
+        var cells: [u32; 9] = ['A' as u32, 0xffffff, 0x1234ab, 'B' as u32, 0xffffff, 0x2345bc, 'I' as u32, 0xffffff, 0x3456cd]
+        os.call(20, 2, 0, &cells[0] as i64, 3, 2)
+        os.exit(0)
+    }
     if args == "busy" {
         let start = os.milliseconds()
         while os.milliseconds() - start < 300 {}

@@ -11,7 +11,7 @@ extern fn kaguya_online_cpus() -> u64
 extern fn kaguya_kick_cpu(cpu: u64)
 extern fn kaguya_kernel_root() -> u64
 extern fn kaguya_prepare_switch(cpu: u64, stack: u64, user_stack: u64, user_gs: u64, root: u64)
-extern fn kaguya_context_switch(old: *u64, next: u64, handoff: *u64, encoded: u64, retired: *u64, bottom: u64)
+extern fn kaguya_context_switch(old: *u64, next: u64, handoff: *u64, encoded: u64, retired: *u64, bottom: u64, released: *bool)
 extern fn kaguya_user_trampoline_address() -> u64
 extern fn kaguya_kernel_return_address() -> u64
 extern fn kaguya_runtime_alloc(size: u64, alignment: u64) -> *u8
@@ -28,6 +28,7 @@ struct Task {
     id: u64
     stack: u64
     status: Status
+    on_cpu: bool
     affinity: u64
     pinned: u64
     kernel_bottom: u64
@@ -54,20 +55,25 @@ static READY: bool = false
 static NEXT_ID: u64 = 1
 static TICKS: u64 = 0
 static SWITCHES: u64 = 0
+static CPU_SWITCHES: [u64; 64] = [0; 64]
 static CURRENT: [u64; 64] = [NONE; 64]
 static HANDOFF: [u64; 64] = [0; 64]
 static RETIRED: [u64; 64] = [0; 64]
+static USER_FLAGS: u64 = 0x202
+
+pub fn polled() { if ready() { panic("scheduler already initialized") }; unsafe { USER_FLAGS = 2 } }
 
 pub fn ready() -> bool { unsafe { atomic_load(&READY) } }
 pub fn clock() -> u64 { unsafe { atomic_load(&TICKS) } }
 pub fn switches() -> u64 { unsafe { atomic_load(&SWITCHES) } }
+pub fn cpu_switches(index: u64) -> u64 { unsafe { if index < 64 { atomic_load(&CPU_SWITCHES[index as i64]) } else { 0 } } }
 
 pub fn init() {
     if ready() { panic("scheduler already initialized") }
     var queues = Vec(kernel_sync.Spinlock(Vec(u64))).with_capacity(64)
     for _ in 0..64 { queues.push(kernel_sync.Spinlock.new(Vec(u64).new())) }
     var tasks = Vec(Box(Task)).new()
-    tasks.push(Box.new(Task { id: 0, stack: 0, status: Status.Running, affinity: 0, pinned: 0,
+    tasks.push(Box.new(Task { id: 0, stack: 0, status: Status.Running, on_cpu: true, affinity: 0, pinned: 0,
         kernel_bottom: 0, kernel_top: 0, user_gs: 0, user_rsp: 0, exit_code: 0, wake_tick: 0,
         waiting_for: NONE, address_space: None, files: None }))
     unsafe {
@@ -87,6 +93,7 @@ pub fn enter_idle() {
         let local = kaguya_cpu_state()
         if local.current_task != NONE {
             guard.deref_mut().tasks[local.current_task as i64].status = Status.Zombie
+            atomic_store(&guard.deref_mut().tasks[local.current_task as i64].on_cpu, false)
         }
         local.current_task = NONE
         local.idle_stack = 0
@@ -127,13 +134,13 @@ pub fn add_user(entry: u64, user_rsp: u64, args: u64, count: u64,
         saved[8] = kaguya_user_trampoline_address()
         saved[9] = entry
         saved[10] = 0x23
-        saved[11] = 0x202
+        saved[11] = USER_FLAGS
         saved[12] = user_rsp
         saved[13] = 0x1b
         let cpu: u64 = if id == 1 { 0 } else { target(guard.deref()) }
         let index = guard.tasks.len() as u64
         guard.deref_mut().tasks.push(Box.new(Task { id: id, stack: saved as u64,
-            status: Status.Ready, affinity: cpu, pinned: if id == 1 { 0 } else { NONE },
+            status: Status.Ready, on_cpu: false, affinity: cpu, pinned: if id == 1 { 0 } else { NONE },
             kernel_bottom: bottom as u64, kernel_top: top, user_gs: 0, user_rsp: user_rsp,
             exit_code: 0, wake_tick: 0, waiting_for: NONE,
             address_space: Some(address_space.clone()), files: Some(files.clone()) }))
@@ -155,7 +162,7 @@ pub fn add_kernel(entry: u64, bottom: u64, bytes: u64) -> u64 {
         let cpu = target(guard.deref())
         let index = guard.tasks.len() as u64
         guard.deref_mut().tasks.push(Box.new(Task { id: id, stack: saved as u64,
-            status: Status.Ready, affinity: cpu, pinned: NONE, kernel_bottom: bottom, kernel_top: top,
+            status: Status.Ready, on_cpu: false, affinity: cpu, pinned: NONE, kernel_bottom: bottom, kernel_top: top,
             user_gs: 0, user_rsp: 0, exit_code: 0, wake_tick: 0, waiting_for: NONE,
             address_space: None, files: None }))
         enqueue(guard.deref(), cpu, index)
@@ -166,10 +173,13 @@ pub fn add_kernel(entry: u64, bottom: u64, bytes: u64) -> u64 {
 
 fn claim_local(inout scheduler: Scheduler, cpu: u64) -> u64 {
     var queue = scheduler.queues[cpu as i64].lock()
-    while !queue.is_empty() {
+    var remaining = queue.len()
+    while remaining > 0 && !queue.is_empty() {
+        remaining -= 1
         let index = queue.deref_mut().remove(0)
         if index >= scheduler.tasks.len() as u64 { continue }
         if scheduler.tasks[index as i64].status == Status.Ready {
+            if unsafe { atomic_load(&scheduler.tasks[index as i64].on_cpu) } { queue.deref_mut().push(index); continue }
             scheduler.tasks[index as i64].status = Status.Claimed
             return index
         }
@@ -197,7 +207,7 @@ fn steal(inout scheduler: Scheduler, cpu: u64) -> u64 {
             position -= 1
             let index = queue.deref()[position]
             if index < scheduler.tasks.len() as u64 && scheduler.tasks[index as i64].status == Status.Ready &&
-                scheduler.tasks[index as i64].pinned == NONE {
+                scheduler.tasks[index as i64].pinned == NONE && !unsafe { atomic_load(&scheduler.tasks[index as i64].on_cpu) } {
                 queue.deref_mut().remove(position)
                 scheduler.tasks[index as i64].status = Status.Claimed
                 scheduler.tasks[index as i64].affinity = cpu
@@ -223,6 +233,7 @@ fn maintenance(inout scheduler: Scheduler) {
             scheduler.tasks[i].status = Status.Ready
             scheduler.tasks[i].waiting_for = NONE
             scheduler.tasks[i].wake_tick = 0
+            if published(i as u64) { scheduler.tasks[i].status = Status.Running; continue }
             let pinned = scheduler.tasks[i].pinned
             let cpu = min(if pinned != NONE { pinned } else { scheduler.tasks[i].affinity }, 63)
             enqueue(scheduler, cpu, i as u64)
@@ -237,6 +248,15 @@ fn maintenance(inout scheduler: Scheduler) {
                 scheduler.tasks[i].address_space = None
                 scheduler.tasks[i].kernel_bottom = 0
                 scheduler.tasks[i].kernel_top = 0
+                let id = scheduler.tasks[i].id
+                for waiter in 0..scheduler.tasks.len() {
+                    if scheduler.tasks[waiter].status == Status.Waiting && scheduler.tasks[waiter].waiting_for == id {
+                        scheduler.tasks[waiter].status = Status.Ready
+                        scheduler.tasks[waiter].waiting_for = NONE
+                        if published(waiter as u64) { scheduler.tasks[waiter].status = Status.Running; continue }
+                        enqueue(scheduler, min(scheduler.tasks[waiter].affinity, 63), waiter as u64)
+                    }
+                }
             }
         }
     }
@@ -269,6 +289,7 @@ pub fn schedule() {
             let state = guard.tasks[current as i64].status
             if state != Status.Zombie && state != Status.Sleeping && state != Status.Waiting { return }
             let old = &guard.deref_mut().tasks[current as i64].stack
+            let released = &guard.deref_mut().tasks[current as i64].on_cpu
             let bottom = if state == Status.Zombie { guard.tasks[current as i64].kernel_bottom } else { 0 }
             let idle = local.idle_stack
             guard.deref_mut().tasks[current as i64].user_rsp = local.user_stack
@@ -281,7 +302,8 @@ pub fn schedule() {
             drop(guard)
             kaguya_prepare_switch(cpu, 0, 0, 0, kaguya_kernel_root())
             atomic_add(&SWITCHES, 1)
-            kaguya_context_switch(old, idle, &HANDOFF[cpu as i64], 0, &RETIRED[0], bottom)
+            atomic_add(&CPU_SWITCHES[cpu as i64], 1)
+            kaguya_context_switch(old, idle, &HANDOFF[cpu as i64], 0, &RETIRED[0], bottom, released)
             return
         }
         var encoded: u64 = 0
@@ -296,6 +318,7 @@ pub fn schedule() {
             return
         }
         let old = if current == NONE { &local.idle_stack } else { &guard.deref_mut().tasks[current as i64].stack }
+        let released: *bool = if current == NONE { null } else { &guard.deref_mut().tasks[current as i64].on_cpu }
         var bottom: u64 = 0
         if current != NONE {
             guard.deref_mut().tasks[current as i64].user_rsp = local.user_stack
@@ -303,6 +326,7 @@ pub fn schedule() {
             if guard.tasks[current as i64].status == Status.Zombie { bottom = guard.tasks[current as i64].kernel_bottom }
         }
         guard.deref_mut().tasks[next as i64].status = Status.Running
+        atomic_store(&guard.deref_mut().tasks[next as i64].on_cpu, true)
         guard.deref_mut().tasks[next as i64].affinity = cpu
         guard.deref_mut().tasks[next as i64].wake_tick = 0
         local.current_task = next
@@ -320,7 +344,8 @@ pub fn schedule() {
         drop(guard)
         kaguya_prepare_switch(cpu, kernel_top, user_rsp, gs, root)
         atomic_add(&SWITCHES, 1)
-        kaguya_context_switch(old, stack, &HANDOFF[cpu as i64], encoded, &RETIRED[0], bottom)
+        atomic_add(&CPU_SWITCHES[cpu as i64], 1)
+        kaguya_context_switch(old, stack, &HANDOFF[cpu as i64], encoded, &RETIRED[0], bottom, released)
     }
 }
 
@@ -358,14 +383,7 @@ pub fn exit(code: u64) -> never {
             let index = kaguya_cpu_state().current_task
             guard.deref_mut().tasks[index as i64].status = Status.Zombie
             guard.deref_mut().tasks[index as i64].exit_code = code
-            let id = guard.tasks[index as i64].id
-            for i in 0..guard.tasks.len() {
-                if guard.tasks[i].status == Status.Waiting && guard.tasks[i].waiting_for == id {
-                    guard.deref_mut().tasks[i].status = Status.Ready
-                    guard.deref_mut().tasks[i].waiting_for = NONE
-                    enqueue(guard.deref(), min(guard.tasks[i].affinity, 63), i as u64)
-                }
-            }
+
         }
         schedule()
         panic("exited task resumed")
@@ -406,7 +424,7 @@ pub fn wait_task(id: u64) -> u64 {
             var target = NONE
             for i in 0..guard.tasks.len() { if guard.tasks[i].id == id { target = i as u64; break } }
             if target == NONE { return NONE }
-            if guard.tasks[target as i64].status == Status.Zombie { return guard.tasks[target as i64].exit_code }
+            if guard.tasks[target as i64].status == Status.Zombie && guard.tasks[target as i64].kernel_bottom == 0 { return guard.tasks[target as i64].exit_code }
             let current = kaguya_cpu_state().current_task
             if current == NONE || current == target { return NONE }
             guard.deref_mut().tasks[current as i64].status = Status.Waiting

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-kaguyaOS is a hobby x86_64 UEFI operating system kernel written in Rust (`#![no_std]`). It boots under QEMU with real drivers (NVMe, USB, Ethernet), a FAT16 filesystem, and a userspace shell.
+kaguyaOS is a hobby x86_64 UEFI operating system kernel written in Jihoo with assembly ABI boundaries. It boots under QEMU with real drivers (NVMe, USB, Ethernet), a FAT16 filesystem, and a userspace shell.
 
 ## Environment Setup
 
@@ -12,18 +12,18 @@ nix develop
 
 # Option 2: Manual
 export OVMF_BIOS="/usr/share/ovmf/OVMF.fd"
-rustup target add x86_64-unknown-uefi x86_64-unknown-none
+export JIHOO_BIN="/path/to/jihoo"
 ```
 
-Required: `rustup`, `cargo`, `rust-lld`, `qemu-system-x86_64`, `OVMF firmware`.
+Required: Jihoo (adjacent checkout `../jihoo` or `JIHOO_BIN`), Clang, LLVM `ld.lld`, Python 3, `qemu-system-x86_64`, and OVMF. The supported build must not invoke Rust tools.
 
 ## Build Commands
 
 ```bash
-# Build kernel only (produces target/x86_64-unknown-uefi/debug/os.efi)
-cargo build --target x86_64-unknown-uefi
+# Build kernel and user KEFs (produces target/kaguya/os.efi)
+./build.sh
 
-# Build userspace programs (produces user/*.kef)
+# Build userspace programs (produces target/jihoo-user/*.kef)
 ./user/build.sh
 
 # Insert user programs into nvme.img
@@ -69,7 +69,7 @@ python3 tools/gpu-smoke.py --hardware-shell --resolution 2560x1440 --output /tmp
 ```
 
 Its separate artifact is `target/hardware-shell/esp/EFI/BOOT/BOOTX64.EFI`.
-The build script supplies `KAGUYA_INIT_KEF` and `KAGUYA_PROGRAM_DIR`; do not combine the two hardware features.
+The build script embeds the Jihoo shell and four file utilities; hardware-test and hardware-shell are separate images.
 Connect a boot-protocol USB keyboard directly before boot; hubs/hotplug are unsupported.
 The shell has an 8 MiB temporary RAM filesystem with embedded ls/cat/write/rm.
 Only this new RAM filesystem is initialized automatically; no physical disk is formatted.
@@ -83,62 +83,40 @@ Never restore automatic formatting of unrecognized disks during boot.
 
 ## Code Style
 
-- **Rust edition 2024**, `#![no_std]`, `#![no_main]`
+- Normal source: Jihoo under `src/jihoo/` and `user/jihoo/`; keep README.md in English.
+- Rust sources and harnesses are optional comparison references (edition 2024, `no_std`).
 - `#![allow(dead_code, unused_unsafe)]` — dead code and unused unsafe are permitted
 - No `unsafe` blocks where avoidable, but heavy use is expected (this is an OS kernel)
 - Prefer `core::arch::asm!` / `naked_asm!` for inline assembly
 - Interrupt-safe spinlocks: all locks disable interrupts (`cli`) on acquire
 - Each user task has its own PML4: slots 128–255 (`0x4000_0000_0000`–`0x8000_0000_0000`) are private, all other slots are copied from the kernel PML4 when the space is created, so add new kernel top-level mappings during boot only
 - User pointers must be mapped with `PAGE_USER` in the current address space (`memory::is_user_range_mapped`) before kernel access; the identity map is below `0x8000_0000_0000` but kernel-only
-- No external dependencies except `font8x8` (v0.3, no default features, unicode)
+- Normal builds use the Jihoo standard library with the kernel adapter and the embedded font; no Cargo/font-crate dependency.
 - Comments are sparse — code is self-documenting where possible
 
 ## Architecture Cheat Sheet
 
-| Layer | Key Files | Notes |
-|-------|-----------|-------|
-| Boot | `src/main.rs:efi_main()` → `kernel_main()` | UEFI entry, init sequence, scheduler loop |
-| Memory | `src/memory/{mod,heap,address_space}.rs` | Frame pool, 4-level page tables, kernel heap, per-process address spaces |
-| Tasks | `src/process/mod.rs` | Cooperative round-robin, 100 Hz preemptive tick, SMP |
-| Syscalls | `src/syscall.rs` | 25 syscalls via AMD64 `syscall`/`sysret` |
-| Drivers | `src/drivers/{pci,nvme,xhci,keyboard}.rs`, `src/drivers/net/` | PCI enumeration, NVMe, xHCI USB, E1000, UDP and TCP client sockets (`net/udp.rs`, `net/tcp.rs`) |
-| Filesystem | `src/fs.rs`, `src/file.rs`, `src/pipe.rs` | FAT16, global spinlock; per-process fd tables; blocking pipes |
-| Console | `src/console/{mod,term}.rs` | VGA framebuffer, font8x8, cell-based terminal |
-| Userspace | `user/src/{init,std,ls,cat,write,rm,ping,wget}.rs` | Shell, syscall wrappers, utilities |
-
-## Key Files
-
-- `src/main.rs` — Boot flow, kernel init, scheduler loop (619 lines)
-- `src/syscall.rs` — All 25 syscall handlers
-- `src/memory/heap.rs` — Kernel heap allocator
-- `src/memory/address_space.rs` — Per-process page tables, `heap_grow`
-- `user/linker.ld` — Links programs at `USER_CODE_BASE` (`0x4000_0000_0000`); build with `--apply-dynamic-relocs`
-- `src/process/mod.rs` — Task struct, context switch, scheduler
-- `src/drivers/net/mod.rs` — Network stack (ARP, ICMP, ring buffer)
-- `user/src/init.rs` — Shell (PID 1)
-- `user/src/std.rs` — Userspace syscall wrappers and heap allocator (libkaguya)
-- `docs/syscall.md` — Syscall reference table
-- `tools/kef-tool/` — Host-side FAT16 image manipulation
+| Layer | Files under `src/jihoo/` | Notes |
+|-------|-------------------------|-------|
+| Boot | `standalone/platform.jh` | UEFI entry and device init; mode 6 is ordinary NVMe, mode 7 is polled hardware shell |
+| Memory | `heap.jh`, `frame.jh`, `paging.jh`, `space.jh`, `standalone/memory.jh` | Kernel heap/frame pool and owned per-process page tables |
+| CPUs | `acpi.jh`, `standalone/{cpu,processor,smp}.jh`, `standalone/ap.S` | GDT/TSS/IDT, GS state, LAPIC/IOAPIC, AP startup |
+| Tasks | `task.jh`, `standalone/task.S` | Per-CPU queues, cooperative/preemptive scheduling, retirement acknowledgement |
+| Syscalls | `standalone/{ring3,scheduler}.jh`, `standalone/entry.S` | IDs 0..41 via syscall/sysret |
+| Drivers | `pci.jh`, `nvme.jh`, `xhci.jh`, `e1000.jh`, `virtio_gpu.jh` | PCI devices and DMA |
+| Network | `net_{base,wire,udp,dns,tcp}.jh` | IRQ receive, IPv4, ICMP, UDP/DNS and client TCP |
+| Files | `filesystem.jh`, `fat.jh`, `file_table.jh`, `pipe_owner.jh` | KAGFAT16, descriptor/shared ownership, blocking pipes |
+| Console | `console.jh`, `font/basic.jh`, `display.jh` | GOP/virtio desktop and text |
+| Userspace | `user/jihoo/` | Seven programs, syscall wrappers, `runtime.S` |
+| Host tool | `tools/kef-tool/main.jh` | Jihoo image manipulation, excluded Rust reference in same directory |
 
 ## Common Tasks
 
-**Add a syscall:**
-1. Add handler in `src/syscall.rs` match statement
-2. Add number constant
-3. Add wrapper in `user/src/std.rs`
-4. Document in `docs/syscall.md`
+**Add a syscall:** update `src/jihoo/standalone/scheduler.jh`, add a wrapper in `user/jihoo/kaguya.jh`, and document it in `docs/syscall.md`.
 
-**Add a user program:**
-1. Create `user/src/name.rs` with `#![no_std]` + `#![no_main]`
-2. Use `#[no_mangle] extern "C" fn _start()` entry point
-3. Add to `PROGRAMS` list in `user/build.sh`
-4. Run `./user/build.sh && ./user/insert.sh`
+**Add a program:** create `user/jihoo/name.jh` with `#![freestanding]` and exported `kaguya_main`, then add it to the build/insertion lists. Programs are linked by `user/linker.ld` at `0x4000_0000_0000` with `--apply-dynamic-relocs`.
 
-**Add a driver:**
-1. Create module in `src/drivers/`
-2. Implement PCI BAR mapping via `src/drivers/pci.rs`
-3. Initialize in `kernel_main()` after PCI enumeration
-4. For network drivers: implement `NetworkDriver` trait in `src/drivers/net/driver.rs`
+**Validate changes:** use relevant native C/Jihoo harnesses under `tools/test-jihoo-*.sh`, `tools/check-rust-free-build.sh`, and disposable QEMU snapshots. Older Rust differential harnesses are optional references. Keep diagnostic/hardware shell restrictions intact; new kernel top-level mappings must exist before user spaces are created.
 
 ## QEMU Debug
 

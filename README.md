@@ -1,498 +1,157 @@
 # kaguyaOS
 
-A hobby operating system written in Rust for x86_64 UEFI.
+A hobby x86_64 UEFI operating system written in [Jihoo](https://github.com/jihoolang/jihoo), with assembly at CPU and syscall boundaries.
 
-kaguyaOS currently boots into userspace on an SMP system, runs a preemptive scheduler, mounts a FAT16 filesystem from NVMe, handles USB keyboard input through xHCI, and provides IRQ-driven IPv4 networking with DNS resolution. The current development milestone is a framebuffer-based graphical desktop/window with the shell rendered inside the window client area.
+The supported kernel, all seven userspace programs, and disk-image tool build without `rustc`, Cargo, `rustup`, or `rust-lld`. The former Rust implementation remains in the repository for comparison and is excluded from the normal build.
 
-![Rust](https://img.shields.io/badge/language-Rust-orange)
-![Platform](https://img.shields.io/badge/platform-x86__64--UEFI-blue)
+## Build and run
 
-An experimental jihoo migration includes all seven userspace programs and
-selected kernel components behind the `jihoo-kernel` Cargo feature. The
-default build still uses Rust. See the [userspace port](user/jihoo/README.md)
-and [kernel port](src/jihoo/README.md) for build commands, verification,
-remaining Rust components, and compiler regression checks.
+Keep the Jihoo checkout at `../jihoo`, then enter the development environment:
 
----
-
-## Features
-
-### Kernel and scheduling
-
-- Ring 0/3 isolation using AMD64 `syscall` / `sysret`
-- 28 syscall IDs currently dispatched (`0..=27`)
-- SMP startup using INIT-SIPI-SIPI
-- Per-CPU data through GS-base MSRs with `swapgs` handling
-- Preemptive round-robin scheduling with per-CPU run queues
-- LAPIC timer preemption and scheduler wake IPIs
-- Task sleep, blocking wait, zombie/reaping support, and idle work stealing
-- Interrupt-safe spinlocks and scheduler synchronization
-- Event-based blocking/wakeup used by network waits
-
-### Graphics and console
-
-- UEFI GOP framebuffer, currently exercised at 1280×800
-- Shared software framebuffer with clipped pixel/rectangle drawing and explicit presentation
-- Modern PCI virtio-gpu 2D driver: resource backing, scanout, transfer and flush
-- GOP output backend when no virtio-gpu is present
-- 8×8 text rendering
-- Primitive desktop/window frame
-- Shell output rendered inside the window client area
-- Viewport-aware console clearing
-
-### Storage and userspace
-
-- Custom KEF executable format
-- Per-process page tables and frame reclamation on exit
-- Userspace heap allocator on a `heap_grow` syscall (up to 256 MiB per process)
-- NX-enabled user mappings
-- NVMe controller driver using MMIO
-- FAT16 filesystem with create/read/write/delete/list/format
-- Userspace shell and utilities including `ls`, `cat`, `write`, `rm`, and `ping`
-
-### USB
-
-- xHCI USB 3.0 host controller driver
-- USB keyboard through an interrupt IN endpoint
-
-### Networking
-
-- Intel E1000 (82540EM) driver
-- PCI INTx routed through the I/O APIC
-- IRQ-driven receive processing with bounded RX draining
-- ARP cache and blocking ARP resolution
-- Shared IPv4 transmit/routing path
-- ICMP Echo Request/Reply
-- UDP receive path used by DNS
-- DNS A-record resolution with scheduler-based blocking timeout
-- QEMU user-networking gateway/DNS routing
-
-The networking milestone currently resolves and pings hostnames such as `google.com`. TCP, HTTP, and TLS are not implemented yet.
-
----
-
-## Quick Start
-
-### Requirements
-
-- Rust toolchain with the `x86_64-unknown-uefi` target
-- QEMU with x86_64 system emulation
-- OVMF UEFI firmware
-- `qemu-img`
-- A shell environment capable of running the build scripts
-
-With Nix:
-
-```bash
+```sh
 nix develop
-```
-
-Or configure the UEFI target/firmware manually:
-
-```bash
-rustup target add x86_64-unknown-uefi
-export OVMF_BIOS="/usr/share/ovmf/OVMF.fd"
-```
-
-Build userspace, insert KEF programs into the disk image, and launch QEMU:
-
-```bash
 ./build_insert_run.sh
 ```
 
-Or run each step separately:
+The scripts build the adjacent compiler with Nix. Set `JIHOO_BIN=/path/to/jihoo` to use an existing compiler instead. The port is verified with Jihoo commit `ea3c2e0b87f8177058b4a8dcfa97588960cf6d96`, including the fixes for issues #23 and #24.
 
-```bash
-./user/build.sh
-./user/insert.sh
-./run.sh
+Manual builds need Jihoo, Clang, LLVM `ld.lld`, Python 3, Bash, QEMU and OVMF. Set `OVMF_BIOS` to the firmware file; `CC` and `JIHOO_LD` can select the assembler and userspace linker. The Nix shell supplies these tools and does not install or initialize Rust.
+
+Individual steps:
+
+```sh
+./user/build.sh       # target/jihoo-user/{init,ls,cat,write,rm,ping,wget}.kef
+./user/insert.sh      # insert those programs into nvme.img
+./build.sh           # target/kaguya/os.efi and esp/EFI/BOOT/BOOTX64.EFI
+./run.sh             # rebuild kernel and boot QEMU
 ```
 
-The default QEMU configuration uses virtio-vga with a 2D virtio-gpu driver, 2 virtual CPUs, NVMe storage, an xHCI USB keyboard, and an E1000 NIC with QEMU user-mode networking.
+`KAGUYA_USER_OUTPUT` changes the userspace output directory. `KAGUYA_DISK_IMAGE` changes the image used by insertion and QEMU. `GPU=gop` selects GOP graphics, and `KAGUYA_CPUS=4` changes the virtual CPU count.
 
----
+A missing host image is created as a sparse 1 GiB regular file and explicitly initialized by the Jihoo image tool. An existing image must already contain the custom KAGFAT16 layout; an unrecognized image fails without formatting. The kernel also refuses to format unrecognized NVMe volumes during boot. These scripts never install onto physical disks.
 
-## Shell Commands
+The host tool builds with `bash tools/build-kef-tool.sh`. Its executable is `target/jihoo-tools/kef-tool`, supporting `check`, `list`, `insert`, `extract`, `delete`, and explicit `format`. This custom layout is not a standard FAT16/FAT32 boot partition.
 
-| Command | Description |
-|---|---|
-| `help` | Show available commands |
-| `ls` | List files |
-| `cat <file>` | Display file contents |
-| `write <file> <msg>` | Write content to a file |
-| `rm <file>` | Delete a file |
-| `exec <file> [args]` | Execute a KEF binary |
-| `ping <IPv4-or-hostname>` | Send ICMP echo requests; hostnames are resolved through DNS |
-| `clear` | Clear the active terminal client area |
-| `shutdown` | Power off |
+The default QEMU machine has two CPUs, virtio-vga, NVMe, an xHCI USB keyboard, and an Intel E1000 NIC with user-mode networking.
 
-Examples:
+## Features
+
+- UEFI handoff, GOP output, memory-map validation and runtime shutdown.
+- GDT, per-CPU TSS and fault stacks, IDT, ring-3 isolation and syscall IDs `0..41`.
+- ACPI RSDP/XSDT/RSDT/MADT parsing, LAPIC/IOAPIC setup and INIT-SIPI-SIPI AP startup.
+- Per-CPU run queues, work stealing, timer preemption, wake IPIs, blocking sleep/wait and safe stack retirement.
+- Interrupt-safe locks, shared/weak ownership and generation-based event waits.
+- Per-process page tables, NX mappings, frame reclamation and a userspace heap of up to 256 MiB.
+- NVMe I/O and KAGFAT16 create/read/write/delete/list, descriptor tables and shared file offsets.
+- Bounded blocking pipes, inherited standard descriptors and shared-address-space threads.
+- xHCI boot-protocol USB keyboard input.
+- Software desktop/window rendering, modern PCI virtio-gpu 2D, dirty-region presentation and GOP fallback.
+- E1000 IRQ receive, ARP, IPv4, ICMP, UDP sockets, DNS A resolution and client TCP sockets.
+- HTTP downloads with streaming, redirects, file output and bounded-pipe backpressure.
+
+The shell supports `help`, `clear`, `shutdown`, `ls`, `cat`, `write`, `rm`, `exec`, `ping`, and `wget`, plus pipelines of up to eight commands and `<`, `>`, `>>` redirection:
 
 ```text
-kaguya> ping 8.8.8.8
-PING 8.8.8.8: 56 data bytes
-...
-10 packets transmitted, 10 received, 0% packet loss
-
-kaguya> ping google.com
-Resolving google.com...
-PING <resolved IPv4>: 56 data bytes
-...
+kaguya> write note hello
+kaguya> cat note | cat
+kaguya> ls > listing
+kaguya> exec cat.kef listing
+kaguya> ping 10.0.2.2
+kaguya> wget http://example.com > page.html
+kaguya> shutdown
 ```
 
----
+## Verification
 
-## Architecture
+To verify all supported build paths while trapping any Rust tool invocation:
 
-```text
-                 +----------------------+
-                 |     UEFI / OVMF      |
-                 +----------+-----------+
-                            |
-                 +----------v-----------+
-                 |    kaguyaOS kernel   |
-                 +----------+-----------+
-                            |
-       +--------------------+--------------------+
-       |                    |                    |
-+------v------+      +------v------+      +------v------+
-| Scheduler   |      |  Drivers    |      | Graphics /  |
-| SMP / Tasks |      | NVMe/xHCI   |      | Console     |
-+------+------+      | E1000       |      +------+------+
-       |             +------+------+             |
-       |                    |                    |
-+------v--------------------v--------------------v------+
-|                  Ring 3 userspace                    |
-|          shell / ls / cat / write / rm / ping        |
-+------------------------------------------------------+
+```sh
+bash tools/check-rust-free-build.sh
 ```
 
----
+This builds the kernel, seven programs, Jihoo host tool and both hardware images, prepares an image under `target/rust-free-check/`, and verifies that an existing invalid image remains byte-for-byte unchanged.
 
-## Project Structure
+Boot the ordinary kernel with a disposable QEMU snapshot and a local HTTP fixture:
 
-```text
-kaguyaos/
-├── src/
-│   ├── main.rs                 # Boot flow and scheduler startup
-│   ├── process/
-│   │   └── mod.rs              # SMP scheduler and task lifecycle
-│   ├── sync/
-│   │   └── mod.rs              # Interrupt-safe Spinlock
-│   ├── memory/
-│   │   ├── mod.rs              # Frame allocator and page tables
-│   │   ├── address_space.rs    # Per-process page tables and heap growth
-│   │   └── heap.rs             # Kernel heap allocator
-│   ├── console/
-│   │   ├── mod.rs              # Console writer and text viewport
-│   │   ├── framebuffer.rs      # Pixel/rectangle graphics primitives
-│   │   └── term.rs             # Cell-based terminal renderer
-│   ├── drivers/
-│   │   ├── pci.rs              # PCI enumeration and interrupt metadata
-│   │   ├── nvme.rs             # NVMe driver
-│   │   ├── xhci.rs             # xHCI USB driver
-│   │   └── net/
-│   │       ├── mod.rs           # NIC state, ARP cache, RX work
-│   │       ├── driver.rs        # NetworkDriver abstraction
-│   │       ├── e1000.rs         # Intel E1000 driver
-│   │       ├── arp.rs           # ARP and incoming frame dispatch
-│   │       ├── ipv4.rs          # Shared IPv4 transmit path
-│   │       ├── dns.rs           # DNS A-record resolver
-│   │       └── helper.rs        # Network checksum helpers
-│   ├── loader.rs               # KEF loader
-│   ├── syscall.rs              # Syscall dispatcher
-│   ├── interrupts.rs           # IDT, exceptions and IRQ handling
-│   ├── fs.rs                   # FAT16 filesystem
-│   ├── acpi.rs                 # ACPI/MADT discovery
-│   ├── processor.rs            # AP startup, LAPIC/I/O APIC, per-CPU data
-│   ├── pic.rs                  # Legacy PIC/PIT support
-│   ├── gdt.rs                  # GDT/TSS
-│   ├── io.rs                   # Port I/O
-│   └── uefi.rs                 # UEFI definitions/runtime services
-├── user/
-│   ├── src/init.rs             # Shell
-│   ├── src/std.rs              # Userspace runtime/syscall wrappers
-│   ├── src/ping.rs             # IPv4/hostname ping utility
-│   └── build.sh
-├── tools/kef-tool/             # KEF packaging tool
-├── docs/
-│   └── syscall.md              # Syscall reference
-├── run.sh
-└── README.md
+```sh
+python3 tools/gpu-smoke.py --network --cpus 4 --require-smp --shutdown
+python3 tools/gpu-smoke.py --backend gop --shutdown
 ```
 
----
+Use `--disk-image PATH` to select another prepared image. Smoke tests save screenshots and serial logs under `--output PATH` (default `/tmp/kaguya-gpu-smoke`) and do not persist guest writes.
 
-## Development Direction
+Additional syscall/thread/preemption checks use an optional verification program:
 
-The first networking goal — resolving and successfully pinging a hostname — is complete. Current work is focused on the graphics path:
-
-```text
-framebuffer primitives
-        ↓
-desktop + window
-        ↓
-terminal inside window
-        ↓
-mouse cursor
-        ↓
-window movement / composition
+```sh
+./user/build.sh verify
+target/jihoo-tools/kef-tool insert target/rust-free-check/nvme.img target/jihoo-user/verify.kef verify.kef
+python3 tools/gpu-smoke.py --disk-image target/rust-free-check/nvme.img --abi --network --cpus 4 --require-smp --shutdown
 ```
 
-Networking remains an active subsystem. A later milestone is to add TCP and HTTP so a userspace program can perform a `curl`-style request.
+Native C/Jihoo tests cover collections/ownership, address spaces, filesystem failures and stale handles, descriptor lifetimes, concurrent pipes, task switching, device rings, graphics, ACPI and network parsing/state. Representative commands:
 
----
-
-## Known Limitations
-
-- Graphics use a fixed software backbuffer (up to 1920×1080 pixels); there is no compositor.
-- virtio-gpu currently uses one scanout and synchronous polling with full-frame transfers. No 3D acceleration, hotplug, mode switching, or AMD hardware support.
-- The GOP backend supports RGB/BGR 32-bit modes. GPU runtime failures stop presentation and report through serial; live recovery is not implemented.
-- The window is static and there is no mouse support yet.
-- The E1000 path targets the QEMU 82540EM device.
-- IPv4 configuration currently assumes the QEMU user-networking environment.
-- DNS is a minimal single-query A-record resolver.
-- TCP, HTTP, and TLS are not implemented.
-- Each program has its own page tables (code at `0x4000_0000_0000`, a heap growing from `0x7000_0000_0000`, a 16 KiB stack below `0x7fff_ffff_0000`); everything is freed when it exits. The kernel and its identity map stay shared, without PCID or global pages.
-- KEF programs are linked at `0x4000_0000_0000` with resolved GOT entries and are not relocated at load time. Version 1 headers (`KEF\x01`, 32 bytes) record the file-backed size so only the declared `.bss` is zero-filled; legacy `KEF\0` images must store their whole image.
-- NVMe transfers use PRP2 or a single PRP list, so one command can cover at most 512 pages.
-
----
-
-## License
-
-[Apache License 2.0](LICENSE)
-
-## Graphics development
-
-The renderer writes `0x00RRGGBB` pixels into a shared backbuffer. `console::display::present()`
-then copies changed regions to GOP (including RGB/BGR conversion) or submits virtio-gpu transfer/flush
-commands. The console and cell syscalls present after each output batch. Serial diagnostics
-have an independent path, including kernel panic and CPU exception output.
-
-The driver follows the [VIRTIO 1.2 specification](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html),
-using modern PCI capabilities, VERSION_1 negotiation, a split control queue and fenced
-2D commands. The backbuffer and queue storage live in the identity-mapped kernel image;
-they are reserved for the kernel lifetime, including after device timeouts.
-
-```bash
-nix develop
-./run.sh                       # virtio-vga (default)
-GPU=gop ./run.sh               # standard VGA + GOP output
-
-# After building the kernel and preparing nvme.img:
-python3 tools/gpu-smoke.py
-python3 tools/gpu-smoke.py --backend gop --output /tmp/kaguya-gop-smoke
+```sh
+bash tools/test-jihoo-shared.sh
+bash tools/test-jihoo-space.sh
+bash tools/test-jihoo-filesystem.sh
+bash tools/test-jihoo-file-table.sh
+bash tools/test-jihoo-pipe-owner.sh
+bash tools/test-jihoo-task.sh
+bash tools/test-jihoo-usb.sh
+bash tools/test-jihoo-nvme.sh
+bash tools/test-jihoo-display.sh
+bash tools/test-jihoo-acpi.sh
+bash tools/test-jihoo-udp.sh
 ```
 
-The smoke runner uses a headless QEMU with disposable disk snapshots, waits for the shell,
-sends `clear` and `help` through the virtual USB keyboard, and saves serial logs and
-`desktop.ppm` / `help.ppm` screenshots. It checks GPU activation (virtio mode), command
-completion and changing screen contents. Output defaults to `/tmp/kaguya-gpu-smoke`.
-Mouse input and window movement are outside this milestone.
+Older Rust differential harnesses are optional reference checks. They are not required to build or validate the supported Jihoo OS. The migration history and recorded checkpoints are in [docs/jihoo-full-port.md](docs/jihoo-full-port.md).
 
-## First physical hardware test
+## Physical hardware milestones
 
-Build the dedicated diagnostic EFI, **not the normal kernel**, for the first hardware boot:
+Use the isolated diagnostic image for a first hardware boot:
 
-```bash
-nix develop
+```sh
 ./tools/build-hardware-test.sh
-python3 tools/gpu-smoke.py --hardware-test --output /tmp/kaguya-hardware-test
+python3 tools/gpu-smoke.py --hardware-test
 ```
 
-The artifact is `target/hardware-test/esp/EFI/BOOT/BOOTX64.EFI`. The build uses an
-isolated target directory so it does not replace the normal QEMU kernel. The script
-only creates files inside the repository; it does not format or install onto a USB drive.
+Its artifact is `target/hardware-test/esp/EFI/BOOT/BOOTX64.EFI`. It validates GOP, UEFI ExitBootServices, the memory map and kernel collection/heap cleanup, then halts at `HARDWARE TEST READY`. It does not start PCI devices, replacement page tables, timers, APs or userspace.
 
-Copy this artifact to `EFI/BOOT/BOOTX64.EFI` on a prepared FAT32 UEFI boot USB.
-Use the firmware boot menu to select that USB. This EFI is unsigned; firmware
-Secure Boot must permit it (for example, Secure Boot disabled for the test).
-Do not use the normal `esp/EFI/BOOT/BOOTX64.EFI` for this milestone.
+After that diagnostic succeeds, build the separate diskless shell:
 
-Expected result: a black screen with white diagnostic text, ending in
-`HARDWARE TEST READY`. Take a photo of the screen, including the resolution and
-memory-map entries. The kernel intentionally halts there; keyboard input and the
-shell are not started. Reset or power off to leave the test.
-
-This mode uses the firmware's existing page tables and GOP framebuffer after
-ExitBootServices. It does not enumerate PCI or start NVMe, USB, network, virtio-gpu,
-interrupt timers, application processors, a heap, or userspace. NVMe writes are
-also rejected at the driver entry point in this build. It therefore validates only
-UEFI handoff, kernel entry, firmware memory-map access and basic GOP output.
-It does not establish that the normal kernel or any hardware drivers work on the PC.
-Only linear 32-bit RGB/BGR GOP modes are accepted. The firmware memory-map buffer
-is now aligned static storage with a 256 KiB capacity; larger maps still fail boot.
-
-Normal boots no longer automatically format an unrecognized NVMe volume or create
-a placeholder `init.kef`. Prepare the QEMU image with the host tools. Normal builds
-still support disk writes and are not the physical-hardware diagnostic mode.
-
-## Diskless physical-hardware shell with USB keyboard
-
-After the diagnostic screen works, build the separate diskless shell:
-
-```bash
-nix develop
-# Install once if this target is missing:
-rustup target add x86_64-unknown-none
+```sh
 ./tools/build-hardware-shell.sh
-python3 tools/gpu-smoke.py --hardware-shell --resolution 2560x1440 --output /tmp/kaguya-usb-shell
+python3 tools/gpu-smoke.py --hardware-shell --shell-io --shutdown
+python3 tools/gpu-smoke.py --hardware-shell --resolution 2560x1440
+python3 tools/gpu-smoke.py --hardware-shell --usb-mouse --keyboard-stress
+python3 tools/gpu-smoke.py --hardware-shell --no-keyboard
 ```
 
-Copy `target/hardware-shell/esp/EFI/BOOT/BOOTX64.EFI` to the USB's
-`EFI/BOOT/BOOTX64.EFI`. Keep the hardware-test artifact as a fallback. Connect a
-wired USB keyboard directly to a motherboard port **before boot**, preferably a
-USB 2 port for the first test. Hubs, hotplug/reconnect, NKRO-only report protocols,
-key repeat and recovery from stalled endpoints are not implemented.
+Its artifact is `target/hardware-shell/esp/EFI/BOOT/BOOTX64.EFI`. Copy the selected artifact to `EFI/BOOT/BOOTX64.EFI` on a prepared FAT32 UEFI boot USB, using firmware settings that permit an unsigned image. The build scripts do not write the USB.
 
-The script builds the shell and file utilities into isolated KEF files and embeds
-them in the kernel, supplying `KAGUYA_INIT_KEF` and `KAGUYA_PROGRAM_DIR`. It does not modify `nvme.img`, normal userspace
-binaries or physical disks. `hardware-shell` and `hardware-test` are mutually exclusive.
+The diskless shell installs GDT/IDT, page tables and a cooperative BSP scheduler. It embeds `init`, `ls`, `cat`, `write`, and `rm` in a fresh temporary 8 MiB RAM filesystem. External interrupts remain disabled in kernel and userspace: USB is polled, and storage, network, timers and APs remain off. Polling can keep one CPU busy. Changes disappear on shutdown or reboot.
 
-Expected screen: numbered initialization stages, `xHCI: boot keyboard ready`, a USB
-controller summary, then the real ring-3 shell's `kaguya>` prompt. Try `help`, `clear`,
-Shift and Backspace. `ls`, `cat`, `write` and `rm` are embedded and run against an 8 MiB RAM
-filesystem. Files are temporary: shutdown or reboot discards all changes.
-Try `ls`, `cat welcome.txt`, `write note hello`, `cat note`, and `rm note`.
-The USB boot partition and internal drives are never written by this mode. `shutdown` uses the UEFI runtime service;
-reset or power off manually if the firmware does not shut down.
+Connect a boot-protocol wired USB keyboard directly before boot. Only the selected xHCI controller is enabled; enumeration stops after the first usable keyboard. Select another controller with `KAGUYA_XHCI_INDEX=1 ./tools/build-hardware-shell.sh`. Hubs, hotplug, NKRO-only keyboards and endpoint recovery are unsupported. xHCI supports firmware ownership handoff, 32/64-byte contexts, scratchpad pages and bounded port reset waits; real controllers may need additional quirks.
 
-The driver selects one xHCI controller, defaulting to index 0 in PCI scan order.
-Only that controller is enabled; other PCI devices are not initialized. If the
-keyboard is attached to another controller, build with a different index:
+The former Rust diskless shell was physically tested at 2560×1440 in September 2026, including USB input, file utilities and shutdown. The replacement Jihoo images have been tested in QEMU; they still need physical-hardware validation. Normal NVMe/network/SMP builds are separate from these restricted hardware milestones.
 
-```bash
-KAGUYA_XHCI_INDEX=1 ./tools/build-hardware-shell.sh
-```
+## Source map
 
-The selected PCI address and keyboard count are logged. If there are zero keyboards,
-try another direct motherboard port or another controller index, then reboot. A
-USB 3-labelled port may work with a USB 2 keyboard through its USB 2 root port, but
-an intermediate hub is currently unsupported. Photograph any timeout/error and the
-controller summary when reporting hardware failures.
+| Area | Jihoo implementation |
+|---|---|
+| UEFI boot and architecture glue | `src/jihoo/standalone/` |
+| Scheduler and ownership | `task.jh`, `shared.jh`, `kernel_sync.jh` |
+| Memory and executable loading | `heap.jh`, `frame.jh`, `paging.jh`, `space.jh`, `kef.jh` |
+| Files, descriptors and pipes | `filesystem.jh`, `fat.jh`, `file_table.jh`, `pipe_owner.jh` |
+| Hardware | `pci.jh`, `nvme.jh`, `xhci.jh`, `virtio_gpu.jh`, `e1000.jh`, `acpi.jh` |
+| Graphics and console | `display.jh`, `console.jh`, `font/basic.jh` |
+| Network protocols | `net_base.jh`, `net_wire.jh`, `net_udp.jh`, `net_dns.jh`, `net_tcp.jh` |
+| Kernel standard-library adapter | `src/jihoo/runtime/std/sys.jh` |
+| Userspace | `user/jihoo/` |
+| Host image tool | `tools/kef-tool/main.jh` |
 
-In hardware-shell mode, port enumeration stops after the first boot keyboard is
-ready. This avoids a later unrelated USB device timing out and stopping the shared
-controller. Devices encountered before the keyboard can still cause a timeout.
+Paths without a directory prefix in the table are under `src/jihoo/`. See [docs/syscall.md](docs/syscall.md) for the userspace ABI.
 
-This mode installs GDT/IDT, page tables, syscalls, heaps and the BSP scheduler. The
-GOP backbuffer follows the firmware resolution (up to 128 MiB), including 2560×1440.
-USB events are polled from the shell, with IF kept clear; timer/AP startup, network
-and NVMe initialization remain disabled, and NVMe writes are rejected. Polling may
-keep one CPU core busy while waiting for input. Boot logs remain on screen.
+## Limitations
 
-xHCI bring-up includes firmware ownership handoff, stop/reset waits, 32/64-byte
-contexts, up to 256 scratchpad pages, bounded polling, USB 2 port reset and boot-HID
-interface selection. Configuration/interface numbers come from descriptors. Controller
-registers must fit the mapped 64 KiB window. Port reset uses the controller microframe
-counter for a one-second deadline and a 10 ms recovery delay, with an iteration cap
-if the counter stops. Other poll limits are iteration budgets. Controllers requiring additional quirks may fail
-with diagnostics. See the [Linux xHCI register definitions](https://github.com/torvalds/linux/blob/master/drivers/usb/host/xhci.h)
-and [endpoint setup](https://github.com/torvalds/linux/blob/master/drivers/usb/host/xhci-mem.c)
-for reference on context fields and polling intervals.
-
-Additional QEMU checks:
-
-```bash
-python3 tools/gpu-smoke.py --hardware-shell --usb-mouse --keyboard-stress --output /tmp/kaguya-usb-stress
-python3 tools/gpu-smoke.py --hardware-shell --no-keyboard --output /tmp/kaguya-usb-empty
-python3 tools/gpu-smoke.py --hardware-shell --shutdown --output /tmp/kaguya-shutdown
-```
-
-The default hardware-shell check also runs `ls` 40 times and requires the frames in use reported
-at each load to stay constant, verifying that exited programs' page tables, pages and kernel
-stacks are reclaimed.
-The stress check exercises Shift/Backspace and 30 `help` commands to wrap the transfer
-and event rings. A mouse preceding the keyboard tests HID filtering; an additional
-mouse after the keyboard checks that enumeration stops. The empty-controller
-check verifies that a missing keyboard does not prevent the shell from appearing.
-The shutdown check types the shell command and requires QEMU's guest-shutdown event
-and a clean process exit. Shutdown logs device stopping and the UEFI power-off request;
-if physical power-off stalls, photograph the last message.
-
-On 2026-09-27, the earlier diskless preview reached the ring-3 prompt on physical
-hardware at 2560×1440. USB keyboard input, `clear` and `help` were subsequently confirmed
-on the same physical machine. UEFI shutdown was also confirmed on physical hardware. QEMU does not exercise every real controller's ownership,
-scratchpad or 64-byte-context behavior.
-
-The first physical USB test reached controller startup but all connected ports timed
-out during reset, leaving zero keyboards. The reset write mask was found to omit
-PORTSC's port-power bit; reset and acknowledgement writes now preserve it. Reset
-completion checks current connection/enable/reset state instead of requiring the PRC
-change notification. Failed resets log raw PORTSC and decoded state for the next
-physical test. Stopping enumeration after the first keyboard also avoids a later
-device's timeout disabling the controller; physical keyboard input then succeeded.
-
-The PORTSC write regression checks can be run inside `nix develop`:
-
-```bash
-rustc --test src/drivers/xhci_port.rs -o /tmp/kaguya-xhci-port-test
-/tmp/kaguya-xhci-port-test
-```
-
-The hardware shell initializes a fresh RAM-only KAGFAT filesystem at each boot.
-It uses the project’s custom on-disk layout, not a standard FAT16 USB volume.
-The hardware-shell smoke test also checks seeded files, creation, readback,
-overwrite and deletion through the userspace utilities.
-
-On 2026-09-28, physical hardware testing confirmed `ls`, `write note hello`,
-`cat note`, and `cat welcome.txt`, with each utility exiting successfully.
-
-Host-side RAM filesystem checks (inside `nix develop`):
-
-```bash
-rustc --edition 2024 --test --cfg 'feature="hardware-shell"' tools/ramfs-test.rs -o /tmp/kaguya-ramfs-test
-/tmp/kaguya-ramfs-test
-```
-
-These cover multi-cluster data, overwrite, deletion, end-of-disk and integer-overflow
-bounds, and rebuilding an empty filesystem for a new session.
-
-## Jihoo migration
-
-The complete Rust-free port is in progress; ordinary builds still use Rust.
-See [the migration tracker](docs/jihoo-full-port.md) for the verified scope.
-The standalone Jihoo diskless USB shell builds the kernel and all seven
-user programs without Cargo or rustc:
-
-```bash
-CC=clang bash tools/build-jihoo-kernel.sh shell
-python3 tools/gpu-smoke.py --jihoo-shell --shell-io --shutdown --output /tmp/kaguya-jihoo-standalone-shell
-```
-
-The artifact is `target/jihoo-kernel/shell/esp/EFI/BOOT/BOOTX64.EFI`.
-QEMU checks pass USB keyboard input, RAM file utilities, eight-stage
-pipelines, redirection, repeated execution, timer preemption and shutdown.
-The new image uses the BSP PIT and has not been tested on physical hardware;
-keep the original physical-hardware milestone artifacts separate. It never
-accesses physical disks. NVMe, virtio GPU, SMP and networking remain to be
-connected or ported. Ping/wget compile, but network services are unavailable
-in this standalone shell.
-
-The next Jihoo checkpoint can mount an existing KAGFAT16 NVMe volume and
-load its shell/programs without Rust:
-
-```bash
-CC=clang bash tools/build-jihoo-kernel.sh nvme-shell
-bash tools/build-kef-tool.sh
-# Use an explicitly prepared disposable image for QEMU verification:
-python3 tools/gpu-smoke.py --jihoo-nvme --disk-image /tmp/kaguya-jihoo-port-nvme.img --shell-io --shutdown --output /tmp/kaguya-jihoo-port-nvme
-```
-
-`target/jihoo-tools/kef-tool` is now implemented in Jihoo and shares the
-kernel filesystem implementation. It supports `format`, `check`, `list`,
-`insert`, `extract` and `delete`. Formatting is an explicit host operation;
-boot never formats an unrecognized disk. The NVMe checkpoint passed native
-queue/PRP tests and QEMU filesystem/pipeline/reclamation/shutdown checks.
-Ordinary `run.sh` and userspace build scripts still require Rust.
-
-Jihoo issue #24 is fixed. The NVMe checkpoint now includes the Jihoo
-virtio GPU driver, desktop/window renderer, dirty GOP presentation and
-cell/region syscalls. Both virtio and GOP QEMU regressions pass. Networking,
-ACPI/APIC/SMP and the ordinary Rust build replacement remain in progress.
-
-The Jihoo NVMe path also has e1000 IRQ receive, ARP/IPv4/ICMP, UDP/DNS and
-TCP client sockets. QEMU passes gateway ping and local HTTP streaming,
-redirects, bounded pipelines and error handling. ACPI/APIC/SMP and switching
-the ordinary scripts away from Rust remain in progress.
+This is an experimental OS. Networking uses the static QEMU IPv4 configuration; DNS has one outstanding fixed-ID query. TCP is client-only, without listening sockets, out-of-order reassembly, congestion control or TIME_WAIT. HTTP is supported; HTTPS/TLS is not. Virtio desktop output is bounded to 1920×1080, while the direct GOP diagnostic/diskless console follows the firmware resolution. Kernel/userspace code uses general registers only; per-task SIMD state is not saved. ACPI SMP supports up to 64 enabled xAPIC CPUs through the first IOAPIC. Physical NIC/NVMe/GPU and multiprocessor hardware remain unverified.

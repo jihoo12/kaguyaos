@@ -1,0 +1,207 @@
+import std.uefi
+import acpi
+import memory
+import cpu
+import processor
+import task
+import network
+import e1000
+import io
+import pic
+import runtime
+import sync
+
+extern fn jihoo_ap_blob() -> *u8
+extern fn jihoo_ap_blob_size() -> u64
+extern fn jihoo_ap_pm_offset() -> u64
+extern fn jihoo_ap_lm_offset() -> u64
+extern fn jihoo_ap_entry_address() -> u64
+extern fn jihoo_apic_id() -> u32
+extern fn jihoo_wait_interrupt()
+extern fn jihoo_pause()
+extern fn jihoo_halt() -> never
+extern fn jihoo_dma_fence()
+extern fn kaguya_map_mmio(base: u64, bytes: u64) -> bool
+
+static TRAMPOLINE: u64 = 0
+static LAPIC: u64 = 0
+static IOAPIC: u64 = 0
+static GSI_BASE: u32 = 0
+static IDS: [u8; 64] = [0; 64]
+static DETECTED: u64 = 1
+static ONLINE: u64 = 1
+static TIMER: u32 = 0
+static RELEASE: bool = false
+static STOP: bool = false
+static PARKED: [bool; 64] = [false; 64]
+static STACKS: [u8; 1048592] = zeroed([u8; 1048592])
+static ICR_LOCK: u8 = 0
+static IO_LOCK: u8 = 0
+static NIC_ROUTED: bool = false
+
+fn read(offset: u64) -> u32 { unsafe { read_volatile((LAPIC + offset) as *u32) } }
+fn write(offset: u64, value: u32) { unsafe { write_volatile((LAPIC + offset) as *u32, value) } }
+
+pub fn reserve(services: *uefi.BootServices) {
+    unsafe {
+        var address: u64 = 0xfffff
+        if services.allocate_pages(1, 2, 1, &address) == 0 && address < 0x100000 { TRAMPOLINE = address }
+    }
+}
+
+pub fn online() -> u64 { unsafe { atomic_load(&ONLINE) } }
+
+fn enable(bsp: bool) {
+    unsafe { processor.jihoo_write_msr(0x1b, processor.jihoo_read_msr(0x1b) | 0x800) }
+    write(0xf0, 0x1ff); write(0x80, 0)
+    write(0x350, if bsp { 0x700 } else { 0x10000 })
+}
+
+fn io_read(register: u32) -> u32 { unsafe { write_volatile(IOAPIC as *u32, register); read_volatile((IOAPIC + 16) as *u32) } }
+fn io_write(register: u32, value: u32) { unsafe { write_volatile(IOAPIC as *u32, register); write_volatile((IOAPIC + 16) as *u32, value) } }
+
+pub fn route(gsi: u32, vector: u8, level: bool) -> bool {
+    unsafe {
+        if IOAPIC == 0 || gsi < GSI_BASE { return false }
+        let flags = sync.jihoo_lock_acquire(&IO_LOCK)
+        let count = ((io_read(1) >> 16) & 255) + 1
+        let index = gsi - GSI_BASE
+        if index >= count || index > 119 { sync.jihoo_lock_release(&IO_LOCK, flags & 0x200 != 0); return false }
+        let register = 0x10 + index * 2
+        let low = vector as u32 | if level { (1 << 13) | (1 << 15) } else { 0 }
+        io_write(register, low | (1 << 16)); io_write(register + 1, IDS[0] as u32 << 24); io_write(register, low)
+        sync.jihoo_lock_release(&IO_LOCK, flags & 0x200 != 0)
+        true
+    }
+}
+
+pub fn prepare(rsdp: u64) {
+    let tables = match acpi.discover(rsdp) { Some(value) => value, None => { runtime.output("ACPI: tables unavailable; BSP only\n"); return } }
+    let topology = match acpi.madt(tables.madt) { Some(value) => value, None => { runtime.output("ACPI: MADT unavailable; BSP only\n"); return } }
+    unsafe {
+        let bsp = jihoo_apic_id() as u8
+        IDS[0] = bsp
+        for i in 0..topology.count as i64 {
+            if topology.cpus[i] != bsp && DETECTED < 64 { IDS[DETECTED as i64] = topology.cpus[i]; DETECTED += 1 }
+        }
+        if topology.lapic == 0 || topology.lapic & 4095 != 0 || topology.lapic > 0x7ffffffff000 ||
+            !kaguya_map_mmio(topology.lapic, 4096) { DETECTED = 1; return }
+        LAPIC = topology.lapic
+        if topology.ioapic != 0 && topology.ioapic & 4095 == 0 && kaguya_map_mmio(topology.ioapic, 4096) {
+            IOAPIC = topology.ioapic; GSI_BASE = topology.gsi_base
+        }
+        runtime.output("ACPI: " + DETECTED.to_string().as_str() + " CPUs discovered\n")
+    }
+}
+
+fn send(id: u8, command: u32) {
+    unsafe {
+        let flags = sync.jihoo_lock_acquire(&ICR_LOCK)
+        var ready = false
+        for _ in 0..1000000 { if read(0x300) & (1 << 12) == 0 { ready = true; break }; jihoo_pause() }
+        if !ready { panic("Local APIC delivery timeout") }
+        write(0x310, id as u32 << 24); write(0x300, command)
+        sync.jihoo_lock_release(&ICR_LOCK, flags & 0x200 != 0)
+    }
+}
+
+pub fn kick(index: u64) {
+    unsafe { if LAPIC != 0 && index != 0 && index < online() { send(IDS[index as i64], 49) } }
+}
+
+fn delay(count: u64) { unsafe { for _ in 0..count as i64 { io.jihoo_outb(0x80, 0) } } }
+
+pub fn start() {
+    unsafe {
+        if LAPIC == 0 { return }
+        enable(true)
+        let irq = e1000.irq_line()
+        if irq < 16 && route(irq as u32, 32 + irq, true) {
+            let port: u16 = if irq < 8 { 0x21 } else { 0xa1 }
+            io.jihoo_outb(port, io.jihoo_inb(port) | (1 << (irq & 7)))
+            NIC_ROUTED = true
+            runtime.output("e1000: IOAPIC interrupt route installed\n")
+        }
+        if DETECTED <= 1 || TRAMPOLINE == 0 || memory.root() > 0xffffffff {
+            runtime.output("[SMP] BSP only (no APs or low bootstrap page unavailable)\n"); return
+        }
+        write(0x3e0, 3); write(0x320, 48 | (1 << 16)); write(0x380, 0xffffffff)
+        let tick = task.clock()
+        while task.clock() - tick < 10 { jihoo_wait_interrupt() }
+        TIMER = max(((0xffffffff as u64 - read(0x390) as u64) / 10) as u32, 1)
+        write(0x380, 0)
+        mem_fill(TRAMPOLINE as *u8, 0, 4096)
+        mem_copy(TRAMPOLINE as *u8, jihoo_ap_blob(), jihoo_ap_blob_size() as i64)
+        write_volatile((TRAMPOLINE + 0x102) as *u32, (TRAMPOLINE + 0x110) as u32)
+        write_volatile((TRAMPOLINE + 0xf40) as *u32, (TRAMPOLINE + jihoo_ap_pm_offset()) as u32)
+        write_volatile((TRAMPOLINE + 0xf44) as *u16, 8)
+        write_volatile((TRAMPOLINE + 0xf48) as *u32, (TRAMPOLINE + jihoo_ap_lm_offset()) as u32)
+        write_volatile((TRAMPOLINE + 0xf4c) as *u16, 24)
+        for index in 1..DETECTED as i64 {
+            let top = (((&STACKS[0] as u64) + 15) & !15) + (index as u64 + 1) * 16384
+            write_volatile((TRAMPOLINE + 0xf00) as *u64, jihoo_ap_entry_address())
+            write_volatile((TRAMPOLINE + 0xf08) as *u64, memory.root())
+            write_volatile((TRAMPOLINE + 0xf10) as *u64, top)
+            write_volatile((TRAMPOLINE + 0xf20) as *u64, index as u64)
+            atomic_store((TRAMPOLINE + 0xf18) as *u32, 0)
+            jihoo_dma_fence()
+            send(IDS[index], 0xc500); delay(10000)
+            send(IDS[index], 0x8500); delay(10000)
+            for _ in 0..2 { send(IDS[index], 0x4600 | (TRAMPOLINE >> 12) as u32); delay(200) }
+            var ready = false
+            for _ in 0..20000000 { if atomic_load((TRAMPOLINE + 0xf18) as *u32) != 0 { ready = true; break }; jihoo_pause() }
+            if !ready { panic("AP startup timed out") }
+            atomic_store(&ONLINE, index as u64 + 1)
+            runtime.output("[SMP] AP " + (index as u64).to_string().as_str() + " online\n")
+        }
+        atomic_store(&RELEASE, true)
+        runtime.output("[SMP] online CPUs: " + online().to_string().as_str() + "\n")
+    }
+}
+
+export fn jihoo_ap_entry(index: u64) -> never {
+    cpu.init_cpu(index); cpu.load_idt()
+    processor.init(index, unsafe { (((&STACKS[0] as u64) + 15) & !15) + (index + 1) * 16384 })
+    enable(false)
+    write(0x3e0, 3); write(0x320, 48 | (1 << 17)); write(0x380, unsafe { TIMER })
+    unsafe {
+        atomic_store((TRAMPOLINE + 0xf18) as *u32, 1)
+        while !atomic_load(&RELEASE) { jihoo_pause() }
+    }
+    task.enter_idle()
+    loop {
+        unsafe { if atomic_load(&STOP) { park(index) } }
+        network.poll(); task.schedule()
+        unsafe { jihoo_wait_interrupt() }
+    }
+}
+
+fn park(index: u64) -> never { unsafe { atomic_store(&PARKED[index as i64], true); jihoo_halt() } }
+
+export fn kaguya_irq_eoi(irq: u8) {
+    if unsafe { NIC_ROUTED } && irq == e1000.irq_line() { write(0xb0, 0) } else { pic.jihoo_pic_eoi(irq) }
+}
+export fn kaguya_lapic_interrupt(vector: u64, user: bool) -> bool {
+    if unsafe { LAPIC } == 0 || (vector != 48 && vector != 49) { return false }
+    write(0xb0, 0)
+    if unsafe { atomic_load(&STOP) } { park(unsafe { processor.current().cpu_index as u64 }) }
+    if vector == 48 { task.kaguya_scheduler_interrupt(user) }
+    true
+}
+
+pub fn shutdown() {
+    unsafe {
+        let caller = processor.current().cpu_index as u64
+        atomic_store(&STOP, true)
+        for i in 0..online() as i64 { if i as u64 != caller { send(IDS[i], 49) } }
+        for i in 0..online() as i64 {
+            if i as u64 == caller { continue }
+            var parked = false
+            for _ in 0..20000000 { if atomic_load(&PARKED[i]) { parked = true; break }; jihoo_pause() }
+            if !parked { panic("AP failed to park for shutdown") }
+        }
+        for i in 0..online() as i64 {
+            runtime.output("[SMP] CPU " + (i as u64).to_string().as_str() + " context switches: " + task.cpu_switches(i as u64).to_string().as_str() + "\n")
+        }
+    }
+}

@@ -2,6 +2,7 @@
 .globl kaguya_context_switch
 .type kaguya_context_switch,@function
 kaguya_context_switch:
+    movq 8(%rsp), %rax
     pushq %r15
     pushq %r14
     pushq %r13
@@ -12,6 +13,10 @@ kaguya_context_switch:
     pushq %rsi
     movq %rsp, (%rdi)
     movq %rsi, %rsp
+    testq %rax, %rax
+    jz 9f
+    movb $0, (%rax)
+9:
     testq %rcx, %rcx
     jz 1f
     xchgq %rcx, (%rdx)
