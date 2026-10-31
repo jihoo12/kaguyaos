@@ -5,6 +5,12 @@
 selects `JIHOO_BIN`, the adjacent `../jihoo` checkout through Nix, or
 `jihoo` on PATH. Clang assembles `arch.S`.
 
+The complete Rust-free migration is tracked in
+[docs/jihoo-full-port.md](../../docs/jihoo-full-port.md). The current ordinary
+kernel still uses Rust bridges; the standalone UEFI build is blocked by
+[compiler issue #21](https://github.com/jihoolang/jihoo/issues/21), described
+below.
+
 The feature currently selects jihoo implementations of:
 
 - Internet and IPv4 transport checksums.
@@ -48,6 +54,13 @@ I/O, and a Rust-owned 4 KiB workspace. Rust validates handles and updates the
 directory entry after writes, preserving partial-write and error behavior.
 Slot generations and create/open/delete/list/format orchestration remain Rust.
 
+The mixed build supplies `-I src/jihoo/runtime`, selecting a kernel `std.sys`
+adapter for the standard jihoo `Vec`, `Box`, `String`, `Map`, and formatting
+implementations. Their allocation/output callbacks currently use Rust ABI
+bridges into the kernel heap and console. They do not use firmware allocation
+or Linux services. File/process functions in this kernel-only adapter report
+`ENOSYS` until the corresponding native OS interfaces are connected.
+
 The port uses `-mno-red-zone -mgeneral-regs-only`, a custom panic handler,
 and volatile device accesses. It does not use Linux syscalls or UEFI boot
 services after boot. This is a partial kernel migration: scheduling,
@@ -70,6 +83,7 @@ bash tools/test-jihoo-pci.sh
 bash tools/test-jihoo-pipe.sh
 bash tools/test-jihoo-fat.sh
 bash tools/test-jihoo-file-data.sh
+bash tools/test-jihoo-runtime.sh
 ```
 
 The scripts build the current adjacent compiler unless `JIHOO_BIN` is set.
@@ -127,6 +141,17 @@ the actual jihoo implementations through native C ABI objects at `-O0` and
   vector model, checking untouched output tails. The existing RAM-disk tests
   additionally cover partial writes when the FAT is full. No host disk is
   involved.
+- Kernel runtime: at `-O0` and `-O2`, twenty repeated collection checks grow,
+  clone and sort a vector, own `Box` values in a string-keyed map, reallocate
+  a string, and confirm every allocation is released. Object inspection
+  rejects Linux syscall instructions and vector registers. The same check
+  runs on the real kernel heap immediately after initialization; diskless
+  and normal QEMU boots both print
+  `jihoo kernel runtime: collections and cleanup passed`. The existing shell,
+  eight-stage pipes, exec reclamation, local network fixtures and shutdown
+  regressions passed in `/tmp/kaguya-jihoo-runtime-shell` and
+  `/tmp/kaguya-jihoo-runtime-network`, using a snapshot of the disposable
+  `/tmp/kaguya-jihoo-runtime-nvme.img` copy for normal boot.
 
 See [the userspace README](../../user/jihoo/README.md) for smoke commands.
 QEMU boot, framebuffer updates, shell input, gateway ping, and HTTP
@@ -253,3 +278,24 @@ by this stage.
 
 If a new language/compiler problem appears, reduce it, compare control
 cases, file an issue in `jihoolang/jihoo` with `gh`, and stop migration.
+
+## Current stop: issue #21
+
+On compiler `12f3827bd2574255934b7c730c1746ace14e5197`, an `extern fn`
+declaration and a matching `export fn` definition from an imported jihoo
+module both appear in the same LLVM IR, causing `invalid redefinition of
+function`. Checking succeeds, but native and UEFI object emission fail.
+Separately compiling the export provider and making an ordinary public
+jihoo module call both succeed and print `42`. See the
+[minimal reproduction and controls](../../tools/jihoo-regressions/extern-export/README.md)
+and [issue #21](https://github.com/jihoolang/jihoo/issues/21).
+
+The standalone sources in `standalone/` and `tools/build-jihoo-kernel.sh`
+are an unverified diagnostic draft. They implement a jihoo UEFI entry,
+GOP/memory-map capture, ExitBootServices retry, serial diagnostics, and a
+jihoo heap/runtime provider, but their image cannot yet be emitted. They
+are separate from the mixed-kernel runtime checkpoint `0112a08`, do not replace its EFI artifact,
+and have not passed QEMU. No production separate-object workaround is
+connected. After the compiler fix, build the standalone diagnostic with
+Clang, pass it to `gpu-smoke.py --hardware-test --kernel-image ...`, then
+continue the full-port checklist. Migration is stopped until that fix.

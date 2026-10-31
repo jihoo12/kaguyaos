@@ -1,0 +1,4 @@
+#![uefi]
+import provider
+extern fn callback(value: i64) -> i64
+export fn invoke(value: i64) -> i64 { unsafe { callback(value) } }

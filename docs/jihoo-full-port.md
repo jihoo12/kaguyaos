@@ -1,0 +1,70 @@
+# Complete jihoo migration
+
+The target is a kernel, userspace, and ordinary OS build/run workflow that
+do not require Rust. Existing Rust implementations remain comparison
+references during migration; a component is removed from the build only
+after its replacement passes the applicable host and QEMU checks. Assembly
+continues to provide CPU entry, interrupt, syscall, and context-switch ABI
+boundaries.
+
+## Work order
+
+1. Supply a kernel `std.sys` implementation so jihoo collections, ownership,
+   formatting, and destructors allocate from the kernel heap and use kernel
+   output after UEFI boot services have ended.
+2. Build a standalone jihoo UEFI image and carry over GOP/memory-map checks,
+   ExitBootServices retry, page tables, diagnostics, and runtime shutdown.
+3. Move console/font/terminal/display state and interrupt-safe synchronization.
+4. Move GDT/IDT, CPU-local state, interrupt/syscall assembly boundaries, and
+   the scheduler, preserving preemption, SMP handoffs, wait generations, and
+   stack/frame reclamation.
+5. Move ownership of address spaces, pipes, descriptor tables, and loaded KEF
+   programs, then exercise the diskless ring-3 shell without Rust.
+6. Finish filesystem metadata/format/open/create/delete/list logic and block
+   backends; retain explicit formatting policy.
+7. Move PCI registration, NVMe, xHCI/keyboard, virtio GPU, ACPI/APIC, and SMP
+   startup with device access and DMA mapping checks.
+8. Move Ethernet, ARP/IPv4/ICMP, UDP/TCP, DNS, socket state, and network waits.
+9. Switch the ordinary kernel/userspace build scripts to jihoo, replace the
+   Rust disk-image host tool, and remove Cargo/font-crate requirements from
+   the supported build. Replace Rust-only verification dependencies where
+   they would otherwise be needed to validate the finished OS.
+
+The optional `jihoo-kernel` build already selects checksum, PIC, port I/O,
+graphics primitives, locks, KEF validation, memory allocation/page tables,
+PCI scanning/access, pipe buffering/counts, FAT helpers, and file-data
+reads/writes. Those implementations and their tests are reused rather than
+rewritten. `src/jihoo/README.md` records their verified scope.
+
+## Completion checks
+
+- Build the OS and all seven user programs without invoking Cargo or rustc.
+- Pass isolated diagnostic and diskless USB shell checks, filesystem I/O,
+  eight-stage pipelines/redirection, repeated exec/frame reclamation, and
+  guest shutdown.
+- Pass normal NVMe/virtio boot and local network fixtures, including large
+  HTTP output through bounded pipes, redirects, errors, and incomplete bodies.
+- Exercise the preserved scheduler/SMP/device behaviors and document any
+  hardware paths that have not been physically tested.
+- Keep changes reviewable with intermediate commits and English README updates.
+
+All disk verification uses disposable copies and QEMU snapshots. An
+unrecognized physical or virtual disk is never automatically formatted.
+If a new jihoo language/compiler problem appears, confirm a minimal case
+and controls, report it to `jihoolang/jihoo` with `gh`, and stop migration
+until it is fixed. Record the exact compiler commit and preserve completed
+builds when doing so.
+
+## Current checkpoint
+
+The kernel `std.sys` adapter is connected to the mixed kernel and passes
+host collection-lifetime tests plus diskless and normal QEMU regressions.
+That verified checkpoint is commit `0112a08`.
+An independent jihoo UEFI diagnostic entry and build script are drafted,
+but image generation stops at
+[jihoo issue #21](https://github.com/jihoolang/jihoo/issues/21): matching
+external declarations and imported exported definitions generate duplicate
+LLVM function entries. Native and UEFI reproductions fail; two controls
+compile, run, and print `42`. No compiler fix or production workaround is
+applied. Resume with the standalone diagnostic after the compiler fix, then
+continue the work order above. The complete migration has not been achieved.

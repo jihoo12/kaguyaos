@@ -1,0 +1,2 @@
+import ordinary_provider
+fn main() { println(ordinary_provider.callback(41)) }

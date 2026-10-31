@@ -1,0 +1,76 @@
+import heap
+import io
+
+extern fn jihoo_irq_save() -> u64
+extern fn jihoo_irq_enable()
+extern fn jihoo_pause()
+extern fn jihoo_halt() -> never
+
+static LOCK: u8 = 0
+static LIVE: u64 = 0
+
+fn acquire() -> u64 {
+    unsafe {
+        let flags = jihoo_irq_save()
+        while !atomic_cas(&LOCK, 0, 1) { jihoo_pause() }
+        flags
+    }
+}
+
+fn release(flags: u64) {
+    unsafe {
+        atomic_store(&LOCK, 0)
+        if flags & 0x200 != 0 { jihoo_irq_enable() }
+    }
+}
+
+export fn kaguya_runtime_alloc(size: u64, alignment: u64) -> *u8 {
+    let flags = acquire()
+    let pointer = heap.jihoo_heap_alloc(if size == 0 { 1 } else { size }, alignment)
+    unsafe { if pointer != null { LIVE += 1 } }
+    release(flags)
+    pointer
+}
+
+export fn kaguya_runtime_realloc(pointer: *u8, size: u64, alignment: u64) -> *u8 {
+    if pointer == null { return kaguya_runtime_alloc(size, alignment) }
+    let flags = acquire()
+    let next = heap.jihoo_heap_realloc(pointer, if size == 0 { 1 } else { size }, alignment)
+    release(flags)
+    next
+}
+
+export fn kaguya_runtime_free(pointer: *u8) {
+    if pointer == null { return }
+    let flags = acquire()
+    heap.jihoo_heap_free(pointer)
+    unsafe { LIVE -= 1 }
+    release(flags)
+}
+
+pub fn live_allocations() -> u64 { unsafe { LIVE } }
+
+pub fn serial(text: str) {
+    for byte in text {
+        unsafe {
+            for _ in 0..100000 {
+                if io.jihoo_inb(0x3fd) & 0x20 != 0 { break }
+                jihoo_pause()
+            }
+            io.jihoo_outb(0x3f8, byte)
+        }
+    }
+}
+
+export fn kaguya_runtime_write(fd: i32, bytes: *u8, length: u64) -> i64 {
+    if fd != 1 && fd != 2 { return -1 }
+    serial(unsafe { make_str(bytes, length as i64) })
+    length as i64
+}
+
+export fn kaguya_kernel_panic(bytes: *u8, length: u64) -> never {
+    serial("jihoo kernel panic: ")
+    serial(unsafe { make_str(bytes, length as i64) })
+    serial("\n")
+    unsafe { jihoo_halt() }
+}
