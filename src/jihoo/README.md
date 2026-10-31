@@ -409,3 +409,37 @@ it does not supply scheduling, preemption, threads, descriptor ownership,
 USB input, filesystems, storage, networking or AP startup. The normal Rust
 and mixed kernels are still separate. Continue by porting shared ownership,
 scheduler handoffs/waits and file/pipe ownership before the full shell.
+
+## Shared ownership, guards and owned pipes
+
+```sh
+CC=clang bash tools/test-jihoo-shared.sh
+CC=clang bash tools/test-jihoo-pipe-owner.sh
+```
+
+`shared.jh` supplies an atomic `Shared(T)` owner that drops the value on the
+last release. `kernel_sync.jh` supplies interrupt-safe generic spinlocks,
+try-lock and owning guards. Guards are views tied to their lock; a negative
+compile check rejects returning a guard over a local lock. C host tests at
+both optimization levels verify final-owner/owned-vector destruction,
+nested interrupt restoration, failed try-lock, and 40,000 increments with
+four host threads. These tests use a thread-local interrupt-state model.
+The standalone EFI also checks the same ownership/guard logic on its real
+heap with actual IF=0 and IF=1; ring-3 regressions pass in
+`/tmp/kaguya-jihoo-shared-ring3`.
+
+`pipe_owner.jh` adds jihoo-owned pipe buffers, shared reader/writer handles,
+clone/close destructors, EOF/BrokenPipe/partial-write behavior, and scheduler
+event-generation callbacks around the existing jihoo ring implementation.
+Its wait key is the stable buffer allocation, not the address of a movable
+value during destruction. The C harness passes at `-O0` and `-O2`: clones,
+EOF, zero-length operations, 60,000-byte concurrent streaming through a
+4 KiB ring, blocking, partial writes after reader closure, and a closure
+between the state check and wait. It verifies locks are released before
+scheduler callbacks and that all allocations/wait keys are reclaimed.
+
+The owned pipe module is not yet connected to either kernel: its scheduler
+callbacks currently come from the host test fixture. Real kernel blocking,
+file-table ownership, scheduler handoffs and pipeline regression checks
+remain to be connected and verified. The mixed kernel still owns pipes
+through its Rust bridge.

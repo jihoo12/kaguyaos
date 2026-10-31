@@ -1,0 +1,6 @@
+import kernel_sync
+
+fn escaped() -> kernel_sync.Guard(u64) {
+    let lock = kernel_sync.Spinlock(u64).new(0)
+    lock.lock()
+}

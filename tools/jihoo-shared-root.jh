@@ -1,0 +1,89 @@
+import shared
+import kernel_sync
+import std.mem
+
+extern fn kaguya_kernel_panic(message: *u8, length: u64) -> never
+extern fn record_drop(value: u64)
+extern fn irq_enabled() -> bool
+
+#[panic_handler]
+fn on_panic(message: str) -> never {
+    unsafe { kaguya_kernel_panic(message.ptr, message.len as u64) }
+}
+
+struct Tracked {
+    value: u64
+    bytes: Vec(u8)
+}
+
+impl Drop for Tracked {
+    fn drop(inout self) { unsafe { record_drop(self.value) } }
+}
+
+export fn jihoo_shared_check() {
+    {
+        var bytes = Vec(u8).new()
+        for i in 0..100 { bytes.push(i as u8) }
+        let first = shared.Shared.new(Tracked { value: 42, bytes: bytes })
+        let second = first.clone()
+        let third = second.clone()
+        if first.address() != third.address() { panic("shared address changed") }
+        drop(first)
+        drop(second)
+        if third.bytes[99] != 99 { panic("shared value died early") }
+    }
+    let outer = kernel_sync.Spinlock(u64).new(10)
+    let inner = kernel_sync.Spinlock(u64).new(20)
+    unsafe {
+        if !irq_enabled() { panic("initial interrupts disabled") }
+        {
+            var a = outer.lock()
+            if irq_enabled() { panic("lock left interrupts enabled") }
+            if outer.try_lock().is_some() { panic("try-lock accepted held lock") }
+            {
+                var b = inner.lock()
+                b.deref_mut() += 2
+            }
+            if irq_enabled() { panic("nested lock enabled interrupts") }
+            a.deref_mut() += 1
+        }
+        if !irq_enabled() { panic("lock did not restore interrupts") }
+        {
+            let a = outer.try_lock().unwrap()
+            let b = inner.lock()
+            if a.deref() != 11 || b.deref() != 22 { panic("locked data incorrect") }
+        }
+        if !irq_enabled() { panic("try-lock did not restore interrupts") }
+    }
+}
+
+export fn jihoo_shared_counter_new() -> *u8 {
+    unsafe {
+        let owner = mem.alloc(shared.Shared(kernel_sync.Spinlock(u64)), 1)
+        write(owner, shared.Shared.new(kernel_sync.Spinlock(u64).new(0)))
+        owner as *u8
+    }
+}
+
+export fn jihoo_shared_counter_add(pointer: *u8) {
+    unsafe {
+        let owner = *(pointer as *shared.Shared(kernel_sync.Spinlock(u64)))
+        let copy = owner.clone()
+        var guard = copy.lock()
+        guard.deref_mut() += 1
+    }
+}
+
+export fn jihoo_shared_counter_finish(pointer: *u8) -> u64 {
+    unsafe {
+        let owner = pointer as *shared.Shared(kernel_sync.Spinlock(u64))
+        var result: u64 = 0
+        {
+            let guard = (*owner).lock()
+            result = guard.deref()
+        }
+        mem.drop_at(shared.Shared(kernel_sync.Spinlock(u64)), owner)
+        mem.dealloc(shared.Shared(kernel_sync.Spinlock(u64)), owner, 1)
+        result
+    }
+}

@@ -112,3 +112,13 @@ supplied. Continue with shared kernel ownership, scheduler handoffs/waits,
 and file/pipe ownership, then shell/device integration. The standalone
 images do not yet provide the full shell or drivers. The ordinary kernel remains Rust and complete Rust
 removal has not been achieved. No physical hardware has been tested.
+
+Generic atomic shared ownership and interrupt-safe view guards now pass
+native lifetime/nested-lock/try-lock tests and a four-thread 40,000-increment
+test at both optimization levels. Guard escape is rejected. Standalone
+QEMU checks use the real heap and both IF states, then pass ring-3 regression.
+The owned jihoo pipe module passes native clones/EOF/streaming/blocking/
+partial-close/generation-race tests with complete allocation/wait-key
+cleanup. Its scheduler callbacks are still host fixtures; it is not yet
+connected to kernel scheduling or descriptor ownership. Next finish
+filesystem/descriptor ownership and the real scheduler/device integration.

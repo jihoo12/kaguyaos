@@ -1,0 +1,50 @@
+import shared
+import kernel_sync
+
+extern fn jihoo_read_flags() -> u64
+
+static DROPS: u64 = 0
+
+struct Tracked {
+    values: Vec(u64)
+}
+
+impl Drop for Tracked {
+    fn drop(inout self) { unsafe { DROPS += 1 } }
+}
+
+pub fn check() {
+    unsafe {
+        let flags = jihoo_read_flags() & 0x200
+        let before = DROPS
+        {
+            var values = Vec(u64).new()
+            for i in 0..32 { values.push(i as u64) }
+            let original = shared.Shared.new(Tracked { values: values })
+            let copy = original.clone()
+            drop(original)
+            if copy.values[31] != 31 || DROPS != before { panic("shared lifetime failed") }
+        }
+        if DROPS != before + 1 { panic("shared final destructor failed") }
+        let outer = kernel_sync.Spinlock(u64).new(1)
+        let inner = kernel_sync.Spinlock(u64).new(2)
+        {
+            var first = outer.lock()
+            if jihoo_read_flags() & 0x200 != 0 { panic("guard did not disable interrupts") }
+            if outer.try_lock().is_some() { panic("try-lock accepted held lock") }
+            {
+                var second = inner.lock()
+                second.deref_mut() += 3
+            }
+            if jihoo_read_flags() & 0x200 != 0 { panic("nested guard enabled interrupts") }
+            first.deref_mut() += 4
+        }
+        if jihoo_read_flags() & 0x200 != flags { panic("guard interrupt restoration failed") }
+        {
+            let first = outer.try_lock().unwrap()
+            let second = inner.lock()
+            if first.deref() != 5 || second.deref() != 5 { panic("guard data access failed") }
+        }
+        if jihoo_read_flags() & 0x200 != flags { panic("try guard interrupt restoration failed") }
+    }
+}

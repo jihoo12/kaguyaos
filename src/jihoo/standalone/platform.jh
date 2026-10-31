@@ -2,6 +2,7 @@ import std.uefi
 import heap
 import runtime
 import runtime_check
+import shared_check
 import cpu
 import memory
 import ring3
@@ -119,8 +120,10 @@ pub fn run(stage: u32) -> i32 {
         println("Memory map: " + (map_size / descriptor_size).to_string().as_str() + " entries")
         println("ACPI RSDP: " + acpi.to_string().as_str())
         if runtime_check.jihoo_runtime_check() != 8128 { panic("collection self-check failed") }
+        shared_check.check()
         if runtime.live_allocations() != 0 { panic("collection allocation leak") }
         runtime.output("jihoo kernel runtime: collections and cleanup passed\n")
+        runtime.output("jihoo shared ownership and interrupt-safe guards passed\n")
         if cpu_test {
             cpu.init()
             memory.init(map as *u8, map_size, descriptor_size, framebuffer, framebuffer_size)

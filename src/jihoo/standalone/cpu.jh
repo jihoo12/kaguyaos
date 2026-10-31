@@ -2,6 +2,7 @@ import cpu_tables
 import runtime
 import pic
 import io
+import shared_check
 
 extern fn jihoo_load_gdt(pointer: *u8)
 extern fn jihoo_load_idt(pointer: *u8)
@@ -11,6 +12,8 @@ extern fn jihoo_wait_interrupt()
 extern fn jihoo_halt() -> never
 extern fn jihoo_read_cr2() -> u64
 extern fn kaguya_user_fault() -> never
+extern fn jihoo_irq_enable()
+extern fn jihoo_disable_interrupts()
 
 static GDT: [u64; 448] = zeroed([u64; 448])
 static TSS: [u64; 832] = zeroed([u64; 832])
@@ -139,6 +142,9 @@ pub fn check() {
         io.jihoo_outb(0x21, 0xfe)
         let start = atomic_load(&TICKS)
         while atomic_load(&TICKS) - start < 10 { jihoo_wait_interrupt() }
+        jihoo_irq_enable()
+        shared_check.check()
+        jihoo_disable_interrupts()
     }
     runtime.output("CPU interrupts: breakpoint return and ten PIT ticks passed\n")
 }

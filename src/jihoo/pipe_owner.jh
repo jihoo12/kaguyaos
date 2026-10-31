@@ -1,0 +1,120 @@
+import pipe as raw
+import shared
+import kernel_sync
+
+extern fn kaguya_event_generation(key: u64) -> u64
+extern fn kaguya_wait_event(key: u64, deadline: u64, generation: u64)
+extern fn kaguya_wake_event(key: u64)
+extern fn kaguya_forget_event(key: u64)
+
+struct State {
+    raw: raw.State
+    buffer: Box([u8; 4096])
+}
+
+struct Pipe {
+    wait_key: u64
+    state: kernel_sync.Spinlock(State)
+}
+
+impl Pipe {
+    fn key(self) -> u64 { self.wait_key }
+
+    fn read(self, output: *u8, length: u64) -> i64 {
+        if length == 0 { return 0 }
+        loop {
+            let generation = unsafe { kaguya_event_generation(self.key()) }
+            var guard = self.state.lock()
+            let result = raw.jihoo_pipe_read(&guard.deref_mut().raw, output, length)
+            drop(guard)
+            if result >= 0 {
+                if result > 0 { unsafe { kaguya_wake_event(self.key()) } }
+                return result
+            }
+            unsafe { kaguya_wait_event(self.key(), 0, generation) }
+        }
+    }
+
+    fn write(self, input: *u8, length: u64) -> i64 {
+        var written: u64 = 0
+        while written < length {
+            let generation = unsafe { kaguya_event_generation(self.key()) }
+            var guard = self.state.lock()
+            let result = raw.jihoo_pipe_write(&guard.deref_mut().raw,
+                                             unsafe { input + written as i64 }, length - written)
+            drop(guard)
+            if result == -2 { return if written > 0 { written as i64 } else { -9 } }
+            if result > 0 {
+                written += result as u64
+                unsafe { kaguya_wake_event(self.key()) }
+            } else {
+                unsafe { kaguya_wait_event(self.key(), 0, generation) }
+            }
+        }
+        written as i64
+    }
+
+    fn clone_end(self, writer: bool) {
+        var guard = self.state.lock()
+        raw.jihoo_pipe_clone(&guard.deref_mut().raw, writer)
+    }
+
+    fn close_end(self, writer: bool) {
+        var guard = self.state.lock()
+        let last = raw.jihoo_pipe_close(&guard.deref_mut().raw, writer)
+        drop(guard)
+        if last { unsafe { kaguya_wake_event(self.key()) } }
+    }
+}
+
+impl Drop for Pipe {
+    fn drop(inout self) { unsafe { kaguya_forget_event(self.key()) } }
+}
+
+pub struct Reader {
+    pipe: shared.Shared(Pipe)
+}
+
+pub struct Writer {
+    pipe: shared.Shared(Pipe)
+}
+
+pub fn new() -> (Reader, Writer) {
+    let buffer = Box.new(unsafe { zeroed([u8; 4096]) })
+    var ring: raw.State = unsafe { zeroed(raw.State) }
+    let wait_key = unsafe { &buffer.deref()[0] as u64 }
+    raw.jihoo_pipe_init(&ring, wait_key as *u8)
+    let pipe = shared.Shared.new(Pipe { wait_key: wait_key,
+        state: kernel_sync.Spinlock.new(State { raw: ring, buffer: buffer }) })
+    (Reader { pipe: pipe.clone() }, Writer { pipe: pipe })
+}
+
+impl Reader {
+    pub fn read(self, output: *u8, length: u64) -> i64 { self.pipe.read(output, length) }
+}
+
+impl Writer {
+    pub fn write(self, input: *u8, length: u64) -> i64 { self.pipe.write(input, length) }
+}
+
+impl Clone for Reader {
+    fn clone(self) -> Reader {
+        self.pipe.clone_end(false)
+        Reader { pipe: self.pipe.clone() }
+    }
+}
+
+impl Clone for Writer {
+    fn clone(self) -> Writer {
+        self.pipe.clone_end(true)
+        Writer { pipe: self.pipe.clone() }
+    }
+}
+
+impl Drop for Reader {
+    fn drop(inout self) { self.pipe.close_end(false) }
+}
+
+impl Drop for Writer {
+    fn drop(inout self) { self.pipe.close_end(true) }
+}

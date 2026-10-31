@@ -1,0 +1,46 @@
+import std.mem
+
+struct Inner(T: type) {
+    references: u64
+    value: T
+}
+
+pub struct Shared(T: type) {
+    pointer: *Inner(T)
+}
+
+impl(T: type) Shared(T) {
+    pub fn new(sink value: T) -> Shared(T) {
+        unsafe {
+            let pointer = mem.alloc(Inner(T), 1)
+            write(pointer, Inner(T) { references: 1, value: value })
+            Shared(T) { pointer: pointer }
+        }
+    }
+
+    pub fn deref(self) -> ref T { unsafe { self.pointer.value } }
+
+    pub fn address(self) -> u64 { unsafe { &self.pointer.value as u64 } }
+}
+
+impl(T: type) Clone for Shared(T) {
+    fn clone(self) -> Shared(T) {
+        unsafe {
+            if atomic_add(&self.pointer.references, 1) >= 0x7fffffffffffffff {
+                panic("shared reference overflow")
+            }
+            Shared(T) { pointer: self.pointer }
+        }
+    }
+}
+
+impl(T: type) Drop for Shared(T) {
+    fn drop(inout self) {
+        unsafe {
+            if atomic_sub(&self.pointer.references, 1) == 1 {
+                mem.drop_at(Inner(T), self.pointer)
+                mem.dealloc(Inner(T), self.pointer, 1)
+            }
+        }
+    }
+}

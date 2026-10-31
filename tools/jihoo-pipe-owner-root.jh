@@ -1,0 +1,59 @@
+import pipe_owner
+import std.mem
+
+extern fn kaguya_kernel_panic(message: *u8, length: u64) -> never
+
+#[panic_handler]
+fn on_panic(message: str) -> never {
+    unsafe { kaguya_kernel_panic(message.ptr, message.len as u64) }
+}
+
+export fn jihoo_owned_pipe_new(reader: **u8, writer: **u8) {
+    let (r, w) = pipe_owner.new()
+    unsafe {
+        let rp = mem.alloc(pipe_owner.Reader, 1)
+        let wp = mem.alloc(pipe_owner.Writer, 1)
+        write(rp, r)
+        write(wp, w)
+        *reader = rp as *u8
+        *writer = wp as *u8
+    }
+}
+
+export fn jihoo_owned_pipe_read(reader: *u8, output: *u8, count: u64) -> i64 {
+    unsafe { (*(reader as *pipe_owner.Reader)).read(output, count) }
+}
+
+export fn jihoo_owned_pipe_write(writer: *u8, input: *u8, count: u64) -> i64 {
+    unsafe { (*(writer as *pipe_owner.Writer)).write(input, count) }
+}
+
+export fn jihoo_owned_pipe_clone_reader(reader: *u8) -> *u8 {
+    unsafe {
+        let next = mem.alloc(pipe_owner.Reader, 1)
+        write(next, (*(reader as *pipe_owner.Reader)).clone())
+        next as *u8
+    }
+}
+
+export fn jihoo_owned_pipe_clone_writer(writer: *u8) -> *u8 {
+    unsafe {
+        let next = mem.alloc(pipe_owner.Writer, 1)
+        write(next, (*(writer as *pipe_owner.Writer)).clone())
+        next as *u8
+    }
+}
+
+export fn jihoo_owned_pipe_close_reader(reader: *u8) {
+    unsafe {
+        mem.drop_at(pipe_owner.Reader, reader as *pipe_owner.Reader)
+        mem.dealloc(pipe_owner.Reader, reader as *pipe_owner.Reader, 1)
+    }
+}
+
+export fn jihoo_owned_pipe_close_writer(writer: *u8) {
+    unsafe {
+        mem.drop_at(pipe_owner.Writer, writer as *pipe_owner.Writer)
+        mem.dealloc(pipe_owner.Writer, writer as *pipe_owner.Writer, 1)
+    }
+}

@@ -129,3 +129,10 @@ invalid user pointers, contained kernel-page/NX faults, and user-mode PIT
 interrupt return. This test dispatcher and bootstrap continuation do not
 replace the full scheduler, descriptor table, device drivers or shell.
 See the kernel README for exact coverage and remaining work.
+
+Generic kernel shared ownership and interrupt-safe guards now pass native
+concurrency/lifetime tests and real-IF standalone QEMU checks. Jihoo-owned
+pipe handles also pass native blocking/streaming/closure-race tests with a
+mock scheduler. These owned handles are not yet connected to the kernel
+scheduler or shell descriptor tables; existing shell checkpoints continue
+using the mixed kernel's Rust ownership bridges.

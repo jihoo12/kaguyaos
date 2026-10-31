@@ -1,0 +1,45 @@
+import sync
+
+#[interior]
+pub struct Spinlock(T: type) {
+    flag: u8
+    value: T
+}
+
+#[view]
+pub struct Guard(T: type) {
+    lock: *Spinlock(T)
+    flags: u64
+}
+
+impl(T: type) Spinlock(T) {
+    pub fn new(sink value: T) -> Spinlock(T) {
+        Spinlock(T) { flag: 0, value: value }
+    }
+
+    pub fn lock(self) -> Guard(T) {
+        unsafe {
+            let flags = sync.jihoo_lock_acquire(&self.flag)
+            Guard(T) { lock: &self, flags: flags }
+        }
+    }
+
+    pub fn try_lock(self) -> Option(Guard(T)) {
+        unsafe {
+            let flags = sync.jihoo_lock_try(&self.flag)
+            if flags == 0xffffffffffffffff { return None }
+            Some(Guard(T) { lock: &self, flags: flags })
+        }
+    }
+}
+
+impl(T: type) Guard(T) {
+    pub fn deref(self) -> ref T { unsafe { self.lock.value } }
+    pub fn deref_mut(inout self) -> inout T { unsafe { self.lock.value } }
+}
+
+impl(T: type) Drop for Guard(T) {
+    fn drop(inout self) {
+        unsafe { sync.jihoo_lock_release(&self.lock.flag, self.flags & 0x200 != 0) }
+    }
+}

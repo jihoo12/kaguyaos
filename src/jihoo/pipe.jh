@@ -1,4 +1,4 @@
-struct State {
+pub struct State {
     data: *u8
     head: u64
     length: u64
@@ -8,11 +8,11 @@ struct State {
 
 const CAPACITY: u64 = 4096
 
-export fn jihoo_pipe_init(state: *State, data: *u8) {
+pub export fn jihoo_pipe_init(state: *State, data: *u8) {
     unsafe { *state = State { data, head: 0, length: 0, readers: 1, writers: 1 } }
 }
 
-export fn jihoo_pipe_read(state: *State, output: *u8, length: u64) -> i64 {
+pub export fn jihoo_pipe_read(state: *State, output: *u8, length: u64) -> i64 {
     if length == 0 { return 0 }
     unsafe {
         if state.length == 0 { return if state.writers == 0 { 0 } else { -1 } }
@@ -27,7 +27,7 @@ export fn jihoo_pipe_read(state: *State, output: *u8, length: u64) -> i64 {
     }
 }
 
-export fn jihoo_pipe_write(state: *State, input: *u8, length: u64) -> i64 {
+pub export fn jihoo_pipe_write(state: *State, input: *u8, length: u64) -> i64 {
     if length == 0 { return 0 }
     unsafe {
         if state.readers == 0 { return -2 }
@@ -43,14 +43,14 @@ export fn jihoo_pipe_write(state: *State, input: *u8, length: u64) -> i64 {
     }
 }
 
-export fn jihoo_pipe_clone(state: *State, writer: bool) {
+pub export fn jihoo_pipe_clone(state: *State, writer: bool) {
     unsafe {
         if writer { state.writers += 1 }
         else { state.readers += 1 }
     }
 }
 
-export fn jihoo_pipe_close(state: *State, writer: bool) -> bool {
+pub export fn jihoo_pipe_close(state: *State, writer: bool) -> bool {
     unsafe {
         if writer {
             state.writers -= 1

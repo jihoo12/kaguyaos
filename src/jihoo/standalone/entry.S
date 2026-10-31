@@ -1,4 +1,9 @@
 .text
+.globl jihoo_read_flags
+jihoo_read_flags:
+    pushfq
+    popq %rax
+    ret
 .globl jihoo_disable_interrupts
 jihoo_disable_interrupts:
     cli
