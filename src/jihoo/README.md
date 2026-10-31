@@ -601,3 +601,48 @@ controllers have not been exercised by this checkpoint. It does not access
 physical disks. NVMe, virtio GPU, ACPI/APIC/SMP and networking remain outside
 this standalone image; ping/wget build but their network services are not
 implemented here. The ordinary kernel still requires Rust.
+
+## NVMe and image tooling
+
+`nvme_queue.jh` encodes 64-byte submissions explicitly and consumes 16-byte
+completions with phase tracking, command-ID matching and status reporting.
+It preserves page-offset PRP1 handling, direct PRP2 for a second page and
+one retained PRP-list page for larger identity-mapped buffers. It rejects
+zero/oversized/overflowing transfers and misaligned or insufficient lists.
+`nvme.jh` initializes namespace 1 with 512-byte sectors and no metadata,
+uses the controller's doorbell stride, serializes transfers, bounds polls,
+retains DMA storage and disables I/O on completion timeout. The separate
+`nvme-shell` path maps device MMIO before process creation and mounts an
+existing filesystem. It never invokes format or copies embedded programs
+over that volume. NVMe is not initialized by diagnostic/diskless modes.
+
+```sh
+CC=clang bash tools/test-jihoo-nvme.sh
+CC=clang bash tools/build-jihoo-kernel.sh nvme-shell
+bash tools/build-kef-tool.sh
+python3 tools/gpu-smoke.py --jihoo-nvme --disk-image /tmp/kaguya-jihoo-port-nvme.img --shell-io --shutdown --output /tmp/kaguya-jihoo-port-nvme
+```
+
+The native C tests pass at both optimization levels. The shared-filesystem
+Jihoo host tool passes a multi-cluster round trip, empty overwrite/deletion
+and rejection of an unrecognized image without modifying it. QEMU passes
+existing-volume boot, file utilities, eight-stage pipelines, redirection,
+forty constant-frame executions and guest NVMe/UEFI shutdown. Only a newly
+prepared disposable image and its QEMU snapshot were used. Physical NVMe,
+other namespace formats and hardware timeout paths remain untested.
+
+## Current stop: static Option initializer
+
+Compiler `8a7aecfcf3b4e72ac40890f739deb96cca3019f6` rejects `static VALUE:
+Option(u64) = None` as not a compile-time constant in both native and UEFI
+checking. A local `None`, function-returned static `None`, static `Some(7)`
+and qualified custom enum variant run correctly at `-O0` and `-O2`;
+the UEFI function control emits a COFF object. This is reported as
+[jihoo issue #24](https://github.com/jihoolang/jihoo/issues/24), with
+[reproductions](../../tools/jihoo-regressions/static-option/README.md).
+
+`display.jh` and `virtio_gpu.jh` are excluded, unverified graphics drafts;
+`display.jh` fails on its `DIRTY` initializer. No workaround is connected.
+The verified NVMe EFI and image tool remain available. Migration is stopped
+pending a compiler fix; ordinary builds still require Rust and the full
+Rust-free OS goal is not complete.

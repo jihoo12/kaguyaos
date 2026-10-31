@@ -1,0 +1,3 @@
+fn empty() -> Option(u64) { None }
+static VALUE: Option(u64) = empty()
+fn main() { unsafe { println(VALUE.is_none()) } }

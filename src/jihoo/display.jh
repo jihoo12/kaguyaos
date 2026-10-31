@@ -1,0 +1,88 @@
+// Unconnected graphics draft; stopped at compiler issue #24. See README.md.
+import virtio_gpu
+import framebuffer
+import std.mem
+
+extern fn kaguya_graphics_log(bytes: *u8, length: u64)
+static PIXELS: [u32; 2073600] = zeroed([u32; 2073600])
+static GPU: *virtio_gpu.Gpu = null
+static GOP: u64 = 0
+static GOP_STRIDE: u64 = 0
+static FORMAT: u32 = 0
+static SURFACE: framebuffer.Framebuffer = zeroed(framebuffer.Framebuffer)
+static DIRTY: Option((u64, u64, u64, u64)) = None
+static FAILED: bool = false
+
+fn native(pixel: u32, format: u32) -> u32 {
+    if format == 0 { (pixel & 0xff00ff00) | ((pixel & 0xff) << 16) | ((pixel >> 16) & 0xff) } else { pixel }
+}
+fn log(message: str) { unsafe { kaguya_graphics_log(message.ptr, message.len as u64) } }
+
+pub fn init(gop: u64, stride: u64, width: u64, height: u64, format: u32) -> Option(framebuffer.Framebuffer) {
+    if width == 0 || height == 0 || width > 2073600 / height || stride < width || format > 1 { return None }
+    unsafe {
+        let base = &PIXELS[0]
+        for y in 0..height as i64 {
+            for x in 0..width as i64 { base[y * width as i64 + x] = native(read_volatile(gop as *u32 + y * stride as i64 + x), format) }
+        }
+        GOP = gop; GOP_STRIDE = stride; FORMAT = format
+        SURFACE = framebuffer.Framebuffer { base: base, stride: width, width: width, height: height }
+        match virtio_gpu.init(base as u64, width as u32, height as u32) {
+            Ok(gpu) => { GPU = mem.alloc(virtio_gpu.Gpu, 1); write(GPU, gpu) }
+            Err(error) => log("display: GOP backend (" + error + ")\n")
+        }
+        DIRTY = Some((0, 0, width, height))
+        Some(SURFACE)
+    }
+}
+
+pub fn mark(x: u64, y: u64, width: u64, height: u64) {
+    unsafe {
+        if GOP == 0 || x >= SURFACE.width || y >= SURFACE.height { return }
+        let right = x + min(width, SURFACE.width - x)
+        let bottom = y + min(height, SURFACE.height - y)
+        if x >= right || y >= bottom { return }
+        DIRTY = Some(match DIRTY {
+            Some((x0, y0, x1, y1)) => (min(x, x0), min(y, y0), max(right, x1), max(bottom, y1))
+            None => (x, y, right, bottom)
+        })
+    }
+}
+
+pub fn present() {
+    unsafe {
+        if GOP == 0 || FAILED { return }
+        let area = match DIRTY { Some(area) => area, None => return }
+        DIRTY = None
+        if GPU != null {
+            match (*GPU).present() {
+                Ok(()) => {}
+                Err(error) => { FAILED = true; log("virtio-gpu: " + error + "; screen updates stopped\n") }
+            }
+        } else {
+            for y in area.1..area.3 {
+                for x in area.0..area.2 {
+                    write_volatile(GOP as *u32 + (y * GOP_STRIDE + x) as i64, native(SURFACE.base[(y * SURFACE.width + x) as i64], FORMAT))
+                }
+            }
+        }
+    }
+}
+
+pub fn desktop() -> (u64, u64, u64, u64) {
+    unsafe {
+        let width = min(if SURFACE.width > 128 { SURFACE.width - 128 } else { 0 }, 720)
+        let height = min(if SURFACE.height > 128 { SURFACE.height - 128 } else { 0 }, 440)
+        let x = (SURFACE.width - width) / 2; let y = (SURFACE.height - height) / 2
+        framebuffer.jihoo_fill_rect(&SURFACE, 0, 0, SURFACE.width, SURFACE.height, 0x2b2f36)
+        framebuffer.jihoo_fill_rect(&SURFACE, x, y, width, height, 0x1a1a1a)
+        if width > 4 && height > 4 { framebuffer.jihoo_fill_rect(&SURFACE, x + 2, y + 2, width - 4, height - 4, 0xe8e8e8) }
+        if width > 4 && height > 34 { framebuffer.jihoo_fill_rect(&SURFACE, x + 2, y + 2, width - 4, 32, 0x4b6eaf) }
+        let client_w = if width > 16 { width - 16 } else { 0 }
+        let client_h = if height > 50 { height - 50 } else { 0 }
+        framebuffer.jihoo_fill_rect(&SURFACE, x + 8, y + 42, client_w, client_h, 0)
+        if width >= 48 { framebuffer.jihoo_fill_rect(&SURFACE, x + width - 30, y + 10, 14, 14, 0xffffff) }
+        mark(0, 0, SURFACE.width, SURFACE.height)
+        (x + 8, y + 42, client_w, client_h)
+    }
+}

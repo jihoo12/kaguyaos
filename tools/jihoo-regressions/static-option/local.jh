@@ -1,0 +1,4 @@
+fn main() {
+    let value: Option(u64) = None
+    println(value.is_none())
+}

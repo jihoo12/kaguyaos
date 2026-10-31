@@ -211,3 +211,76 @@ artifacts separate. `KAGUYA_XHCI_INDEX` selects another controller at build
 time. No physical disk is accessed or automatically formatted. NVMe, virtio
 GPU, ACPI/APIC/SMP, network services and the ordinary Rust build replacement
 remain unfinished. No new Jihoo compiler problem was found in these steps.
+
+## NVMe and native image-tool checkpoint
+
+`nvme_queue.jh` supplies submission encoding, bounded PRP-list generation,
+doorbell strides and completion phase/status handling. `nvme.jh` discovers
+and enables one controller, maps its MMIO before process creation, creates
+admin/I/O queues, identifies namespace 1, requires 512-byte LBAs without
+metadata, and supplies serialized synchronous transfers and shutdown.
+DMA uses identity-mapped kernel buffers and a retained PRP-list page.
+Queue/register waits are bounded; a completion timeout disables further
+I/O and retains DMA storage.
+
+The `nvme-shell` EFI mounts the existing disk volume without seeding,
+formatting or replacing its programs. The `shell` and diagnostic paths
+still avoid disk initialization. `tools/kef-tool/main.jh` replaces the
+Rust image-tool implementation for this checkpoint by using the same
+`filesystem.jh` and `fat.jh` as the kernel. It supports explicit format,
+recognition checks, listing, insertion, extraction and deletion. It opens
+an existing image; it does not create or implicitly format one.
+
+Verified on compiler `8a7aecfcf3b4e72ac40890f739deb96cca3019f6`:
+
+- Native C queue/PRP tests at `-O0` and `-O2`: submission bytes, nondefault
+  doorbell strides, phase wrap, foreign command IDs, status errors, unaligned
+  buffers, list capacity and overflow rejection.
+- Native Jihoo host-tool round trip: a 17,000-byte file, empty overwrite,
+  list/extract/delete, and unchanged unrecognized image after rejected insert.
+- QEMU NVMe boot from a newly prepared disposable 16 MiB image with all
+  seven Jihoo programs: file create/read/overwrite/delete, eight-stage pipes,
+  redirection/append, exec arguments, syntax errors, forty sequential loads
+  with constant frame counts and guest-initiated NVMe/UEFI shutdown.
+
+```sh
+CC=clang bash tools/test-jihoo-nvme.sh
+CC=clang bash tools/build-jihoo-kernel.sh nvme-shell
+bash tools/build-kef-tool.sh
+python3 tools/gpu-smoke.py --jihoo-nvme --disk-image /tmp/kaguya-jihoo-port-nvme.img --shell-io --shutdown --output /tmp/kaguya-jihoo-port-nvme
+```
+
+The verified NVMe checkpoint is commit `3e08841`.
+The verified artifacts are `target/jihoo-kernel/nvme-shell/os.efi` and
+`target/jihoo-tools/kef-tool`; QEMU logs/captures are in
+`/tmp/kaguya-jihoo-port-nvme`. The test image was initialized explicitly by
+the host tool before boot, and QEMU used a disposable snapshot. No physical
+disk or hardware was tested. Ordinary scripts still use Cargo/rustc; the
+complete migration is unfinished.
+
+## Current stop: compiler issue #24
+
+The excluded graphics drafts are `display.jh` and `virtio_gpu.jh`. They are
+not imported by the kernel and have not passed compilation or runtime
+checks. Checking `display.jh` fails at:
+
+```jihoo
+static DIRTY: Option((u64, u64, u64, u64)) = None
+```
+
+On compiler `8a7aecfcf3b4e72ac40890f739deb96cca3019f6`, the minimal native
+and UEFI `static VALUE: Option(u64) = None` cases fail with
+`` `None` is not a compile-time constant ``. Local `None`, static
+function-returned `None`, static `Some(7)` and a qualified custom enum
+variant all check/run and print `true` at `-O0` and `-O2`. The UEFI
+function-returned control also emits COFF successfully. See
+[jihoo issue #24](https://github.com/jihoolang/jihoo/issues/24) and
+[the saved reproductions](../tools/jihoo-regressions/static-option/README.md).
+
+Migration is stopped as requested. No initializer workaround is connected,
+and the adjacent compiler checkout is unchanged. After the compiler fix,
+rebuild it and rerun the reproductions/controls, then check and complete the
+graphics draft before connecting it. Virtio GPU/display, ACPI/APIC/SMP,
+networking and ordinary build-script replacement remain unfinished. Do not
+switch the ordinary build to the limited NVMe checkpoint by dropping these
+remaining behaviors.

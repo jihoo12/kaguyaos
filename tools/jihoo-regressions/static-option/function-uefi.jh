@@ -1,0 +1,4 @@
+#![uefi]
+fn empty() -> Option(u64) { None }
+static VALUE: Option(u64) = empty()
+fn main() -> i32 { unsafe { if VALUE.is_none() { 0 } else { 1 } } }

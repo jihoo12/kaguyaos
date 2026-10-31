@@ -1,0 +1,3 @@
+#![uefi]
+static VALUE: Option(u64) = None
+fn main() -> i32 { unsafe { if VALUE.is_none() { 0 } else { 1 } } }

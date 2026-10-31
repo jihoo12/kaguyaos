@@ -1,0 +1,2 @@
+static VALUE: Option(u64) = None
+fn main() { unsafe { println(VALUE.is_none()) } }

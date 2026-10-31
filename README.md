@@ -469,3 +469,25 @@ keep the original physical-hardware milestone artifacts separate. It never
 accesses physical disks. NVMe, virtio GPU, SMP and networking remain to be
 connected or ported. Ping/wget compile, but network services are unavailable
 in this standalone shell.
+
+The next Jihoo checkpoint can mount an existing KAGFAT16 NVMe volume and
+load its shell/programs without Rust:
+
+```bash
+CC=clang bash tools/build-jihoo-kernel.sh nvme-shell
+bash tools/build-kef-tool.sh
+# Use an explicitly prepared disposable image for QEMU verification:
+python3 tools/gpu-smoke.py --jihoo-nvme --disk-image /tmp/kaguya-jihoo-port-nvme.img --shell-io --shutdown --output /tmp/kaguya-jihoo-port-nvme
+```
+
+`target/jihoo-tools/kef-tool` is now implemented in Jihoo and shares the
+kernel filesystem implementation. It supports `format`, `check`, `list`,
+`insert`, `extract` and `delete`. Formatting is an explicit host operation;
+boot never formats an unrecognized disk. The NVMe checkpoint passed native
+queue/PRP tests and QEMU filesystem/pipeline/reclamation/shutdown checks.
+Ordinary `run.sh` and userspace build scripts still require Rust.
+
+Migration is currently stopped at [Jihoo issue #24](https://github.com/jihoolang/jihoo/issues/24):
+the compiler rejects a static `Option` initialized directly with `None`.
+The incomplete graphics draft is excluded from the kernel build; no
+workaround is connected.

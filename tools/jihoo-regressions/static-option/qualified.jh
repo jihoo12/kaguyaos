@@ -1,0 +1,4 @@
+#[derive(Eq)]
+enum Flag { Off, On }
+static VALUE: Flag = Flag.Off
+fn main() { unsafe { println(VALUE == Flag.Off) } }
