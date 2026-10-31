@@ -42,3 +42,9 @@ branch; that is an inference, not a verified compiler fix.
 No compiler patch or production initializer workaround is connected.
 Migration is stopped as requested; rebuild the compiler and rerun these
 cases before continuing the graphics draft.
+
+## Fixed compiler verification
+
+Fixed in `ea3c2e0b87f8177058b4a8dcfa97588960cf6d96`. Native `none.jh` and all controls
+print `true` at `-O0` and `-O2`; both UEFI cases check and emit COFF.
+The display port now compiles with its direct `None` initializer.

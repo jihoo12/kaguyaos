@@ -131,6 +131,7 @@ pub fn run(stage: u32) -> i32 {
         if cpu_test {
             cpu.init()
             memory.init(map as *u8, map_size, descriptor_size, framebuffer, framebuffer_size)
+            if stage >= 6 { runtime.init_display(framebuffer, stride as u64, width as u64, height as u64, format) }
             if stage >= 5 { usb.init(jihoo_xhci_index()) }
             cpu.check()
             if stage >= 6 { storage.init_nvme() }

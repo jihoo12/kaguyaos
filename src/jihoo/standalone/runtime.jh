@@ -3,6 +3,7 @@ import io
 import console
 import framebuffer
 import sync
+import display
 
 extern fn jihoo_pause()
 extern fn jihoo_halt() -> never
@@ -52,7 +53,49 @@ pub fn live_allocations() -> u64 { unsafe { LIVE } }
 pub fn clear() {
     unsafe {
         let flags = sync.jihoo_lock_acquire(&SCREEN_LOCK)
-        if SCREEN_READY { console.jihoo_console_clear(&SCREEN, 0) }
+        if SCREEN_READY {
+            console.jihoo_console_clear(&SCREEN, 0)
+            display.mark(SCREEN.origin_x, SCREEN.origin_y, SCREEN.width, SCREEN.height)
+            display.present()
+        }
+        sync.jihoo_lock_release(&SCREEN_LOCK, flags & 0x200 != 0)
+    }
+}
+
+pub fn init_display(base: u64, stride: u64, width: u64, height: u64, format: u32) {
+    match display.init(base, stride, width, height, format) {
+        Some(surface) => unsafe {
+            let flags = sync.jihoo_lock_acquire(&SCREEN_LOCK)
+            console.jihoo_console_init(&SCREEN, &surface, 1)
+            let area = display.desktop()
+            console.jihoo_console_viewport(&SCREEN, area.0, area.1, area.2, area.3)
+            display.present()
+            sync.jihoo_lock_release(&SCREEN_LOCK, flags & 0x200 != 0)
+        }
+        None => serial("display: unsupported backbuffer size; keeping direct GOP console\n")
+    }
+}
+
+pub fn cell(row: u64, column: u64, character: u32, foreground: u32, background: u32) {
+    unsafe {
+        let flags = sync.jihoo_lock_acquire(&SCREEN_LOCK)
+        if SCREEN_READY {
+            console.jihoo_console_cell(&SCREEN, row, column, character, foreground, background)
+            display.mark(SCREEN.origin_x, SCREEN.origin_y, SCREEN.width, SCREEN.height)
+            display.present()
+        }
+        sync.jihoo_lock_release(&SCREEN_LOCK, flags & 0x200 != 0)
+    }
+}
+
+pub fn region(row: u64, column: u64, cells: *console.Cell, length: u64, width: u64) {
+    unsafe {
+        let flags = sync.jihoo_lock_acquire(&SCREEN_LOCK)
+        if SCREEN_READY {
+            console.jihoo_console_region(&SCREEN, row, column, cells, length, width)
+            display.mark(SCREEN.origin_x, SCREEN.origin_y, SCREEN.width, SCREEN.height)
+            display.present()
+        }
         sync.jihoo_lock_release(&SCREEN_LOCK, flags & 0x200 != 0)
     }
 }
@@ -72,7 +115,11 @@ pub fn output(text: str) {
     serial(text)
     unsafe {
         let flags = sync.jihoo_lock_acquire(&SCREEN_LOCK)
-        if SCREEN_READY { console.jihoo_console_write(&SCREEN, text.ptr, text.len as u64) }
+        if SCREEN_READY {
+            console.jihoo_console_write(&SCREEN, text.ptr, text.len as u64)
+            display.mark(SCREEN.origin_x, SCREEN.origin_y, SCREEN.width, SCREEN.height)
+            display.present()
+        }
         sync.jihoo_lock_release(&SCREEN_LOCK, flags & 0x200 != 0)
     }
 }
@@ -90,6 +137,7 @@ pub fn serial(text: str) {
 }
 
 export fn kaguya_device_log(bytes: *u8, length: u64) { unsafe { output(make_str(bytes, length as i64)) } }
+export fn kaguya_graphics_log(bytes: *u8, length: u64) { unsafe { serial(make_str(bytes, length as i64)) } }
 
 pub export fn kaguya_runtime_write(fd: i32, bytes: *u8, length: u64) -> i64 {
     if fd != 1 && fd != 2 { return -1 }

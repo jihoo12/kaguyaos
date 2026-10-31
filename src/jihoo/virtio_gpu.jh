@@ -1,4 +1,3 @@
-// Unconnected graphics draft; stopped at compiler issue #24. See README.md.
 import pci
 
 extern fn kaguya_map_mmio(base: u64, bytes: u64) -> bool
@@ -44,8 +43,8 @@ fn find() -> Option(pci.Device) {
     None
 }
 
-pub fn init(buffer: u64, width: u32, height: u32) -> Result(Gpu, str) {
-    let dev = match find() { Some(dev) => dev, None => return Err("no virtio GPU") }
+pub fn init(buffer: u64, width: u32, height: u32) -> Result(Gpu, String) {
+    let dev = match find() { Some(dev) => dev, None => return Err("no virtio GPU".to_string()) }
     let b = dev.bus; let d = dev.device; let f = dev.function
     var common: u64 = 0
     var notify: u64 = 0
@@ -54,34 +53,34 @@ pub fn init(buffer: u64, width: u32, height: u32) -> Result(Gpu, str) {
     var cap = pci.jihoo_pci_read8(b, d, f, 0x34) & !3
     var visited: [bool; 256] = [false; 256]
     while cap != 0 {
-        if cap < 0x40 || cap > 0xfc || visited[cap as i64] { return Err("invalid PCI capability chain") }
+        if cap < 0x40 || cap > 0xfc || visited[cap as i64] { return Err("invalid PCI capability chain".to_string()) }
         visited[cap as i64] = true
         if pci.jihoo_pci_read8(b, d, f, cap) == 9 {
-            if cap > 0xf0 || pci.jihoo_pci_read8(b, d, f, cap + 2) < 16 { return Err("short virtio capability") }
+            if cap > 0xf0 || pci.jihoo_pci_read8(b, d, f, cap + 2) < 16 { return Err("short virtio capability".to_string()) }
             let kind = pci.jihoo_pci_read8(b, d, f, cap + 3)
             if kind == 1 || kind == 2 {
                 let bar = pci.jihoo_pci_read8(b, d, f, cap + 4)
-                if bar > 5 { return Err("invalid BAR") }
+                if bar > 5 { return Err("invalid BAR".to_string()) }
                 let low = pci.jihoo_pci_read32(b, d, f, 0x10 + bar * 4)
-                if low & 1 != 0 { return Err("I/O BAR unsupported") }
+                if low & 1 != 0 { return Err("I/O BAR unsupported".to_string()) }
                 var base = (low & !15) as u64
                 if low & 6 == 4 {
-                    if bar == 5 { return Err("invalid 64-bit BAR") }
+                    if bar == 5 { return Err("invalid 64-bit BAR".to_string()) }
                     base |= pci.jihoo_pci_read32(b, d, f, 0x14 + bar * 4) as u64 << 32
                 }
-                if base == 0 { return Err("unassigned BAR") }
+                if base == 0 { return Err("unassigned BAR".to_string()) }
                 let offset = pci.jihoo_pci_read32(b, d, f, cap + 8) as u64
                 let length = pci.jihoo_pci_read32(b, d, f, cap + 12) as u64
-                if length == 0 || length > 0x100000 || base > 0x7fffffffffff - offset { return Err("invalid capability range") }
+                if length == 0 || length > 0x100000 || base > 0x7fffffffffff - offset { return Err("invalid capability range".to_string()) }
                 let start = base + offset
-                if start > 0x7fffffffffff - length - 4095 { return Err("BAR overflow") }
+                if start > 0x7fffffffffff - length - 4095 { return Err("BAR overflow".to_string()) }
                 let end = (start + length + 4095) & !4095
-                if !unsafe { kaguya_map_mmio(start & !4095, end - (start & !4095)) } { return Err("MMIO map failed") }
+                if !unsafe { kaguya_map_mmio(start & !4095, end - (start & !4095)) } { return Err("MMIO map failed".to_string()) }
                 if kind == 1 && common == 0 {
-                    if length < 56 || start & 3 != 0 { return Err("invalid common config") }
+                    if length < 56 || start & 3 != 0 { return Err("invalid common config".to_string()) }
                     common = start
                 } else if kind == 2 && notify == 0 {
-                    if cap > 0xec || pci.jihoo_pci_read8(b, d, f, cap + 2) < 20 { return Err("short notify capability") }
+                    if cap > 0xec || pci.jihoo_pci_read8(b, d, f, cap + 2) < 20 { return Err("short notify capability".to_string()) }
                     notify = start; notify_length = length
                     multiplier = pci.jihoo_pci_read32(b, d, f, cap + 16) as u64
                 }
@@ -89,13 +88,13 @@ pub fn init(buffer: u64, width: u32, height: u32) -> Result(Gpu, str) {
         }
         cap = pci.jihoo_pci_read8(b, d, f, cap + 1) & !3
     }
-    if common == 0 || notify == 0 { return Err("missing virtio capabilities") }
+    if common == 0 || notify == 0 { return Err("missing virtio capabilities".to_string()) }
     let command = pci.jihoo_pci_read16(b, d, f, 4) | 6 | (1 << 10)
     pci.jihoo_pci_write32(b, d, f, 4, command as u32)
     wr8(common, 20, 0)
     var reset = false
     for _ in 0..LIMIT { if rd8(common, 20) == 0 { reset = true; break }; unsafe { jihoo_pause() } }
-    if !reset { return Err("reset timeout") }
+    if !reset { return Err("reset timeout".to_string()) }
     var gpu = Gpu { common: common, notify: notify, dma: unsafe { ((&DMA[0] as u64) + 4095) & !4095 },
                     index: 0, width: width, height: height, healthy: true }
     match gpu.setup(notify_length, multiplier, buffer) {
@@ -105,19 +104,19 @@ pub fn init(buffer: u64, width: u32, height: u32) -> Result(Gpu, str) {
 }
 
 impl Gpu {
-    fn setup(inout self, notify_length: u64, multiplier: u64, buffer: u64) -> Result((), str) {
+    fn setup(inout self, notify_length: u64, multiplier: u64, buffer: u64) -> Result((), String) {
         let c = self.common
         wr8(c, 20, 3)
         wr32(c, 0, 1)
-        if rd32(c, 4) & 1 == 0 { return Err("VIRTIO_F_VERSION_1 missing") }
+        if rd32(c, 4) & 1 == 0 { return Err("VIRTIO_F_VERSION_1 missing".to_string()) }
         wr32(c, 8, 0); wr32(c, 12, 0); wr32(c, 8, 1); wr32(c, 12, 1)
         wr8(c, 20, 11)
-        if rd8(c, 20) & 8 == 0 { return Err("features rejected") }
+        if rd8(c, 20) & 8 == 0 { return Err("features rejected".to_string()) }
         wr16(c, 22, 0)
-        if rd16(c, 24) < 8 { return Err("control queue too small") }
+        if rd16(c, 24) < 8 { return Err("control queue too small".to_string()) }
         wr16(c, 24, 8); wr16(c, 26, 0xffff)
         let offset = rd16(c, 30) as u64 * multiplier
-        if offset + 2 > notify_length || (self.notify + offset) & 1 != 0 { return Err("notify out of bounds") }
+        if offset + 2 > notify_length || (self.notify + offset) & 1 != 0 { return Err("notify out of bounds".to_string()) }
         self.notify += offset
         unsafe { mem_fill(self.dma as *u8, 0, 16384) }
         wr16(self.dma, 256, 1)
@@ -126,7 +125,7 @@ impl Gpu {
         self.command(0x100, [], 0x1101)?
         var scanout: Option(u32) = None
         for i in 0..16 { if rd32(self.dma + 8192, 24 + i as u64 * 24 + 16) != 0 { scanout = Some(i as u32); break } }
-        let selected = match scanout { Some(value) => value, None => return Err("no enabled scanout") }
+        let selected = match scanout { Some(value) => value, None => return Err("no enabled scanout".to_string()) }
         self.command(0x101, [1, 2, self.width, self.height], 0x1100)?
         self.command(0x106, [1, 1, buffer as u32, (buffer >> 32) as u32, self.width * self.height * 4, 0], 0x1100)?
         self.transfer()?
@@ -138,9 +137,9 @@ impl Gpu {
 
     fn fail(inout self) { self.healthy = false; wr8(self.common, 20, rd8(self.common, 20) | 128) }
 
-    fn command(inout self, kind: u32, words: [u32], expected: u32) -> Result((), str) {
-        if !self.healthy { return Err("GPU disabled") }
-        if words.len > (4096 - 24) / 4 { return Err("GPU request too large") }
+    fn command(inout self, kind: u32, words: [u32], expected: u32) -> Result((), String) {
+        if !self.healthy { return Err("GPU disabled".to_string()) }
+        if words.len > (4096 - 24) / 4 { return Err("GPU request too large".to_string()) }
         let request = self.dma + 4096; let response = self.dma + 8192
         unsafe { mem_fill(request as *u8, 0, 4096); mem_fill(response as *u8, 0, 4096) }
         wr32(request, 0, kind); wr32(request, 4, 1); wr64(request, 8, self.index as u64 + 1)
@@ -162,7 +161,7 @@ impl Gpu {
                 let minimum: u32 = if expected == 0x1101 { 408 } else { 24 }
                 if rd32(self.dma, used) != 0 || length < minimum || length > 4096 || rd32(response, 0) != expected ||
                     rd32(response, 4) & 1 == 0 || rd64(response, 8) != self.index as u64 + 1 {
-                    self.fail(); return Err("invalid GPU response")
+                    self.fail(); return Err("invalid GPU response".to_string())
                 }
                 self.index = next
                 return Ok(())
@@ -170,9 +169,9 @@ impl Gpu {
             unsafe { jihoo_pause() }
         }
         self.fail()
-        Err("control queue timeout")
+        Err("control queue timeout".to_string())
     }
 
-    fn transfer(inout self) -> Result((), str) { self.command(0x105, [0, 0, self.width, self.height, 0, 0, 1, 0], 0x1100) }
-    pub fn present(inout self) -> Result((), str) { self.transfer()?; self.command(0x104, [0, 0, self.width, self.height, 1, 0], 0x1100) }
+    fn transfer(inout self) -> Result((), String) { self.command(0x105, [0, 0, self.width, self.height, 0, 0, 1, 0], 0x1100) }
+    pub fn present(inout self) -> Result((), String) { self.transfer()?; self.command(0x104, [0, 0, self.width, self.height, 1, 0], 0x1100) }
 }

@@ -631,18 +631,33 @@ forty constant-frame executions and guest NVMe/UEFI shutdown. Only a newly
 prepared disposable image and its QEMU snapshot were used. Physical NVMe,
 other namespace formats and hardware timeout paths remain untested.
 
-## Current stop: static Option initializer
+## Graphics integration
 
-Compiler `8a7aecfcf3b4e72ac40890f739deb96cca3019f6` rejects `static VALUE:
-Option(u64) = None` as not a compile-time constant in both native and UEFI
-checking. A local `None`, function-returned static `None`, static `Some(7)`
-and qualified custom enum variant run correctly at `-O0` and `-O2`;
-the UEFI function control emits a COFF object. This is reported as
-[jihoo issue #24](https://github.com/jihoolang/jihoo/issues/24), with
-[reproductions](../../tools/jihoo-regressions/static-option/README.md).
+Compiler issue #24 is fixed in `ea3c2e0b87f8177058b4a8dcfa97588960cf6d96`.
+The direct static `None` initializer and native/UEFI controls pass. GPU
+errors use owned `String` values because Jihoo view-returning methods tie
+the result to their arguments; this is separate from the compiler fix.
 
-`display.jh` and `virtio_gpu.jh` are excluded, unverified graphics drafts;
-`display.jh` fails on its `DIRTY` initializer. No workaround is connected.
-The verified NVMe EFI and image tool remain available. Migration is stopped
-pending a compiler fix; ordinary builds still require Rust and the full
-Rust-free OS goal is not complete.
+`virtio_gpu.jh` ports modern PCI capabilities, feature negotiation, an
+eight-entry split control queue, fenced requests/response validation and
+one 2D scanout. Its static DMA buffer is aligned within retained kernel
+storage; timeout/error handling stops future presentation. `display.jh`
+ports a 1920x1080 backbuffer, dirty rectangles, native GOP color conversion
+and the desktop/window viewport. Larger layouts keep the direct GOP
+console. `runtime.jh` owns the interrupt-safe rendering/presentation lock
+and supplies serial-only graphics diagnostics. Cell/region syscall ranges
+are checked before rendering. All device mappings precede user spaces.
+
+Native tests at both optimization levels pass dirty clipping, GOP formats,
+stride/sentinel bounds, desktop bounds and error-allocation cleanup. QEMU
+passes virtio scanout activation, shell/file I/O, eight-stage pipelines,
+redirection, exec arguments, forty constant-frame executions and shutdown;
+the GOP backend passes a separate regression. These are QEMU checks, not
+physical GPU validation. The ordinary build still uses Rust; networking,
+ACPI/APIC/SMP and script replacement are next.
+
+```sh
+CC=clang bash tools/test-jihoo-display.sh
+CC=clang bash tools/build-jihoo-kernel.sh nvme-shell
+python3 tools/gpu-smoke.py --jihoo-nvme --disk-image /tmp/kaguya-jihoo-port-nvme.img --shell-io --shutdown --output /tmp/kaguya-jihoo-port-nvme
+```

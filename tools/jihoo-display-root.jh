@@ -1,0 +1,13 @@
+import display
+extern fn kaguya_kernel_panic(message: *u8, length: u64) -> never
+#[panic_handler]
+fn on_panic(message: str) -> never { unsafe { kaguya_kernel_panic(message.ptr, message.len as u64) } }
+export fn jihoo_display_init(base: u64, stride: u64, width: u64, height: u64, format: u32) -> *u32 {
+    match display.init(base, stride, width, height, format) { Some(surface) => surface.base, None => null }
+}
+export fn jihoo_display_mark(x: u64, y: u64, width: u64, height: u64) { display.mark(x, y, width, height) }
+export fn jihoo_display_present() { display.present() }
+export fn jihoo_display_desktop(area: *u64) {
+    let rectangle = display.desktop()
+    unsafe { area[0] = rectangle.0; area[1] = rectangle.1; area[2] = rectangle.2; area[3] = rectangle.3 }
+}

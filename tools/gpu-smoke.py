@@ -43,8 +43,6 @@ if args.jihoo_shell or args.jihoo_nvme:
     if args.hardware_shell or args.hardware_test or args.cpu_test or args.ring3_test or args.filesystem_test or args.scheduler_test:
         parser.error('choose jihoo-shell or another boot mode')
     args.hardware_shell = True
-    if args.jihoo_nvme:
-        args.backend = 'gop'
 if args.scheduler_test:
     if args.filesystem_test or args.ring3_test or args.cpu_test or args.hardware_test or args.hardware_shell:
         parser.error('choose scheduler-test or another boot mode')

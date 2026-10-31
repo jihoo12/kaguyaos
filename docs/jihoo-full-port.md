@@ -258,29 +258,39 @@ the host tool before boot, and QEMU used a disposable snapshot. No physical
 disk or hardware was tested. Ordinary scripts still use Cargo/rustc; the
 complete migration is unfinished.
 
-## Current stop: compiler issue #24
+## Graphics checkpoint
 
-The excluded graphics drafts are `display.jh` and `virtio_gpu.jh`. They are
-not imported by the kernel and have not passed compilation or runtime
-checks. Checking `display.jh` fails at:
+Compiler issue #24 is fixed in `ea3c2e0b87f8177058b4a8dcfa97588960cf6d96`.
+Native direct-`None` and control cases print `true` at both optimization
+levels; the UEFI cases check and emit COFF. No initializer workaround is
+connected. The graphics draft's borrowed error strings were separately
+changed to owned `String` errors to follow Jihoo's view-return rules.
 
-```jihoo
-static DIRTY: Option((u64, u64, u64, u64)) = None
+`display.jh` and `virtio_gpu.jh` now compile and are connected to the
+NVMe boot path. Modern PCI capabilities, VERSION_1 negotiation, fenced
+split-queue commands, one 2D scanout, retained DMA storage, dirty rectangles,
+GOP conversion and the desktop/window viewport are ported. Runtime output,
+clear and cell/region syscalls serialize rendering and presentation with
+the interrupt-safe screen lock; graphics error output stays serial-only.
+MMIO mappings are made before the first process address space.
+
+Native C tests pass GOP conversion, dirty clipping/stride bounds and
+allocation cleanup at `-O0` and `-O2`. QEMU activates a virtio scanout at
+1280x800 and passes file utilities, eight-stage pipelines, redirection,
+exec arguments, forty constant-frame loads and guest shutdown. A separate
+GOP run passes its shell/file/reclamation/shutdown regression. Logs and
+screenshots are in `/tmp/kaguya-jihoo-port-nvme` and
+`/tmp/kaguya-jihoo-display-gop`.
+
+```sh
+CC=clang bash tools/test-jihoo-display.sh
+CC=clang bash tools/build-jihoo-kernel.sh nvme-shell
+python3 tools/gpu-smoke.py --jihoo-nvme --disk-image /tmp/kaguya-jihoo-port-nvme.img --shell-io --shutdown --output /tmp/kaguya-jihoo-port-nvme
+python3 tools/gpu-smoke.py --jihoo-nvme --backend gop --disk-image /tmp/kaguya-jihoo-port-nvme.img --shutdown --output /tmp/kaguya-jihoo-display-gop
 ```
 
-On compiler `8a7aecfcf3b4e72ac40890f739deb96cca3019f6`, the minimal native
-and UEFI `static VALUE: Option(u64) = None` cases fail with
-`` `None` is not a compile-time constant ``. Local `None`, static
-function-returned `None`, static `Some(7)` and a qualified custom enum
-variant all check/run and print `true` at `-O0` and `-O2`. The UEFI
-function-returned control also emits COFF successfully. See
-[jihoo issue #24](https://github.com/jihoolang/jihoo/issues/24) and
-[the saved reproductions](../tools/jihoo-regressions/static-option/README.md).
-
-Migration is stopped as requested. No initializer workaround is connected,
-and the adjacent compiler checkout is unchanged. After the compiler fix,
-rebuild it and rerun the reproductions/controls, then check and complete the
-graphics draft before connecting it. Virtio GPU/display, ACPI/APIC/SMP,
-networking and ordinary build-script replacement remain unfinished. Do not
-switch the ordinary build to the limited NVMe checkpoint by dropping these
-remaining behaviors.
+The supported backbuffer limit remains 1920x1080; larger layouts retain
+the direct GOP console. Physical GPU hardware and timeout/error paths
+have not been exercised. ACPI/APIC/SMP, network services and ordinary build
+script replacement remain unfinished; continue with network ownership and
+drivers. Ordinary builds still require Rust.

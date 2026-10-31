@@ -13,6 +13,7 @@ import shared
 import std.utf8
 import std.uefi
 import usb
+import console
 
 extern fn jihoo_probe_data() -> *u8
 extern fn jihoo_probe_size() -> u64
@@ -54,6 +55,15 @@ pub fn spawn(name: str, arguments: str, files: shared.Shared(file_table.FileTabl
 }
 
 pub fn dispatch(id: u64, a: u64, b: u64, c: u64, d: u64, e: u64) -> u64 {
+    if id == 19 { runtime.cell(a, b, c as u32, d as u32, e as u32); return 0 }
+    if id == 20 {
+        if d == 0 || e == 0 { return 0 }
+        if d > 0x7fffffffffffffff / e { return 0 }
+        let count = d * e
+        if count > 0x7fffffffffffffff / 12 || !user_range(c, count * 12) { return 0 }
+        runtime.region(a, b, c as *console.Cell, count, d)
+        return 0
+    }
     if id == 7 {
         usb.shutdown()
         storage.shutdown()

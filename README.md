@@ -487,7 +487,7 @@ boot never formats an unrecognized disk. The NVMe checkpoint passed native
 queue/PRP tests and QEMU filesystem/pipeline/reclamation/shutdown checks.
 Ordinary `run.sh` and userspace build scripts still require Rust.
 
-Migration is currently stopped at [Jihoo issue #24](https://github.com/jihoolang/jihoo/issues/24):
-the compiler rejects a static `Option` initialized directly with `None`.
-The incomplete graphics draft is excluded from the kernel build; no
-workaround is connected.
+Jihoo issue #24 is fixed. The NVMe checkpoint now includes the Jihoo
+virtio GPU driver, desktop/window renderer, dirty GOP presentation and
+cell/region syscalls. Both virtio and GOP QEMU regressions pass. Networking,
+ACPI/APIC/SMP and the ordinary Rust build replacement remain in progress.
