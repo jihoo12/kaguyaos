@@ -661,3 +661,41 @@ CC=clang bash tools/test-jihoo-display.sh
 CC=clang bash tools/build-jihoo-kernel.sh nvme-shell
 python3 tools/gpu-smoke.py --jihoo-nvme --disk-image /tmp/kaguya-jihoo-port-nvme.img --shell-io --shutdown --output /tmp/kaguya-jihoo-port-nvme
 ```
+
+## Network checkpoint
+
+The standalone NVMe path now initializes an e1000 NIC and connects Ethernet,
+ARP/IPv4/ICMP, UDP/DNS and TCP client sockets to descriptor ownership and
+syscalls. Receive IRQs acknowledge the device and publish work; bounded
+packet draining and retransmission run in normal scheduler/syscall context.
+The current platform uses the legacy PIC route. The later APIC/SMP port
+must retain that interrupt delivery through its I/O APIC routing.
+
+`Shared` now supports atomic weak references so UDP port registration does
+not keep closed sockets alive. Upgrade cannot resurrect a last-dropped
+value, and storage remains until the final weak owner is gone. TCP keeps
+connections alive while sending FIN, acknowledges/retransmits bounded
+stream buffers and closes them after completion, reset or timeout. The
+existing client-only TCP limitations are retained: no listener, out-of-order
+reassembly, congestion control or TIME_WAIT. IPv4 uses the QEMU static
+address/gateway configuration; DNS permits one outstanding fixed-ID query.
+
+Native tests at both optimization levels pass concurrent weak upgrade vs.
+last-owner destruction, descriptor/scheduler regressions, UDP bind/filter/
+queue/timeout/lifetime/port reuse, truncated DNS rejection and compressed
+A answers, checksum rejection and byte-ring capacity/wrap. QEMU confirms
+actual e1000 RX interrupts, ten successful gateway pings, HTTP body reads,
+relative redirects, output redirection, a 10,200-byte body streamed through
+bounded pipes, 404/incomplete-body errors, HTTPS rejection, constant-frame
+execs and NVMe/UEFI shutdown. Logs are in `/tmp/kaguya-jihoo-network-port`.
+
+```sh
+CC=clang bash tools/test-jihoo-shared.sh
+CC=clang bash tools/test-jihoo-udp.sh
+CC=clang bash tools/build-jihoo-kernel.sh nvme-shell
+python3 tools/gpu-smoke.py --jihoo-nvme --disk-image /tmp/kaguya-jihoo-port-nvme.img --network --shutdown --output /tmp/kaguya-jihoo-network-port
+```
+
+Physical NIC hardware, loss/reordering and multi-CPU protocol execution
+have not been exercised here. ACPI/APIC/SMP and ordinary build-script
+replacement remain unfinished. The ordinary build still requires Rust.

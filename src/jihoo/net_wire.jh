@@ -1,0 +1,18 @@
+import checksum
+
+#[derive(Eq, Clone)]
+pub struct Endpoint { pub ip: u32, pub port: u16 }
+
+pub fn get16(data: [u8], offset: i64) -> u16 { (data[offset] as u16 << 8) | data[offset + 1] as u16 }
+pub fn get32(data: [u8], offset: i64) -> u32 { (get16(data, offset) as u32 << 16) | get16(data, offset + 2) as u32 }
+pub fn ip(data: [u8], offset: i64) -> u32 {
+    data[offset] as u32 | (data[offset + 1] as u32 << 8) | (data[offset + 2] as u32 << 16) | (data[offset + 3] as u32 << 24)
+}
+pub fn put16(data: *u8, offset: i64, value: u16) { unsafe { data[offset] = (value >> 8) as u8; data[offset + 1] = value as u8 } }
+pub fn put32(data: *u8, offset: i64, value: u32) { put16(data, offset, (value >> 16) as u16); put16(data, offset + 2, value as u16) }
+pub fn put_ip(data: *u8, offset: i64, address: u32) { unsafe { for i in 0..4 { data[offset + i] = (address >> (i * 8)) as u8 } } }
+pub fn sum(data: [u8]) -> u16 { checksum.jihoo_checksum(data.ptr, data.len as u64) }
+pub fn transport(src: u32, dst: u32, protocol: u8, data: [u8]) -> u16 {
+    checksum.jihoo_transport_checksum(src, dst, protocol, data.ptr, data.len as u64)
+}
+pub fn deadline(now: u64, ticks: u64) -> u64 { if ticks > 0xffffffffffffffff - now { 0xffffffffffffffff } else { now + ticks } }

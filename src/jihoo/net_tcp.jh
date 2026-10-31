@@ -1,0 +1,427 @@
+import std.mem
+import net_bytes
+import net_wire as wire
+import net_base
+import kernel_sync
+import shared
+import sync
+
+extern fn kaguya_event_generation(key: u64) -> u64
+extern fn kaguya_wait_event(key: u64, deadline: u64, generation: u64)
+extern fn kaguya_wake_event(key: u64)
+extern fn kaguya_forget_event(key: u64)
+extern fn kaguya_network_random() -> u32
+
+const FIN: u8 = 1
+const SYN: u8 = 2
+const RST: u8 = 4
+const PSH: u8 = 8
+const ACK: u8 = 16
+const MSS: u64 = 1460
+const RECV_CAP: u64 = 16384
+const SEND_CAP: u64 = 8192
+
+#[derive(Eq)]
+enum Status { Idle, SynSent, Established, FinWait1, FinWait2, CloseWait, Closing, LastAck, Closed }
+
+struct Segment {
+    source: u16
+    destination: u16
+    sequence: u32
+    ack: u32
+    flags: u8
+    window: u64
+    mss: Option(u64)
+    payload: [u8]
+}
+
+struct Control {
+    status: Status
+    port: u16
+    remote: wire.Endpoint
+    iss: u32
+    una: u32
+    next: u32
+    maximum: u32
+    window: u64
+    mss: u64
+    send_queue: net_bytes.Bytes
+    fin_queued: bool
+    fin_sequence: Option(u32)
+    fin_acked: bool
+    receive_next: u32
+    receive_queue: net_bytes.Bytes
+    peer_fin: bool
+    user_closed: bool
+    advertised: u64
+    error: Option(i32)
+    rto: u64
+    retries: u32
+    deadline: Option(u64)
+}
+
+struct Connection { control: kernel_sync.Spinlock(Control) }
+pub struct Socket { connection: shared.Shared(Connection) }
+struct Entry { port: u16, remote: wire.Endpoint, connection: shared.Shared(Connection) }
+static CONNECTIONS: *kernel_sync.Spinlock(Vec(Entry)) = null
+static NEXT: u16 = 50000
+static INIT_LOCK: u8 = 0
+
+fn before(a: u32, b: u32) -> bool { ((a -% b) as i32) < 0 }
+fn before_equal(a: u32, b: u32) -> bool { ((a -% b) as i32) <= 0 }
+
+fn parse(bytes: [u8]) -> Option(Segment) {
+    if bytes.len < 20 { return None }
+    let header = (bytes[12] >> 4) as i64 * 4
+    if header < 20 || header > bytes.len { return None }
+    var mss: Option(u64) = None
+    var p: i64 = 20
+    while p < header {
+        let kind = bytes[p]
+        if kind == 0 { break }
+        if kind == 1 { p += 1; continue }
+        if p + 2 > header { break }
+        let length = bytes[p + 1] as i64
+        if length < 2 || length > header - p { break }
+        if kind == 2 && length == 4 { mss = Some(wire.get16(bytes, p + 2) as u64) }
+        p += length
+    }
+    Some(Segment { source: wire.get16(bytes, 0), destination: wire.get16(bytes, 2),
+        sequence: wire.get32(bytes, 4), ack: wire.get32(bytes, 8), flags: bytes[13],
+        window: wire.get16(bytes, 14) as u64, mss: mss, payload: bytes[header..] })
+}
+
+fn transmit(port: u16, remote: wire.Endpoint, sequence: u32, acknowledgement: u32, flags: u8, window: u64, payload: [u8]) -> bool {
+    if payload.len as u64 > MSS { return false }
+    let header: i64 = if flags & SYN != 0 { 24 } else { 20 }
+    var bytes: [u8; 1484] = [0; 1484]
+    wire.put16(&bytes[0], 0, port); wire.put16(&bytes[0], 2, remote.port)
+    wire.put32(&bytes[0], 4, sequence); wire.put32(&bytes[0], 8, acknowledgement)
+    bytes[12] = ((header / 4) as u8) << 4; bytes[13] = flags
+    wire.put16(&bytes[0], 14, min(window, 65535) as u16)
+    if flags & SYN != 0 { bytes[20] = 2; bytes[21] = 4; wire.put16(&bytes[0], 22, MSS as u16) }
+    unsafe { mem_copy(&bytes[header], payload.ptr, payload.len) }
+    wire.put16(&bytes[0], 16, wire.transport(net_base.HOST, remote.ip, 6, bytes[0..header + payload.len]))
+    net_base.transmit_cached(remote.ip, 6, bytes[0..header + payload.len])
+}
+
+impl Control {
+    fn new() -> Control {
+        Control { status: Status.Idle, port: 0, remote: wire.Endpoint { ip: 0, port: 0 }, iss: 0, una: 0, next: 0,
+            maximum: 0, window: 0, mss: 536, send_queue: net_bytes.Bytes.new(SEND_CAP), fin_queued: false,
+            fin_sequence: None, fin_acked: false, receive_next: 0, receive_queue: net_bytes.Bytes.new(RECV_CAP),
+            peer_fin: false, user_closed: false, advertised: 0, error: None, rto: 100, retries: 0, deadline: None }
+    }
+
+    fn send(inout self, flags: u8, sequence: u32, payload: [u8]) {
+        let window = RECV_CAP - self.receive_queue.length
+        self.advertised = window
+        let acknowledgement: u32 = if flags & ACK != 0 { self.receive_next } else { 0 }
+        transmit(self.port, self.remote, sequence, acknowledgement, flags, window, payload)
+    }
+    fn acknowledge(inout self) { self.send(ACK, self.maximum, []) }
+    fn advance(inout self, bytes: u32) {
+        self.next = self.next +% bytes
+        if before(self.maximum, self.next) { self.maximum = self.next }
+    }
+    fn arm(inout self, now: u64) { if self.deadline.is_none() { self.deadline = Some(wire.deadline(now, self.rto)) } }
+    fn fail(inout self, error: i32) {
+        self.error = Some(error); self.status = Status.Closed; self.deadline = None; self.send_queue.clear()
+    }
+    fn before_cursor(self) -> u64 { min((self.next -% self.una) as u64, self.send_queue.length) }
+
+    fn output(inout self, now: u64, probe: bool) {
+        if self.status == Status.SynSent {
+            if self.next == self.iss { self.send(SYN, self.iss, []); self.advance(1); self.arm(now) }
+            return
+        }
+        match self.status { Status.Established | Status.CloseWait | Status.FinWait1 | Status.Closing | Status.LastAck => {}, _ => return }
+        var payload: [u8; 1460] = [0; 1460]
+        loop {
+            let flying = self.before_cursor()
+            let unsent = self.send_queue.length - flying
+            let window: u64 = if probe && self.window == 0 && flying == 0 { 1 } else { self.window }
+            let available: u64 = if window > flying { window - flying } else { 0 }
+            let count = min(min(unsent, available), self.mss)
+            if count == 0 { break }
+            self.send_queue.copy(flying, &payload[0], count)
+            self.send(ACK | PSH, self.next, payload[0..count as i64])
+            self.advance(count as u32); self.arm(now)
+        }
+        let cursor = (self.next -% self.una) as u64 == self.send_queue.length
+        let at_fin = match self.fin_sequence { Some(sequence) => sequence == self.next, None => true }
+        if self.fin_queued && !self.fin_acked && cursor && at_fin {
+            self.fin_sequence = Some(self.next)
+            self.send(FIN | ACK, self.next, []); self.advance(1)
+            self.status = match self.status { Status.Established => Status.FinWait1, Status.CloseWait => Status.LastAck, status => status }
+            self.arm(now)
+        }
+        if self.send_queue.length > self.before_cursor() { self.arm(now) }
+    }
+
+    fn incoming(inout self, segment: Segment, now: u64) {
+        if self.status == Status.Idle || self.status == Status.Closed { return }
+        if self.status == Status.SynSent {
+            if segment.flags & ACK != 0 && segment.ack != self.iss +% 1 {
+                if segment.flags & RST == 0 { transmit(self.port, self.remote, segment.ack, 0, RST, 0, []) }
+                return
+            }
+            if segment.flags & RST != 0 { if segment.flags & ACK != 0 { self.fail(-14) }; return }
+            if segment.flags & (SYN | ACK) == (SYN | ACK) {
+                self.receive_next = segment.sequence +% 1; self.una = segment.ack; self.window = segment.window
+                self.mss = match segment.mss { Some(value) => max(min(value, MSS), 1), None => 536 }
+                self.status = Status.Established; self.retries = 0; self.rto = 100; self.deadline = None
+                self.acknowledge(); self.output(now, false)
+            }
+            return
+        }
+        if segment.flags & RST != 0 {
+            let window = max(RECV_CAP - self.receive_queue.length, 1) as u32
+            if before_equal(self.receive_next, segment.sequence) && before(segment.sequence, self.receive_next +% window) { self.fail(-15) }
+            return
+        }
+        if segment.flags & SYN != 0 { self.acknowledge(); return }
+        if segment.flags & ACK == 0 { return }
+        if before(self.una, segment.ack) && before_equal(segment.ack, self.maximum) {
+            let acked = (segment.ack -% self.una) as u64
+            self.send_queue.consume(acked)
+            match self.fin_sequence { Some(sequence) => if before(sequence, segment.ack) { self.fin_acked = true }, None => {} }
+            self.una = segment.ack
+            if before(self.next, self.una) { self.next = self.una }
+            self.retries = 0; self.rto = 100
+            self.deadline = if self.una != self.maximum { Some(wire.deadline(now, self.rto)) } else { None }
+            if self.fin_acked {
+                match self.status {
+                    Status.FinWait1 => { self.status = Status.FinWait2; self.deadline = Some(wire.deadline(now, 3000)) }
+                    Status.Closing | Status.LastAck => self.status = Status.Closed
+                    _ => {}
+                }
+            }
+        } else if before(self.maximum, segment.ack) { self.acknowledge(); return }
+        else if segment.ack == self.una && segment.window == 0 { self.retries = 0 }
+        self.window = segment.window
+        let fin = segment.flags & FIN != 0
+        if segment.payload.len != 0 || fin {
+            if segment.sequence == self.receive_next {
+                let accepts = self.status == Status.Established || self.status == Status.FinWait1 || self.status == Status.FinWait2
+                var taken: u64 = 0
+                if accepts {
+                    taken = if self.user_closed { segment.payload.len as u64 } else { min(segment.payload.len as u64, RECV_CAP - self.receive_queue.length) }
+                    if !self.user_closed { self.receive_queue.push(segment.payload[0..taken as i64]) }
+                    self.receive_next = self.receive_next +% taken as u32
+                }
+                if fin && accepts && taken == segment.payload.len as u64 {
+                    self.receive_next = self.receive_next +% 1; self.peer_fin = true
+                    self.status = match self.status {
+                        Status.Established => Status.CloseWait, Status.FinWait1 => Status.Closing, Status.FinWait2 => Status.Closed, status => status
+                    }
+                    if self.status == Status.Closed { self.deadline = None }
+                }
+            }
+            self.acknowledge()
+        }
+        self.output(now, false)
+    }
+
+    fn timer(inout self, now: u64) {
+        let deadline = match self.deadline { Some(tick) => tick, None => return }
+        if now < deadline { return }
+        self.deadline = None
+        if self.status == Status.FinWait2 { self.status = Status.Closed; return }
+        self.retries += 1
+        if self.retries > 6 { self.fail(-11); return }
+        self.rto = min(self.rto * 2, 1600)
+        self.next = if self.status == Status.SynSent { self.iss } else { self.una }
+        self.output(now, true); self.arm(now)
+    }
+}
+
+fn init() {
+    unsafe {
+        let flags = sync.jihoo_lock_acquire(&INIT_LOCK)
+        if CONNECTIONS == null {
+            CONNECTIONS = mem.alloc(kernel_sync.Spinlock(Vec(Entry)), 1)
+            write(CONNECTIONS, kernel_sync.Spinlock.new(Vec(Entry).new()))
+        }
+        sync.jihoo_lock_release(&INIT_LOCK, flags & 0x200 != 0)
+    }
+}
+
+pub fn new() -> shared.Shared(Socket) {
+    init()
+    shared.Shared.new(Socket { connection: shared.Shared.new(Connection { control: kernel_sync.Spinlock.new(Control.new()) }) })
+}
+
+fn remove(connection: shared.Shared(Connection)) {
+    unsafe {
+        var connections = (*CONNECTIONS).lock()
+        for i in 0..connections.len() {
+            if connections.deref()[i].connection.address() == connection.address() { connections.deref_mut().remove(i); break }
+        }
+    }
+}
+
+fn port_used(entries: Vec(Entry), port: u16) -> bool {
+    for i in 0..entries.len() { if entries[i].port == port { return true } }
+    false
+}
+
+pub fn connect(socket: shared.Shared(Socket), remote: wire.Endpoint) -> Result((), i32) {
+    if remote.port == 0 || remote.ip == 0 { return Err(-2) }
+    if net_base.resolve(net_base.next_hop(remote.ip)).is_none() { return Err(-12) }
+    {
+        var entries = unsafe { (*CONNECTIONS).lock() }
+        var guard = socket.connection.control.lock()
+        if guard.status != Status.Idle { return Err(-2) }
+        var port: u16 = 0
+        unsafe {
+            for _ in 0..15536 {
+                let candidate = NEXT
+                NEXT = if candidate == 65535 { 50000 } else { candidate + 1 }
+                if !port_used(entries.deref(), candidate) { port = candidate; break }
+            }
+        }
+        if port == 0 { return Err(-10) }
+        let iss = unsafe { kaguya_network_random() }
+        guard.deref_mut().port = port; guard.deref_mut().remote = remote
+        guard.deref_mut().iss = iss; guard.deref_mut().una = iss; guard.deref_mut().next = iss; guard.deref_mut().maximum = iss
+        guard.deref_mut().status = Status.SynSent
+        guard.deref_mut().output(net_base.clock(), false)
+        entries.deref_mut().push(Entry { port: port, remote: remote, connection: socket.connection.clone() })
+    }
+    loop {
+        let generation = unsafe { kaguya_event_generation(socket.connection.address()) }
+        {
+            let guard = socket.connection.control.lock()
+            if guard.status == Status.Closed { return Err(match guard.error { Some(error) => error, None => -15 }) }
+            if guard.status != Status.SynSent { return Ok(()) }
+        }
+        unsafe { kaguya_wait_event(socket.connection.address(), 0, generation) }
+    }
+}
+
+pub fn read(socket: shared.Shared(Socket), output: *u8, capacity: u64) -> Result(u64, i32) {
+    if capacity == 0 { return Ok(0) }
+    loop {
+        let generation = unsafe { kaguya_event_generation(socket.connection.address()) }
+        {
+            var guard = socket.connection.control.lock()
+            if guard.receive_queue.length != 0 {
+                let count = guard.receive_queue.copy(0, output, capacity)
+                guard.deref_mut().receive_queue.consume(count)
+                if guard.advertised < RECV_CAP / 2 && RECV_CAP - guard.receive_queue.length >= RECV_CAP / 2 &&
+                    guard.status != Status.Idle && guard.status != Status.SynSent && guard.status != Status.Closed { guard.deref_mut().acknowledge() }
+                return Ok(count)
+            }
+            if guard.peer_fin { return Ok(0) }
+            match guard.error { Some(error) => return Err(error), None => {} }
+            if guard.status == Status.Idle { return Err(-13) }
+            if guard.status == Status.Closed { return Ok(0) }
+        }
+        unsafe { kaguya_wait_event(socket.connection.address(), 0, generation) }
+    }
+}
+
+pub fn send(socket: shared.Shared(Socket), input: [u8]) -> Result(u64, i32) {
+    var written: u64 = 0
+    while written < input.len as u64 {
+        let generation = unsafe { kaguya_event_generation(socket.connection.address()) }
+        {
+            var guard = socket.connection.control.lock()
+            let error: Option(i32) = match guard.error {
+                Some(error) => Some(error)
+                None => match guard.status {
+                    Status.Idle | Status.SynSent => Some(-13)
+                    Status.Established | Status.CloseWait => if guard.fin_queued { Some(-9) } else { None }
+                    _ => Some(-9)
+                }
+            }
+            match error { Some(code) => return if written > 0 { Ok(written) } else { Err(code) }, None => {} }
+            let count = min(SEND_CAP - guard.send_queue.length, input.len as u64 - written)
+            if count != 0 {
+                guard.deref_mut().send_queue.push(input[written as i64..(written + count) as i64])
+                written += count
+                guard.deref_mut().output(net_base.clock(), false)
+                continue
+            }
+        }
+        unsafe { kaguya_wait_event(socket.connection.address(), 0, generation) }
+    }
+    Ok(written)
+}
+
+impl Drop for Socket {
+    fn drop(inout self) {
+        let closed = {
+            var guard = self.connection.control.lock()
+            guard.deref_mut().user_closed = true
+            guard.deref_mut().receive_queue.clear()
+            match guard.status {
+                Status.SynSent => guard.deref_mut().status = Status.Closed
+                Status.Established | Status.CloseWait => { guard.deref_mut().fin_queued = true; guard.deref_mut().output(net_base.clock(), false) }
+                _ => {}
+            }
+            guard.status == Status.Closed
+        }
+        if closed { remove(self.connection) }
+    }
+}
+impl Drop for Connection { fn drop(inout self) { unsafe { kaguya_forget_event(&self as u64) } } }
+
+pub fn incoming(src: u32, dst: u32, bytes: [u8]) {
+    if wire.transport(src, dst, 6, bytes) != 0 { return }
+    let segment = match parse(bytes) { Some(value) => value, None => return }
+    let remote = wire.Endpoint { ip: src, port: segment.source }
+    let owner: Option(shared.Shared(Connection)) = unsafe {
+        if CONNECTIONS == null { None } else {
+            let entries = (*CONNECTIONS).lock()
+            var owner: Option(shared.Shared(Connection)) = None
+            for i in 0..entries.len() {
+                if entries.deref()[i].port == segment.destination && entries.deref()[i].remote == remote { owner = Some(entries.deref()[i].connection.clone()); break }
+            }
+            owner
+        }
+    }
+    let connection = match owner {
+        Some(value) => value
+        None => {
+            if segment.flags & RST == 0 {
+                if segment.flags & ACK != 0 { transmit(segment.destination, remote, segment.ack, 0, RST, 0, []) }
+                else {
+                    let extra: u32 = if segment.flags & (FIN | SYN) != 0 { 1 } else { 0 }
+                    transmit(segment.destination, remote, 0, segment.sequence +% (segment.payload.len as u32 + extra), RST | ACK, 0, [])
+                }
+            }
+            return
+        }
+    }
+    let closed = {
+        var guard = connection.control.lock()
+        guard.deref_mut().incoming(segment, net_base.clock())
+        guard.status == Status.Closed
+    }
+    unsafe { kaguya_wake_event(connection.address()) }
+    if closed { remove(connection) }
+}
+
+pub fn timer() {
+    let copies = unsafe {
+        if CONNECTIONS == null { return }
+        let entries = (*CONNECTIONS).lock()
+        var copies = Vec(shared.Shared(Connection)).with_capacity(entries.len())
+        for i in 0..entries.len() { copies.push(entries.deref()[i].connection.clone()) }
+        copies
+    }
+    let now = net_base.clock()
+    for i in 0..copies.len() {
+        let connection = copies[i].clone()
+        let result = {
+            var guard = connection.control.lock()
+            let fired = match guard.deadline { Some(deadline) => now >= deadline, None => false }
+            if fired { guard.deref_mut().timer(now) }
+            (fired, guard.status == Status.Closed)
+        }
+        if result.0 { unsafe { kaguya_wake_event(connection.address()) } }
+        if result.1 { remove(connection) }
+    }
+}

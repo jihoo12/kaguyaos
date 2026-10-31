@@ -491,3 +491,8 @@ Jihoo issue #24 is fixed. The NVMe checkpoint now includes the Jihoo
 virtio GPU driver, desktop/window renderer, dirty GOP presentation and
 cell/region syscalls. Both virtio and GOP QEMU regressions pass. Networking,
 ACPI/APIC/SMP and the ordinary Rust build replacement remain in progress.
+
+The Jihoo NVMe path also has e1000 IRQ receive, ARP/IPv4/ICMP, UDP/DNS and
+TCP client sockets. QEMU passes gateway ping and local HTTP streaming,
+redirects, bounded pipelines and error handling. ACPI/APIC/SMP and switching
+the ordinary scripts away from Rust remain in progress.

@@ -14,6 +14,11 @@ import std.utf8
 import std.uefi
 import usb
 import console
+import network
+import net_wire
+import net_udp
+import net_dns
+import net_base
 
 extern fn jihoo_probe_data() -> *u8
 extern fn jihoo_probe_size() -> u64
@@ -66,6 +71,7 @@ pub fn dispatch(id: u64, a: u64, b: u64, c: u64, d: u64, e: u64) -> u64 {
     }
     if id == 7 {
         usb.shutdown()
+        network.shutdown()
         storage.shutdown()
         runtime.output("Shutdown: requesting UEFI power off\n")
         uefi.reset(2, 0)
@@ -78,8 +84,20 @@ pub fn dispatch(id: u64, a: u64, b: u64, c: u64, d: u64, e: u64) -> u64 {
         if utf8.validate(name).is_err() { return (-2 as i64) as u64 }
         return unsafe { match (*storage.volume()).lock().deref_mut().delete(name) { Ok(()) => 0, Err(error) => error as u64 } }
     }
-    if id == 5 { task.exit(a) }
-    if id == 4 { task.schedule(); return 0 }
+    if id == 5 { println("Task terminated with exit code " + a.to_string().as_str()); task.exit(a) }
+    if id == 4 { network.poll(); task.schedule(); return 0 }
+    if id == 23 { return if a <= 0xffffffff { net_base.ping(a as u32) as u64 } else { 0 } }
+    if id == 24 {
+        if b == 0 || !user_range(a, b) { return 0 }
+        network.poll()
+        return net_base.pop_echo(a as *u8, b)
+    }
+    if id == 27 {
+        if b == 0 || b > 253 || !user_range(a, b) { return 0 }
+        let name = unsafe { make_str(a as *u8, b as i64) }
+        if utf8.validate(name).is_err() { return 0 }
+        return net_dns.resolve(name) as u64
+    }
     if id == 16 { return task.status(a) }
     if id == 17 { return task.exit_code(a) }
     if id == 26 { return task.wait_task(a) }
@@ -87,6 +105,36 @@ pub fn dispatch(id: u64, a: u64, b: u64, c: u64, d: u64, e: u64) -> u64 {
     if id == 1 || id == 2 || id == 10 { return 0 }
     if id == 28 { return match task.current_space() { Some(owner) => owner.grow(a), None => 0 } }
     let files = match task.current_files() { Some(value) => value, None => return (-7 as i64) as u64 }
+    if id == 37 { return match files.socket(a) { Ok(fd) => fd, Err(error) => error as u64 } }
+    if id == 38 {
+        if b > 65535 { return (-2 as i64) as u64 }
+        let socket = match files.udp(a) { Ok(value) => value, Err(error) => return error as u64 }
+        return match net_udp.bind(socket, b as u16) { Ok(port) => port as u64, Err(error) => error as u64 }
+    }
+    if id == 39 {
+        if b > 0xffffffff || c > 65535 { return (-2 as i64) as u64 }
+        return match files.connect(a, net_wire.Endpoint { ip: b as u32, port: c as u16 }) { Ok(()) => 0, Err(error) => error as u64 }
+    }
+    if id == 40 {
+        if c != 0 && !user_range(b, c) { return (-2 as i64) as u64 }
+        if d > 0xffffffff || e > 65535 { return (-2 as i64) as u64 }
+        let socket = match files.udp(a) { Ok(value) => value, Err(error) => return error as u64 }
+        let peer: Option(net_wire.Endpoint) = if d == 0 && e == 0 { None } else { Some(net_wire.Endpoint { ip: d as u32, port: e as u16 }) }
+        return match net_udp.send(socket, peer, unsafe { make_slice(b as *u8, c as i64) }) { Ok(count) => count, Err(error) => error as u64 }
+    }
+    if id == 41 {
+        if c != 0 && !user_range(b, c) { return (-2 as i64) as u64 }
+        if d != 0 && (d & 3 != 0 || !user_range(d, 8)) { return (-2 as i64) as u64 }
+        let socket = match files.udp(a) { Ok(value) => value, Err(error) => return error as u64 }
+        let timeout: Option(u64) = if e == 0 { None } else { Some(e / 10 + if e % 10 != 0 { 1 } else { 0 }) }
+        return match net_udp.receive(socket, b as *u8, c, timeout) {
+            Ok((count, peer)) => {
+                if d != 0 { unsafe { *(d as *u32) = peer.ip; *((d + 4) as *u16) = peer.port; *((d + 6) as *u16) = 0 } }
+                count
+            }
+            Err(error) => error as u64
+        }
+    }
     if id == 29 {
         if b == 0 || b > 255 || !user_range(a, b) { return (-2 as i64) as u64 }
         let name = unsafe { make_str(a as *u8, b as i64) }
@@ -163,6 +211,7 @@ pub fn shell() -> never {
         if spawn("init.kef", "", files) == 0xffffffffffffffff { panic("shell load failed") }
         loop {
             usb.poll()
+            network.poll()
             task.schedule()
             jihoo_wait_interrupt()
         }

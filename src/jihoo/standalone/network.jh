@@ -1,0 +1,16 @@
+import e1000
+import net_base
+import net_udp
+import net_tcp
+import task
+
+extern fn jihoo_read_tsc() -> u64
+export fn kaguya_network_clock() -> u64 { task.clock() }
+export fn kaguya_network_random() -> u32 { unsafe { jihoo_read_tsc() as u32 } }
+export fn kaguya_receive_udp(src: u32, dst: u32, bytes: *u8, length: u64) { net_udp.incoming(src, dst, unsafe { make_slice(bytes, length as i64) }) }
+export fn kaguya_receive_tcp(src: u32, dst: u32, bytes: *u8, length: u64) { net_tcp.incoming(src, dst, unsafe { make_slice(bytes, length as i64) }) }
+export fn kaguya_network_timers() { net_tcp.timer() }
+pub fn init() { e1000.init() }
+pub fn interrupt(irq: u8) { e1000.interrupt(irq) }
+pub fn poll() { net_base.poll() }
+pub fn shutdown() { e1000.shutdown() }

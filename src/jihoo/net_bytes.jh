@@ -1,0 +1,36 @@
+pub struct Bytes {
+    data: Vec(u8)
+    head: u64
+    pub length: u64
+    pub limit: u64
+}
+
+impl Bytes {
+    pub fn new(limit: u64) -> Bytes {
+        var data = Vec(u8).with_capacity(limit as i64)
+        for _ in 0..limit as i64 { data.push(0) }
+        Bytes { data: data, head: 0, length: 0, limit: limit }
+    }
+
+    pub fn push(inout self, bytes: [u8]) -> u64 {
+        let count = min(bytes.len as u64, self.limit - self.length)
+        for i in 0..count as i64 { self.data[((self.head + self.length + i as u64) % self.limit) as i64] = bytes[i] }
+        self.length += count
+        count
+    }
+
+    pub fn copy(self, offset: u64, output: *u8, capacity: u64) -> u64 {
+        if offset >= self.length { return 0 }
+        let count = min(capacity, self.length - offset)
+        unsafe { for i in 0..count as i64 { output[i] = self.data[((self.head + offset + i as u64) % self.limit) as i64] } }
+        count
+    }
+
+    pub fn consume(inout self, bytes: u64) {
+        let count = min(bytes, self.length)
+        self.head = (self.head + count) % self.limit
+        self.length -= count
+    }
+
+    pub fn clear(inout self) { self.head = 0; self.length = 0 }
+}

@@ -1,0 +1,143 @@
+import pci
+import sync
+import pic
+
+extern fn kaguya_alloc_frame() -> u64
+extern fn kaguya_map_mmio(base: u64, bytes: u64) -> bool
+extern fn kaguya_device_log(bytes: *u8, length: u64)
+extern fn jihoo_dma_fence()
+extern fn jihoo_pause()
+
+static BASE: u64 = 0
+static IRQ: u8 = 255
+static RX: u64 = 0
+static TX: u64 = 0
+static RX_BUFFERS: [u64; 16] = [0; 16]
+static TX_BUFFERS: [u64; 16] = [0; 16]
+static RX_NEXT: u64 = 0
+static TX_NEXT: u64 = 0
+static LOCK: u8 = 0
+static PENDING: bool = false
+static INTERRUPTS: u64 = 0
+static MAC: [u8; 6] = [0; 6]
+
+fn log(message: str) { unsafe { kaguya_device_log(message.ptr, message.len as u64) } }
+fn rd(offset: u64) -> u32 { unsafe { read_volatile((atomic_load(&BASE) + offset) as *u32) } }
+fn wr(offset: u64, value: u32) { unsafe { write_volatile((atomic_load(&BASE) + offset) as *u32, value) } }
+fn page() -> u64 { let value = unsafe { kaguya_alloc_frame() }; if value == 0 { panic("e1000 DMA OOM") }; value }
+
+pub fn init() -> bool {
+    unsafe {
+        var selected: Option(pci.Device) = None
+        for b in 0..256 {
+            for d in 0..32 {
+                for f in 0..8 {
+                    let bus = b as u8; let device = d as u8; let function = f as u8
+                    if pci.jihoo_pci_read16(bus, device, function, 0) == 0x8086 && pci.jihoo_pci_read16(bus, device, function, 2) == 0x100e {
+                        selected = Some(pci.Device { bus: bus, device: device, function: function,
+                            vendor_id: 0x8086, device_id: 0x100e, bar0: pci.jihoo_pci_read32(bus, device, function, 16),
+                            bar1: pci.jihoo_pci_read32(bus, device, function, 20),
+                            interrupt_line: pci.jihoo_pci_read8(bus, device, function, 0x3c), interrupt_pin: pci.jihoo_pci_read8(bus, device, function, 0x3d) })
+                        break
+                    }
+                }
+                if selected.is_some() { break }
+            }
+            if selected.is_some() { break }
+        }
+        let device = match selected { Some(value) => value, None => { log("network: no supported e1000 NIC\n"); return false } }
+        let base = pci.jihoo_pci_bar0(device.bar0, device.bar1)
+        if device.bar0 & 1 != 0 || base == 0 || base & 4095 != 0 || base > 0x7ffffffe0000 ||
+            !kaguya_map_mmio(base, 131072) { return false }
+        atomic_store(&BASE, base)
+        let command = pci.jihoo_pci_read16(device.bus, device.device, device.function, 4)
+        pci.jihoo_pci_write32(device.bus, device.device, device.function, 4, (command as u32 | 6) & !(1 << 10))
+        wr(0xd8, 0xffffffff)
+        wr(0, rd(0) | (1 << 26))
+        var reset = false
+        for _ in 0..20000000 { if rd(0) & (1 << 26) == 0 { reset = true; break }; jihoo_pause() }
+        if !reset { log("e1000: reset timeout\n"); atomic_store(&BASE, 0); return false }
+        wr(0xd8, 0xffffffff)
+        wr(0x5400, 0x12005452); wr(0x5404, 0x80005634)
+        let low = rd(0x5400); let high = rd(0x5404)
+        MAC = [low as u8, (low >> 8) as u8, (low >> 16) as u8, (low >> 24) as u8, high as u8, (high >> 8) as u8]
+        RX = page(); TX = page()
+        for i in 0..16 {
+            RX_BUFFERS[i] = page(); TX_BUFFERS[i] = page()
+            write_volatile((RX + i as u64 * 16) as *u64, RX_BUFFERS[i])
+            write_volatile((TX + i as u64 * 16) as *u64, TX_BUFFERS[i])
+        }
+        wr(0x2800, RX as u32); wr(0x2804, (RX >> 32) as u32); wr(0x2808, 256)
+        wr(0x2810, 0); wr(0x2818, 15)
+        wr(0x100, (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 15) | (1 << 26))
+        wr(0x3800, TX as u32); wr(0x3804, (TX >> 32) as u32); wr(0x3808, 256)
+        wr(0x3810, 0); wr(0x3818, 0)
+        wr(0x410, 0x0060080c); wr(0x400, 2 | 8 | (15 << 4) | (0x40 << 12))
+        wr(0, rd(0) | (1 << 6))
+        if device.interrupt_pin == 0 || device.interrupt_line >= 16 { log("e1000: missing legacy IRQ route\n"); return false }
+        IRQ = device.interrupt_line
+        pic.jihoo_pic_unmask(IRQ)
+        rd(0xc0); wr(0x2820, 0); wr(0xd0, 0xd0)
+        atomic_store(&PENDING, true)
+        log("network: e1000 ready\n")
+        true
+    }
+}
+
+pub fn address() -> [u8; 6] { unsafe { MAC } }
+pub fn ready() -> bool { unsafe { atomic_load(&BASE) != 0 && IRQ < 16 } }
+pub fn interrupts() -> u64 { unsafe { atomic_load(&INTERRUPTS) } }
+
+pub fn interrupt(irq: u8) {
+    unsafe {
+        if irq != IRQ || atomic_load(&BASE) == 0 { return }
+        if rd(0xc0) & 0xd0 != 0 { atomic_add(&INTERRUPTS, 1); atomic_store(&PENDING, true) }
+    }
+}
+pub fn take_pending() -> bool { unsafe { atomic_swap(&PENDING, false) } }
+pub fn rearm() { unsafe { atomic_store(&PENDING, true) } }
+
+pub fn transmit(data: [u8]) -> bool {
+    if data.len > 2048 || !ready() { return false }
+    unsafe {
+        let saved = sync.jihoo_lock_acquire(&LOCK)
+        let descriptor = (TX + TX_NEXT * 16) as *u8
+        if read_volatile(descriptor + 12) & 1 == 0 && read_volatile(descriptor + 11) != 0 {
+            sync.jihoo_lock_release(&LOCK, saved & 0x200 != 0); return false
+        }
+        mem_copy(TX_BUFFERS[TX_NEXT as i64] as *u8, data.ptr, data.len)
+        write_volatile((descriptor + 8) as *u16, data.len as u16)
+        write_volatile(descriptor + 11, 0xb)
+        write_volatile(descriptor + 12, 0)
+        TX_NEXT = (TX_NEXT + 1) % 16
+        jihoo_dma_fence()
+        wr(0x3818, TX_NEXT as u32)
+        sync.jihoo_lock_release(&LOCK, saved & 0x200 != 0)
+        true
+    }
+}
+
+pub fn receive(output: *u8, capacity: u64) -> u64 {
+    if !ready() { return 0 }
+    unsafe {
+        let saved = sync.jihoo_lock_acquire(&LOCK)
+        let descriptor = (RX + RX_NEXT * 16) as *u8
+        let flags = read_volatile(descriptor + 12)
+        if flags & 1 == 0 { sync.jihoo_lock_release(&LOCK, saved & 0x200 != 0); return 0 }
+        jihoo_dma_fence()
+        let length = read_volatile((descriptor + 8) as *u16) as u64
+        var copied: u64 = 0
+        if flags & 3 == 3 && read_volatile(descriptor + 13) == 0 && length <= 2048 {
+            copied = min(length, capacity)
+            mem_copy(output, RX_BUFFERS[RX_NEXT as i64] as *u8, copied as i64)
+        }
+        write_volatile(descriptor + 12, 0)
+        jihoo_dma_fence()
+        wr(0x2818, RX_NEXT as u32)
+        RX_NEXT = (RX_NEXT + 1) % 16
+        sync.jihoo_lock_release(&LOCK, saved & 0x200 != 0)
+        copied
+    }
+}
+
+pub fn shutdown() { if ready() { wr(0xd8, 0xffffffff); wr(0x100, rd(0x100) & !2); wr(0x400, rd(0x400) & !2) } }

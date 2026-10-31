@@ -5,6 +5,7 @@ import io
 import shared_check
 import task
 import usb
+import network
 
 extern fn jihoo_load_gdt(pointer: *u8)
 extern fn jihoo_load_idt(pointer: *u8)
@@ -109,6 +110,7 @@ export fn jihoo_interrupt_dispatch(frame: *InterruptFrame) {
             return
         }
         if vector >= 32 && vector < 48 {
+            network.interrupt((vector - 32) as u8)
             if vector == 32 { usb.poll() }
             if vector == 32 {
                 atomic_add(&TICKS, 1)

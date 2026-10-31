@@ -9,6 +9,7 @@ import ring3
 import storage
 import scheduler
 import usb
+import network
 
 struct GopInfo {
     version: u32
@@ -134,6 +135,7 @@ pub fn run(stage: u32) -> i32 {
             if stage >= 6 { runtime.init_display(framebuffer, stride as u64, width as u64, height as u64, format) }
             if stage >= 5 { usb.init(jihoo_xhci_index()) }
             cpu.check()
+            if stage >= 6 { network.init() }
             if stage >= 6 { storage.init_nvme() }
             else if stage >= 3 {
                 storage.init_ram()

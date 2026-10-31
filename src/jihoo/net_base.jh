@@ -1,0 +1,183 @@
+import e1000
+import net_wire as wire
+import kernel_sync
+
+extern fn kaguya_network_clock() -> u64
+extern fn kaguya_event_generation(key: u64) -> u64
+extern fn kaguya_wait_event(key: u64, deadline: u64, generation: u64)
+extern fn kaguya_wake_event(key: u64)
+extern fn kaguya_receive_udp(src: u32, dst: u32, bytes: *u8, length: u64)
+extern fn kaguya_receive_tcp(src: u32, dst: u32, bytes: *u8, length: u64)
+extern fn kaguya_network_timers()
+extern fn kaguya_device_log(bytes: *u8, length: u64)
+
+pub const HOST: u32 = 0x0f02000a
+pub const GATEWAY: u32 = 0x0202000a
+pub const DNS: u32 = 0x0302000a
+struct Arp { ip: u32, mac: [u8; 6], valid: bool }
+struct EchoRing { data: [[u8; 74]; 16], head: u64, tail: u64 }
+static CACHE: kernel_sync.Spinlock([Arp; 8]) = zeroed(kernel_sync.Spinlock([Arp; 8]))
+static ECHO: kernel_sync.Spinlock(EchoRing) = zeroed(kernel_sync.Spinlock(EchoRing))
+static SEQUENCE: u16 = 1
+static POLLING: bool = false
+static REPORTED: bool = false
+
+pub fn clock() -> u64 { unsafe { kaguya_network_clock() } }
+pub fn ready() -> bool { e1000.ready() }
+pub fn next_hop(ip: u32) -> u32 { if ip & 0x00ffffff == HOST & 0x00ffffff { ip } else { GATEWAY } }
+fn key(ip: u32) -> u64 { 0xfffffffeffffffff + ip as u64 }
+
+fn lookup(ip: u32) -> Option([u8; 6]) {
+    let guard = unsafe { CACHE.lock() }
+    for i in 0..8 { if guard.deref()[i].valid && guard.deref()[i].ip == ip { return Some(guard.deref()[i].mac) } }
+    None
+}
+
+fn insert(ip: u32, mac: [u8; 6]) {
+    {
+        var guard = unsafe { CACHE.lock() }
+        var slot: i64 = -1
+        for i in 0..8 {
+            if guard.deref()[i].valid && guard.deref()[i].ip == ip { slot = i; break }
+            if !guard.deref()[i].valid && slot == -1 { slot = i }
+        }
+        if slot != -1 { guard.deref_mut()[slot] = Arp { ip: ip, mac: mac, valid: true } }
+    }
+    unsafe { kaguya_wake_event(key(ip)) }
+}
+
+fn arp(target: u32, opcode: u16, mac: [u8; 6]) -> bool {
+    var bytes: [u8; 42] = [0; 42]
+    let own = e1000.address()
+    for i in 0..6 { bytes[i] = mac[i]; bytes[i + 6] = own[i]; bytes[i + 22] = own[i]; bytes[i + 32] = if opcode == 1 { 0 } else { mac[i] } }
+    wire.put16(&bytes[0], 12, 0x806); wire.put16(&bytes[0], 14, 1); wire.put16(&bytes[0], 16, 0x800)
+    bytes[18] = 6; bytes[19] = 4; wire.put16(&bytes[0], 20, opcode)
+    wire.put_ip(&bytes[0], 28, HOST); wire.put_ip(&bytes[0], 38, target)
+    e1000.transmit(bytes)
+}
+
+pub fn resolve(target: u32) -> Option([u8; 6]) {
+    if !ready() { return None }
+    match lookup(target) { Some(mac) => return Some(mac), None => {} }
+    let generation = unsafe { kaguya_event_generation(key(target)) }
+    arp(target, 1, [255; 6])
+    match lookup(target) { Some(mac) => return Some(mac), None => {} }
+    unsafe { kaguya_wait_event(key(target), wire.deadline(clock(), 100), generation) }
+    lookup(target)
+}
+
+fn send_to(mac: [u8; 6], ip: u32, protocol: u8, payload: [u8]) -> bool {
+    if payload.len > 1480 || !ready() { return false }
+    var frame: [u8; 1514] = [0; 1514]
+    let own = e1000.address()
+    for i in 0..6 { frame[i] = mac[i]; frame[i + 6] = own[i] }
+    wire.put16(&frame[0], 12, 0x800)
+    frame[14] = 0x45; wire.put16(&frame[0], 16, (20 + payload.len) as u16)
+    frame[20] = 0x40; frame[22] = 64; frame[23] = protocol
+    wire.put_ip(&frame[0], 26, HOST); wire.put_ip(&frame[0], 30, ip)
+    wire.put16(&frame[0], 24, wire.sum(frame[14..34]))
+    unsafe { mem_copy(&frame[34], payload.ptr, payload.len) }
+    e1000.transmit(frame[0..34 + payload.len])
+}
+
+pub fn transmit(ip: u32, protocol: u8, payload: [u8]) -> bool {
+    match resolve(next_hop(ip)) { Some(mac) => send_to(mac, ip, protocol, payload), None => false }
+}
+pub fn transmit_cached(ip: u32, protocol: u8, payload: [u8]) -> bool {
+    let hop = next_hop(ip)
+    match lookup(hop) { Some(mac) => send_to(mac, ip, protocol, payload), None => { arp(hop, 1, [255; 6]); false } }
+}
+
+pub fn ping(ip: u32) -> u16 {
+    var data: [u8; 56] = [0; 56]
+    let sequence = unsafe { atomic_add(&SEQUENCE, 1) }
+    data[0] = 8; wire.put16(&data[0], 4, 0xbeef); wire.put16(&data[0], 6, sequence)
+    wire.put32(&data[0], 8, clock() as u32)
+    for i in 12..56 { data[i] = (i - 8) as u8 }
+    wire.put16(&data[0], 2, wire.sum(data))
+    if transmit(ip, 1, data) { sequence } else { 0 }
+}
+
+pub fn pop_echo(output: *u8, capacity: u64) -> u64 {
+    var guard = unsafe { ECHO.lock() }
+    if guard.head == guard.tail { return 0 }
+    let count = min(capacity, 74)
+    unsafe { mem_copy(output, &guard.deref().data[guard.tail as i64][0], count as i64) }
+    let tail = guard.tail
+    guard.deref_mut().tail = (tail + 1) % 16
+    count
+}
+
+fn incoming(frame: *u8, length: u64) {
+    let data = unsafe { make_slice(frame, length as i64) }
+    if length < 14 { return }
+    let kind = wire.get16(data, 12)
+    if kind == 0x806 {
+        if length < 42 || wire.get16(data, 14) != 1 || wire.get16(data, 16) != 0x800 || data[18] != 6 || data[19] != 4 { return }
+        let opcode = wire.get16(data, 20)
+        let sender = wire.ip(data, 28); let target = wire.ip(data, 38)
+        let mac = [data[22], data[23], data[24], data[25], data[26], data[27]]
+        if opcode == 2 { insert(sender, mac) }
+        if opcode == 1 && target == HOST { insert(sender, mac); arp(sender, 2, mac) }
+        return
+    }
+    if kind != 0x800 || length < 34 || data[14] >> 4 != 4 { return }
+    let header = (data[14] & 15) as i64 * 4
+    let total = wire.get16(data, 16) as i64
+    if header < 20 || header > total || total + 14 > length as i64 || wire.get16(data, 20) & 0x3fff != 0 { return }
+    if wire.sum(data[14..14 + header]) != 0 { return }
+    let src = wire.ip(data, 26); let dst = wire.ip(data, 30)
+    if dst != HOST { return }
+    let payload = data[14 + header..14 + total]
+    if data[23] == 17 { unsafe { kaguya_receive_udp(src, dst, payload.ptr, payload.len as u64) }; return }
+    if data[23] == 6 { unsafe { kaguya_receive_tcp(src, dst, payload.ptr, payload.len as u64) }; return }
+    if data[23] != 1 || payload.len < 8 || wire.sum(payload) != 0 { return }
+    if payload[0] == 8 {
+        unsafe {
+            let pointer = payload.ptr
+            pointer[0] = 0; wire.put16(pointer, 2, 0); wire.put16(pointer, 2, wire.sum(payload))
+            let mac = [data[6], data[7], data[8], data[9], data[10], data[11]]
+            let sent = send_to(mac, src, 1, payload)
+        }
+    } else if payload[0] == 0 {
+        var guard = unsafe { ECHO.lock() }
+        let head = guard.head
+        let next = (head + 1) % 16
+        if next == guard.tail { return }
+        var reply: [u8; 74] = [0; 74]
+        wire.put_ip(&reply[0], 0, src)
+        let id = wire.get16(payload, 4); let seq = wire.get16(payload, 6)
+        let count = min(payload.len - 8, 64)
+        reply[4] = id as u8; reply[5] = (id >> 8) as u8
+        reply[6] = seq as u8; reply[7] = (seq >> 8) as u8
+        reply[8] = count as u8
+        unsafe { mem_copy(&reply[10], payload.ptr + 8, count) }
+        guard.deref_mut().data[head as i64] = reply
+        guard.deref_mut().head = next
+    }
+}
+
+pub fn poll() {
+    if !ready() { return }
+    unsafe {
+        if !atomic_cas(&POLLING, false, true) { return }
+        kaguya_network_timers()
+        if e1000.interrupts() > 0 && !REPORTED {
+            REPORTED = true
+            let message = "e1000: RX interrupt delivery confirmed (count=" + e1000.interrupts().to_string().as_str() + ")\n"
+            kaguya_device_log(message.as_str().ptr, message.len() as u64)
+        }
+        if e1000.take_pending() {
+            var frame: [u8; 1514] = [0; 1514]
+            var drained: u64 = 0
+            while drained < 8 {
+                let count = e1000.receive(&frame[0], 1514)
+                if count == 0 { break }
+                incoming(&frame[0], count)
+                drained += 1
+            }
+            if drained == 8 { e1000.rearm() }
+        }
+        atomic_store(&POLLING, false)
+    }
+}

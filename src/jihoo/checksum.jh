@@ -10,11 +10,11 @@ fn checksum(bytes: [u8], initial: u32) -> u16 {
     !(sum as u16)
 }
 
-export fn jihoo_checksum(data: *u8, length: u64) -> u16 {
+pub export fn jihoo_checksum(data: *u8, length: u64) -> u16 {
     checksum(unsafe { make_slice(data, length as i64) }, 0)
 }
 
-export fn jihoo_transport_checksum(src: u32, dst: u32, protocol: u8, data: *u8, length: u64) -> u16 {
+pub export fn jihoo_transport_checksum(src: u32, dst: u32, protocol: u8, data: *u8, length: u64) -> u16 {
     var sum: u32 = 0
     for address in [src, dst] {
         sum += ((address & 0xff) << 8) | ((address >> 8) & 0xff)

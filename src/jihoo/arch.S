@@ -52,3 +52,10 @@ jihoo_pause:
 jihoo_dma_fence:
     mfence
     ret
+
+.globl jihoo_read_tsc
+jihoo_read_tsc:
+    rdtsc
+    shlq $32, %rdx
+    orq %rdx, %rax
+    ret

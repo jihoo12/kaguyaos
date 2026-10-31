@@ -1,0 +1,68 @@
+import net_udp as udp
+import net_wire as wire
+import net_dns
+import net_bytes
+
+extern fn kaguya_kernel_panic(message: *u8, length: u64) -> never
+#[panic_handler]
+fn on_panic(message: str) -> never { unsafe { kaguya_kernel_panic(message.ptr, message.len as u64) } }
+
+fn code(comptime T: type, result: Result(T, i32)) -> i32 { match result { Ok(_) => 0, Err(error) => error } }
+
+fn packet(source: u32, port: u16, payload: u8) {
+    var bytes: [u8; 9] = [0; 9]
+    wire.put16(&bytes[0], 0, 1234); wire.put16(&bytes[0], 2, port); wire.put16(&bytes[0], 4, 9)
+    bytes[8] = payload
+    udp.incoming(source, 0x0f02000a, bytes)
+}
+
+export fn jihoo_udp_check() {
+    let first = udp.new()
+    let port = udp.bind(first, 50123).unwrap()
+    if port != 50123 || code(u16, udp.bind(first, 50124)) != -2 { panic("UDP bind state failed") }
+    let second = udp.new()
+    if code(u16, udp.bind(second, port)) != -10 || code(u16, udp.bind(second, 49152)) != -10 { panic("UDP port collision failed") }
+    let address = wire.Endpoint { ip: 0x0202000a, port: 1234 }
+    udp.connect(first, address).unwrap()
+    packet(0x0302000a, port, 99)
+    for i in 0..20 { packet(address.ip, port, i as u8) }
+    var output: [u8; 8] = [0; 8]
+    for i in 0..16 {
+        let result = udp.receive(first, &output[0], 8, Some(1)).unwrap()
+        if result.0 != 1 || result.1 != address || output[0] != i as u8 { panic("UDP queue/filter failed") }
+    }
+    if code((u64, wire.Endpoint), udp.receive(first, &output[0], 8, Some(1))) != -11 { panic("UDP timeout failed") }
+    packet(address.ip, port, 42)
+    let truncated = udp.receive(first, null, 0, None).unwrap()
+    if truncated.0 != 0 || truncated.1 != address { panic("UDP zero-capacity receive failed") }
+    let alias = first.clone()
+    drop(first)
+    packet(address.ip, port, 77)
+    if udp.receive(alias, &output[0], 8, None).unwrap().0 != 1 || output[0] != 77 { panic("UDP alias died early") }
+    drop(alias)
+    if udp.bind(second, port).unwrap() != port { panic("UDP last-owner did not release port") }
+    var answer: [u8; 43] = [0; 43]
+    wire.put16(&answer[0], 0, 53); wire.put16(&answer[0], 2, net_dns.PORT); wire.put16(&answer[0], 4, 43)
+    wire.put16(&answer[0], 8, 0x4b47); answer[10] = 0x80
+    wire.put16(&answer[0], 12, 1); wire.put16(&answer[0], 14, 1)
+    answer[20] = 1; answer[21] = 'a'; wire.put16(&answer[0], 23, 1); wire.put16(&answer[0], 25, 1)
+    answer[27] = 0xc0; answer[28] = 12; wire.put16(&answer[0], 29, 1); wire.put16(&answer[0], 31, 1)
+    wire.put16(&answer[0], 37, 4); wire.put_ip(&answer[0], 39, 0x04030201)
+    for n in 0..43 {
+        udp.incoming(0x0302000a, 0x0f02000a, answer[0..n])
+        if net_dns.take().is_some() { panic("truncated DNS accepted") }
+    }
+    udp.incoming(0x0302000a, 0x0f02000a, answer)
+    if net_dns.take().unwrap() != 0x04030201 { panic("compressed DNS answer failed") }
+    wire.put16(&answer[0], 6, 1)
+    udp.incoming(0x0302000a, 0x0f02000a, answer)
+    if net_dns.take().is_some() { panic("invalid UDP checksum accepted") }
+    var ring = net_bytes.Bytes.new(8)
+    if ring.push([1, 2, 3, 4, 5, 6]) != 6 { panic("stream queue push failed") }
+    ring.consume(5)
+    if ring.push([7, 8, 9, 10, 11, 12, 13, 14]) != 7 { panic("stream capacity failed") }
+    if ring.copy(0, &output[0], 8) != 8 { panic("stream queue copy failed") }
+    for i in 0..8 { if output[i] != (6 + i) as u8 { panic("stream ring wrap failed") } }
+    ring.consume(100)
+    if ring.length != 0 { panic("stream consume bounds failed") }
+}

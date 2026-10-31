@@ -1,0 +1,163 @@
+import std.mem
+import net_wire as wire
+import net_base
+import net_dns
+import shared
+import kernel_sync
+import sync
+
+extern fn kaguya_event_generation(key: u64) -> u64
+extern fn kaguya_wait_event(key: u64, deadline: u64, generation: u64)
+extern fn kaguya_wake_event(key: u64)
+extern fn kaguya_forget_event(key: u64)
+
+struct Datagram { from: wire.Endpoint, data: Vec(u8) }
+struct State { port: u16, peer: Option(wire.Endpoint), queue: Vec(Datagram) }
+pub struct Socket { state: kernel_sync.Spinlock(State) }
+struct Port { port: u16, owner: shared.Weak(Socket) }
+static PORTS: *kernel_sync.Spinlock(Vec(Port)) = null
+static NEXT: u16 = 50000
+static INIT_LOCK: u8 = 0
+
+fn init() {
+    unsafe {
+        let flags = sync.jihoo_lock_acquire(&INIT_LOCK)
+        if PORTS == null {
+            let pointer = mem.alloc(kernel_sync.Spinlock(Vec(Port)), 1)
+            write(pointer, kernel_sync.Spinlock.new(Vec(Port).new()))
+            PORTS = pointer
+        }
+        sync.jihoo_lock_release(&INIT_LOCK, flags & 0x200 != 0)
+    }
+}
+
+pub fn new() -> shared.Shared(Socket) {
+    init()
+    shared.Shared.new(Socket { state: kernel_sync.Spinlock.new(State { port: 0, peer: None, queue: Vec(Datagram).new() }) })
+}
+
+fn used(ports: Vec(Port), port: u16) -> bool {
+    if port == net_dns.PORT { return true }
+    for i in 0..ports.len() { if ports[i].port == port { return true } }
+    false
+}
+
+fn bind_port(owner: shared.Shared(Socket), requested: u16, implicit: bool) -> Result(u16, i32) {
+    unsafe {
+        var ports = (*PORTS).lock()
+        var i: i64 = 0
+        while i < ports.len() {
+            if ports.deref()[i].owner.strong_count() == 0 { let removed = ports.deref_mut().remove(i) } else { i += 1 }
+        }
+        var state = owner.state.lock()
+        if state.port != 0 { return if implicit { Ok(state.port) } else { Err(-2) } }
+        var selected = requested
+        if requested != 0 {
+            if used(ports.deref(), requested) { return Err(-10) }
+        } else {
+            for _ in 0..15536 {
+                let candidate = NEXT
+                NEXT = if candidate == 65535 { 50000 } else { candidate + 1 }
+                if !used(ports.deref(), candidate) { selected = candidate; break }
+            }
+            if selected == 0 { return Err(-10) }
+        }
+        ports.deref_mut().push(Port { port: selected, owner: owner.downgrade() })
+        state.deref_mut().port = selected
+        Ok(selected)
+    }
+}
+
+pub fn bind(owner: shared.Shared(Socket), port: u16) -> Result(u16, i32) { bind_port(owner, port, false) }
+
+pub fn connect(owner: shared.Shared(Socket), peer: wire.Endpoint) -> Result((), i32) {
+    if peer.port == 0 { return Err(-2) }
+    bind_port(owner, 0, true)?
+    var guard = owner.state.lock()
+    guard.deref_mut().peer = Some(peer)
+    var i: i64 = 0
+    while i < guard.queue.len() {
+        if guard.queue[i].from != peer { let removed = guard.deref_mut().queue.remove(i) } else { i += 1 }
+    }
+    Ok(())
+}
+
+pub fn send(owner: shared.Shared(Socket), destination: Option(wire.Endpoint), data: [u8]) -> Result(u64, i32) {
+    if data.len > 1472 { return Err(-2) }
+    let peer = match destination {
+        Some(peer) => peer
+        None => match owner.state.lock().peer { Some(peer) => peer, None => return Err(-13) }
+    }
+    if peer.port == 0 { return Err(-2) }
+    let port = bind_port(owner, 0, true)?
+    var segment: [u8; 1480] = [0; 1480]
+    wire.put16(&segment[0], 0, port); wire.put16(&segment[0], 2, peer.port)
+    wire.put16(&segment[0], 4, (data.len + 8) as u16)
+    unsafe { mem_copy(&segment[8], data.ptr, data.len) }
+    let checksum = wire.transport(net_base.HOST, peer.ip, 17, segment[0..data.len + 8])
+    wire.put16(&segment[0], 6, if checksum == 0 { 0xffff } else { checksum })
+    if net_base.transmit(peer.ip, 17, segment[0..data.len + 8]) { Ok(data.len as u64) } else { Err(-12) }
+}
+
+pub fn receive(owner: shared.Shared(Socket), output: *u8, capacity: u64, timeout: Option(u64)) -> Result((u64, wire.Endpoint), i32) {
+    let deadline: Option(u64) = match timeout { Some(ticks) => Some(wire.deadline(net_base.clock(), max(ticks, 1))), None => None }
+    loop {
+        let generation = unsafe { kaguya_event_generation(owner.address()) }
+        {
+            var guard = owner.state.lock()
+            if guard.port == 0 { return Err(-13) }
+            if !guard.queue.is_empty() {
+                let packet = guard.deref_mut().queue.remove(0)
+                let count = min(capacity, packet.data.len() as u64)
+                if count != 0 { unsafe { mem_copy(output, &packet.data[0], count as i64) } }
+                return Ok((count, packet.from))
+            }
+        }
+        let end: u64 = match deadline {
+            Some(tick) => { if net_base.clock() >= tick { return Err(-11) }; tick }
+            None => 0
+        }
+        unsafe { kaguya_wait_event(owner.address(), end, generation) }
+    }
+}
+
+impl Drop for Socket {
+    fn drop(inout self) {
+        unsafe {
+            let address = &self as u64
+            {
+                var ports = (*PORTS).lock()
+                for i in 0..ports.len() { if ports.deref()[i].owner.address() == address { ports.deref_mut().remove(i); break } }
+            }
+            kaguya_forget_event(address)
+        }
+    }
+}
+
+pub fn incoming(src: u32, dst: u32, segment: [u8]) {
+    if segment.len < 8 { return }
+    let length = wire.get16(segment, 4) as i64
+    if length < 8 || length > segment.len { return }
+    let bytes = segment[0..length]
+    if wire.get16(bytes, 6) != 0 && wire.transport(src, dst, 17, bytes) != 0 { return }
+    let port = wire.get16(bytes, 2)
+    if port == net_dns.PORT { net_dns.incoming(src, bytes); return }
+    let owner = unsafe {
+        if PORTS == null { return }
+        let ports = (*PORTS).lock()
+        var owner: Option(shared.Shared(Socket)) = None
+        for i in 0..ports.len() { if ports.deref()[i].port == port { owner = ports.deref()[i].owner.upgrade(); break } }
+        owner
+    }
+    let socket = match owner { Some(value) => value, None => return }
+    let peer = wire.Endpoint { ip: src, port: wire.get16(bytes, 0) }
+    {
+        var guard = socket.state.lock()
+        match guard.peer { Some(wanted) => if wanted != peer { return }, None => {} }
+        if guard.queue.len() >= 16 { return }
+        var payload = Vec(u8).with_capacity(length - 8)
+        for i in 8..length { payload.push(bytes[i]) }
+        guard.deref_mut().queue.push(Datagram { from: peer, data: payload })
+    }
+    unsafe { kaguya_wake_event(socket.address()) }
+}

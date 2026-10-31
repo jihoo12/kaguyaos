@@ -10,6 +10,9 @@ extern void jihoo_shared_check(void);
 extern void *jihoo_shared_counter_new(void);
 extern void jihoo_shared_counter_add(void *);
 extern uint64_t jihoo_shared_counter_finish(void *);
+extern void *jihoo_shared_weak_new(void);
+extern bool jihoo_shared_weak_upgrade(void *);
+extern void jihoo_shared_weak_release(void *), jihoo_shared_weak_free(void *);
 static _Atomic uint64_t allocations, drops;
 static _Thread_local bool enabled = true;
 bool irq_enabled(void) { return enabled; }
@@ -44,6 +47,10 @@ static void *increment(void *p) {
     }
     return NULL;
 }
+static void *upgrade(void *p) {
+    for (unsigned i=0;i<100000;i++) jihoo_shared_weak_upgrade(p);
+    return NULL;
+}
 int main(void) {
     jihoo_shared_check();
     assert(enabled && atomic_load(&drops) == 1 && atomic_load(&allocations) == 0);
@@ -53,5 +60,14 @@ int main(void) {
     for (unsigned i = 0; i < 4; i++) assert(pthread_join(threads[i], NULL) == 0);
     assert(jihoo_shared_counter_finish(owner) == 40000);
     assert(enabled && atomic_load(&allocations) == 0);
+    void *weak = jihoo_shared_weak_new();
+    assert(jihoo_shared_weak_upgrade(weak));
+    for (unsigned i=0;i<4;i++) assert(pthread_create(&threads[i],NULL,upgrade,weak)==0);
+    jihoo_shared_weak_release(weak);
+    for (unsigned i=0;i<4;i++) assert(pthread_join(threads[i],NULL)==0);
+    assert(!jihoo_shared_weak_upgrade(weak) && atomic_load(&drops)==2);
+    assert(atomic_load(&allocations)==2); // weak header plus test handle
+    jihoo_shared_weak_free(weak);
+    assert(atomic_load(&allocations)==0);
     puts("jihoo shared/guards: last-owner Drop, nested interrupt restoration and four-thread counter passed");
 }

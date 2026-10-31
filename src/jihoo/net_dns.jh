@@ -1,0 +1,87 @@
+import net_wire as wire
+import net_base
+import kernel_sync
+import std.mem
+
+extern fn kaguya_event_generation(key: u64) -> u64
+extern fn kaguya_wait_event(key: u64, deadline: u64, generation: u64)
+extern fn kaguya_wake_event(key: u64)
+
+pub const PORT: u16 = 49152
+pub const KEY: u64 = 0xfffffffffffffffe
+static RESULT: kernel_sync.Spinlock(Option(u32)) = kernel_sync.Spinlock(Option(u32)).new(None)
+
+pub fn take() -> Option(u32) {
+    var guard = unsafe { RESULT.lock() }
+    mem.replace(&guard.deref_mut(), None)
+}
+
+fn query(name: str) -> bool {
+    if name.len == 0 || name.len > 253 { return false }
+    var packet: [u8; 264] = [0; 264]
+    wire.put16(&packet[0], 0, PORT); wire.put16(&packet[0], 2, 53)
+    wire.put16(&packet[0], 8, 0x4b47); wire.put16(&packet[0], 10, 0x100); wire.put16(&packet[0], 12, 1)
+    var p: i64 = 20
+    var start: i64 = 0
+    for end in 0..name.len + 1 {
+        if end != name.len && name[end] != '.' { continue }
+        let length = end - start
+        if length == 0 || length > 63 || p + length + 6 > 264 { return false }
+        packet[p] = length as u8; p += 1
+        for i in 0..length { packet[p + i] = name[start + i] }
+        p += length; start = end + 1
+    }
+    packet[p] = 0; p += 1
+    wire.put16(&packet[0], p, 1); wire.put16(&packet[0], p + 2, 1); p += 4
+    wire.put16(&packet[0], 4, p as u16)
+    let old = take()
+    net_base.transmit(net_base.DNS, 17, packet[0..p])
+}
+
+pub fn resolve(name: str) -> u32 {
+    if !query(name) { return 0 }
+    let generation = unsafe { kaguya_event_generation(KEY) }
+    match take() { Some(ip) => return ip, None => {} }
+    unsafe { kaguya_wait_event(KEY, wire.deadline(net_base.clock(), 100), generation) }
+    match take() { Some(ip) => ip, None => 0 }
+}
+
+fn skip_name(data: [u8], position: i64) -> Option(i64) {
+    var p = position
+    while p < data.len {
+        let length = data[p] as i64
+        if length & 0xc0 == 0xc0 { return if p + 1 < data.len { Some(p + 2) } else { None } }
+        if length & 0xc0 != 0 { return None }
+        p += 1
+        if length == 0 { return Some(p) }
+        if length > data.len - p { return None }
+        p += length
+    }
+    None
+}
+
+pub fn incoming(src: u32, segment: [u8]) {
+    if src != net_base.DNS || segment.len < 20 || wire.get16(segment, 0) != 53 || wire.get16(segment, 2) != PORT { return }
+    let data = segment[8..]
+    if wire.get16(data, 0) != 0x4b47 || data[2] & 0x80 == 0 || data[3] & 15 != 0 { return }
+    let questions = wire.get16(data, 4) as i64; let answers = wire.get16(data, 6) as i64
+    var p: i64 = 12
+    for _ in 0..questions {
+        p = match skip_name(data, p) { Some(value) => value, None => return }
+        if p + 4 > data.len { return }
+        p += 4
+    }
+    for _ in 0..answers {
+        p = match skip_name(data, p) { Some(value) => value, None => return }
+        if p + 10 > data.len { return }
+        let kind = wire.get16(data, p); let class = wire.get16(data, p + 2); let length = wire.get16(data, p + 8) as i64
+        p += 10
+        if length > data.len - p { return }
+        if kind == 1 && class == 1 && length == 4 {
+            { var guard = unsafe { RESULT.lock() }; guard.deref_mut() = Some(wire.ip(data, p)) }
+            unsafe { kaguya_wake_event(KEY) }
+            return
+        }
+        p += length
+    }
+}

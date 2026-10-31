@@ -11,6 +11,6 @@ for optimization in 0 2; do
     "$JIHOO_BIN" emit-obj --lib "-O$optimization" -mno-red-zone -mgeneral-regs-only \
         -I src/jihoo/runtime -I src/jihoo tools/jihoo-task-root.jh -o "$output/task.o"
     "${CC:-cc}" -Wall -Wextra -Werror -mgeneral-regs-only tools/jihoo-task-test.c \
-        tools/jihoo-task-switch.S "$output/task.o" -o "$output/task-test"
+        tools/jihoo-task-switch.S tools/jihoo-network-platform.c "$output/task.o" -o "$output/task-test"
     "$output/task-test"
 done

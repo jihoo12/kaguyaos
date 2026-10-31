@@ -87,3 +87,47 @@ export fn jihoo_shared_counter_finish(pointer: *u8) -> u64 {
         result
     }
 }
+
+struct WeakCase {
+    owner: Option(shared.Shared(Tracked))
+    weak: shared.Weak(Tracked)
+}
+
+export fn jihoo_shared_weak_new() -> *u8 {
+    var bytes = Vec(u8).new()
+    for i in 0..100 { bytes.push(i as u8) }
+    let owner = shared.Shared.new(Tracked { value: 42, bytes: bytes })
+    let weak = owner.downgrade()
+    let copy = weak.clone()
+    if copy.address() != owner.address() || copy.upgrade().is_none() { panic("weak owner mismatch") }
+    unsafe {
+        let pointer = mem.alloc(WeakCase, 1)
+        write(pointer, WeakCase { owner: Some(owner), weak: weak })
+        pointer as *u8
+    }
+}
+
+export fn jihoo_shared_weak_upgrade(pointer: *u8) -> bool {
+    unsafe {
+        let pointer = pointer as *WeakCase
+        match pointer.weak.upgrade() {
+            Some(owner) => {
+                if owner.value != 42 || owner.bytes[99] != 99 { panic("weak upgraded dead value") }
+                true
+            }
+            None => false
+        }
+    }
+}
+
+export fn jihoo_shared_weak_release(pointer: *u8) {
+    unsafe { let pointer = pointer as *WeakCase; let old = mem.replace(&pointer.owner, None); drop(old) }
+}
+
+export fn jihoo_shared_weak_free(pointer: *u8) {
+    unsafe {
+        let pointer = pointer as *WeakCase
+        mem.drop_at(WeakCase, pointer)
+        mem.dealloc(WeakCase, pointer, 1)
+    }
+}

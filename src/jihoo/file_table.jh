@@ -3,6 +3,9 @@ import filesystem
 import shared
 import kernel_sync
 import pipe_owner
+import net_udp
+import net_tcp
+import net_wire
 
 pub const O_READ: u64 = 1
 pub const O_WRITE: u64 = 2
@@ -26,6 +29,8 @@ enum OpenFile {
     Disk(DiskFile)
     PipeRead(pipe_owner.Reader)
     PipeWrite(pipe_owner.Writer)
+    Udp(shared.Shared(net_udp.Socket))
+    Tcp(shared.Shared(net_tcp.Socket))
 }
 
 pub struct FileTable {
@@ -100,6 +105,33 @@ impl FileTable {
         Ok(())
     }
 
+    pub fn socket(self, kind: u64) -> Result(u64, i32) {
+        if kind != 1 && kind != 2 { return Err(-2) }
+        var files = self.files.lock()
+        let fd = free_slot(&files.deref_mut())?
+        files.deref_mut()[fd as i64] = Some(if kind == 1 { OpenFile.Udp(net_udp.new()) } else { OpenFile.Tcp(net_tcp.new()) })
+        Ok(fd)
+    }
+
+    pub fn udp(self, fd: u64) -> Result(shared.Shared(net_udp.Socket), i32) {
+        let files = self.files.lock()
+        if fd >= files.len() as u64 { return Err(-7) }
+        match files.deref()[fd as i64] { Some(OpenFile.Udp(socket)) => Ok(socket.clone()), _ => Err(-7) }
+    }
+
+    pub fn connect(self, fd: u64, remote: net_wire.Endpoint) -> Result((), i32) {
+        let operation = {
+            let files = self.files.lock()
+            if fd >= files.len() as u64 { return Err(-7) }
+            match files.deref()[fd as i64] {
+                Some(OpenFile.Udp(socket)) => OpenFile.Udp(socket.clone())
+                Some(OpenFile.Tcp(socket)) => OpenFile.Tcp(socket.clone())
+                _ => return Err(-7)
+            }
+        }
+        match operation { OpenFile.Udp(socket) => net_udp.connect(socket, remote), OpenFile.Tcp(socket) => net_tcp.connect(socket, remote), _ => Err(-7) }
+    }
+
     pub fn kind(self, fd: u64) -> Result(u64, i32) {
         let files = self.files.lock()
         if fd >= files.len() as u64 { return Err(-7) }
@@ -107,6 +139,7 @@ impl FileTable {
             Some(OpenFile.Console) => Ok(0)
             Some(OpenFile.Disk(_)) => Ok(1)
             Some(OpenFile.PipeRead(_)) | Some(OpenFile.PipeWrite(_)) => Ok(2)
+            Some(OpenFile.Udp(_)) | Some(OpenFile.Tcp(_)) => Ok(3)
             None => Err(-7)
         }
     }
@@ -124,12 +157,16 @@ impl FileTable {
                 }
             }
             Some(OpenFile.PipeRead(end)) => OpenFile.PipeRead(end.clone())
+            Some(OpenFile.Udp(socket)) => OpenFile.Udp(socket.clone())
+            Some(OpenFile.Tcp(socket)) => OpenFile.Tcp(socket.clone())
             _ => return -7
         }
         drop(files)
         match operation {
             OpenFile.Console => unsafe { kaguya_console_read(output, length) }
             OpenFile.PipeRead(end) => end.read(output, length)
+            OpenFile.Udp(socket) => match net_udp.receive(socket, output, length, None) { Ok((count, _)) => count as i64, Err(error) => error as i64 }
+            OpenFile.Tcp(socket) => match net_tcp.read(socket, output, length) { Ok(count) => count as i64, Err(error) => error as i64 }
             _ => -7
         }
     }
@@ -148,12 +185,16 @@ impl FileTable {
                 }
             }
             Some(OpenFile.PipeWrite(end)) => OpenFile.PipeWrite(end.clone())
+            Some(OpenFile.Udp(socket)) => OpenFile.Udp(socket.clone())
+            Some(OpenFile.Tcp(socket)) => OpenFile.Tcp(socket.clone())
             _ => return -7
         }
         drop(files)
         match operation {
             OpenFile.Console => unsafe { kaguya_console_write(input, length) }
             OpenFile.PipeWrite(end) => end.write(input, length)
+            OpenFile.Udp(socket) => match net_udp.send(socket, None, unsafe { make_slice(input, length as i64) }) { Ok(count) => count as i64, Err(error) => error as i64 }
+            OpenFile.Tcp(socket) => match net_tcp.send(socket, unsafe { make_slice(input, length as i64) }) { Ok(count) => count as i64, Err(error) => error as i64 }
             _ => -7
         }
     }
