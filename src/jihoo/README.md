@@ -481,3 +481,29 @@ integration are next.
 Create/format failures retain the existing nontransactional behavior; this
 stage does not add crash recovery or atomic metadata commits. NVMe I/O and
 physical media have not been tested with this standalone volume owner.
+
+## Native file-table ownership checkpoint
+
+```sh
+CC=clang bash tools/test-jihoo-file-table.sh
+```
+
+`file_table.jh` owns console/file/pipe descriptors through jihoo shared
+owners and guards. A cloned table shares offsets; inheriting three selected
+stdio descriptors copies disk offsets and clones counted pipe ends. The
+table keeps its filesystem owner alive. Reads/writes retain a counted pipe
+end and release the table lock before blocking; close and pipe-creation
+rollback drop handles after releasing that lock.
+
+The C harness passes at `-O0` and `-O2`: access/open flags, file offsets,
+append, seek bounds (including `i64::MIN`), descriptor kinds, inherited versus
+shared offsets, a child outliving its parent's volume reference, invalid
+stdio, pipe EOF and inherited ends, full/one-free-slot rollback, and closing
+a writer FD while a 6,000-byte write is blocked. The in-flight write still
+completes and the reader sees correct data/EOF. All owners and wait keys are
+released; callbacks check that blocking does not retain the table lock.
+
+This module is not yet imported by either kernel build. The native fixture
+supplies console I/O and scheduler event callbacks; actual scheduling,
+syscall/descriptor integration, and USB keyboard input remain next. Socket
+variants and network descriptor methods are deferred to the network port.

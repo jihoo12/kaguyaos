@@ -143,3 +143,8 @@ and ring-3 QEMU checks. Its only formatted volume is a newly allocated
 8 MiB temporary RAM disk, mapped before process creation. It does not yet
 supply the shell's descriptor table, scheduler, USB input or storage/network
 drivers; the ordinary mixed kernel's Rust metadata path is unchanged.
+
+The jihoo file-table owner passes native descriptor/offset/stdio inheritance,
+lifetime, capacity/rollback and close-during-blocked-write tests. It remains
+excluded from kernel builds until the real scheduler/event callbacks and
+syscall integration are connected; socket descriptors await the network port.

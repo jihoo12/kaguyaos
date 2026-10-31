@@ -133,3 +133,11 @@ all ring-3 regressions. Artifacts are in `/tmp/kaguya-jihoo-filesystem`.
 No physical/virtual disk is connected or automatically formatted. The
 standalone file table and scheduler still need integration; NVMe, USB,
 network, virtio GPU and AP startup remain to be ported/connected.
+
+`file_table.jh` now owns console/disk/pipe descriptors in jihoo. Native C
+tests pass flags, offsets/seeks, sharing versus stdio inheritance, lifetime,
+FD limits/rollback, and closure during a blocked 6,000-byte write at both
+optimization levels, with full owner/wait-key cleanup. This module is still
+excluded from the kernel; its console and scheduling callbacks are native
+test fixtures. Connect real scheduler handoffs/events and the syscall table
+next. Socket variants remain part of the later network port.

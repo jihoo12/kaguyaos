@@ -1,0 +1,92 @@
+import file_table
+import filesystem
+import fat
+import shared
+import kernel_sync
+import std.mem
+
+extern fn kaguya_kernel_panic(message: *u8, length: u64) -> never
+
+#[panic_handler]
+fn on_panic(message: str) -> never {
+    unsafe { kaguya_kernel_panic(message.ptr, message.len as u64) }
+}
+
+type Table = shared.Shared(file_table.FileTable)
+
+export fn jihoo_table_new(context: *u8, sectors: u64,
+                          read_callback: fnptr(*u8, u64, u32, *u8) -> i32,
+                          write_callback: fnptr(*u8, u64, u32, *u8) -> i32) -> *Table {
+    unsafe {
+        let volume = shared.Shared.new(kernel_sync.Spinlock.new(filesystem.Volume.new(fat.DataIo {
+            context: context, read: read_callback, write: write_callback, clusters: ((sectors - 81) / 8) as u32 })))
+        volume.lock().deref_mut().format().unwrap()
+        let owner = mem.alloc(Table, 1)
+        write(owner, file_table.FileTable.with_console(volume))
+        owner
+    }
+}
+
+export fn jihoo_table_drop(owner: *Table) {
+    unsafe { mem.drop_at(Table, owner); mem.dealloc(Table, owner, 1) }
+}
+
+export fn jihoo_table_clone(owner: *Table) -> *Table {
+    unsafe {
+        let copy = mem.alloc(Table, 1)
+        write(copy, (*owner).clone())
+        copy
+    }
+}
+
+export fn jihoo_table_inherit(owner: *Table, stdio: *u64, error: *i32) -> *Table {
+    unsafe {
+        match (*owner).inherit([stdio[0], stdio[1], stdio[2]]) {
+            Ok(table) => {
+                let copy = mem.alloc(Table, 1)
+                write(copy, table)
+                *error = 0
+                copy
+            }
+            Err(code) => { *error = code; null }
+        }
+    }
+}
+
+export fn jihoo_table_open(owner: *Table, name: *u8, length: u64, flags: u64) -> i64 {
+    unsafe {
+        match (*owner).open(make_str(name, length as i64), flags) {
+            Ok(fd) => fd as i64
+            Err(code) => code as i64
+        }
+    }
+}
+
+export fn jihoo_table_close(owner: *Table, fd: u64) -> i32 {
+    unsafe { match (*owner).close(fd) { Ok(()) => 0, Err(code) => code } }
+}
+
+export fn jihoo_table_kind(owner: *Table, fd: u64) -> i64 {
+    unsafe { match (*owner).kind(fd) { Ok(kind) => kind as i64, Err(code) => code as i64 } }
+}
+
+export fn jihoo_table_read(owner: *Table, fd: u64, output: *u8, length: u64) -> i64 {
+    unsafe { (*owner).read(fd, output, length) }
+}
+
+export fn jihoo_table_write(owner: *Table, fd: u64, input: *u8, length: u64) -> i64 {
+    unsafe { (*owner).write(fd, input, length) }
+}
+
+export fn jihoo_table_seek(owner: *Table, fd: u64, offset: i64, whence: u64) -> i64 {
+    unsafe { match (*owner).seek(fd, offset, whence) { Ok(position) => position as i64, Err(code) => code as i64 } }
+}
+
+export fn jihoo_table_pipe(owner: *Table, read_fd: *u64, write_fd: *u64) -> i32 {
+    unsafe {
+        match (*owner).pipe() {
+            Ok((reader, writer)) => { *read_fd = reader; *write_fd = writer; 0 }
+            Err(code) => code
+        }
+    }
+}

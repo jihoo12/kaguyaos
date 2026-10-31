@@ -1,0 +1,187 @@
+import std.mem
+import filesystem
+import shared
+import kernel_sync
+import pipe_owner
+
+pub const O_READ: u64 = 1
+pub const O_WRITE: u64 = 2
+pub const O_CREATE: u64 = 4
+pub const O_TRUNC: u64 = 8
+pub const O_APPEND: u64 = 16
+
+extern fn kaguya_console_read(output: *u8, length: u64) -> i64
+extern fn kaguya_console_write(input: *u8, length: u64) -> i64
+
+#[derive(Clone)]
+struct DiskFile {
+    id: filesystem.FileId
+    offset: u64
+    flags: u64
+}
+
+#[derive(Clone)]
+enum OpenFile {
+    Console
+    Disk(DiskFile)
+    PipeRead(pipe_owner.Reader)
+    PipeWrite(pipe_owner.Writer)
+}
+
+pub struct FileTable {
+    volume: shared.Shared(kernel_sync.Spinlock(filesystem.Volume))
+    files: kernel_sync.Spinlock(Vec(Option(OpenFile)))
+}
+
+fn free_slot(inout files: Vec(Option(OpenFile))) -> Result(u64, i32) {
+    for i in 0..files.len() { if files[i].is_none() { return Ok(i as u64) } }
+    if files.len() >= 32 { return Err(-8) }
+    files.push(None)
+    Ok(files.len() as u64 - 1)
+}
+
+impl FileTable {
+    pub fn with_console(volume: shared.Shared(kernel_sync.Spinlock(filesystem.Volume))) -> shared.Shared(FileTable) {
+        var files = Vec(Option(OpenFile)).new()
+        for _ in 0..3 { files.push(Some(OpenFile.Console)) }
+        shared.Shared.new(FileTable { volume: volume.clone(), files: kernel_sync.Spinlock.new(files) })
+    }
+
+    pub fn inherit(self, stdio: [u64; 3]) -> Result(shared.Shared(FileTable), i32) {
+        let parent = self.files.lock()
+        var child = Vec(Option(OpenFile)).new()
+        for i in 0..3 {
+            let fd = stdio[i]
+            if fd >= parent.len() as u64 { return Err(-7) }
+            match parent.deref()[fd as i64] {
+                Some(file) => child.push(Some(file.clone()))
+                None => return Err(-7)
+            }
+        }
+        Ok(shared.Shared.new(FileTable { volume: self.volume.clone(), files: kernel_sync.Spinlock.new(child) }))
+    }
+
+    pub fn open(self, name: str, flags: u64) -> Result(u64, i32) {
+        if flags & !31 != 0 || flags & 3 == 0 { return Err(-2) }
+        if flags & O_WRITE == 0 && flags & (O_CREATE | O_TRUNC | O_APPEND) != 0 { return Err(-2) }
+        var files = self.files.lock()
+        let fd = free_slot(&files.deref_mut())?
+        let id = self.volume.lock().deref_mut().open(name, flags & O_CREATE != 0, flags & O_TRUNC != 0)?
+        files.deref_mut()[fd as i64] = Some(OpenFile.Disk(DiskFile { id: id, offset: 0, flags: flags }))
+        Ok(fd)
+    }
+
+    pub fn pipe(self) -> Result((u64, u64), i32) {
+        let (reader, writer) = pipe_owner.new()
+        var files = self.files.lock()
+        let read_fd = free_slot(&files.deref_mut())?
+        files.deref_mut()[read_fd as i64] = Some(OpenFile.PipeRead(reader))
+        match free_slot(&files.deref_mut()) {
+            Ok(write_fd) => {
+                files.deref_mut()[write_fd as i64] = Some(OpenFile.PipeWrite(writer))
+                Ok((read_fd, write_fd))
+            }
+            Err(error) => {
+                let old = mem.replace(&files.deref_mut()[read_fd as i64], None)
+                drop(files)
+                drop(old)
+                drop(writer)
+                Err(error)
+            }
+        }
+    }
+
+    pub fn close(self, fd: u64) -> Result((), i32) {
+        var files = self.files.lock()
+        if fd >= files.len() as u64 || files.deref()[fd as i64].is_none() { return Err(-7) }
+        let old = mem.replace(&files.deref_mut()[fd as i64], None)
+        drop(files)
+        drop(old)
+        Ok(())
+    }
+
+    pub fn kind(self, fd: u64) -> Result(u64, i32) {
+        let files = self.files.lock()
+        if fd >= files.len() as u64 { return Err(-7) }
+        match files.deref()[fd as i64] {
+            Some(OpenFile.Console) => Ok(0)
+            Some(OpenFile.Disk(_)) => Ok(1)
+            Some(OpenFile.PipeRead(_)) | Some(OpenFile.PipeWrite(_)) => Ok(2)
+            None => Err(-7)
+        }
+    }
+
+    pub fn read(self, fd: u64, output: *u8, length: u64) -> i64 {
+        var files = self.files.lock()
+        if fd >= files.len() as u64 { return -7 }
+        let operation = match &files.deref_mut()[fd as i64] {
+            Some(OpenFile.Console) => OpenFile.Console
+            Some(OpenFile.Disk(file)) => {
+                if file.flags & O_READ == 0 { return -7 }
+                match self.volume.lock().read_at(file.id, file.offset, output, length) {
+                    Ok(count) => { file.offset += count; return count as i64 }
+                    Err(error) => return error as i64
+                }
+            }
+            Some(OpenFile.PipeRead(end)) => OpenFile.PipeRead(end.clone())
+            _ => return -7
+        }
+        drop(files)
+        match operation {
+            OpenFile.Console => unsafe { kaguya_console_read(output, length) }
+            OpenFile.PipeRead(end) => end.read(output, length)
+            _ => -7
+        }
+    }
+
+    pub fn write(self, fd: u64, input: *u8, length: u64) -> i64 {
+        var files = self.files.lock()
+        if fd >= files.len() as u64 { return -7 }
+        let operation = match &files.deref_mut()[fd as i64] {
+            Some(OpenFile.Console) => OpenFile.Console
+            Some(OpenFile.Disk(file)) => {
+                if file.flags & O_WRITE == 0 { return -7 }
+                let offset: Option(u64) = if file.flags & O_APPEND != 0 { None } else { Some(file.offset) }
+                match self.volume.lock().deref_mut().write_at(file.id, offset, input, length) {
+                    Ok((start, count)) => { file.offset = start + count; return count as i64 }
+                    Err(error) => return error as i64
+                }
+            }
+            Some(OpenFile.PipeWrite(end)) => OpenFile.PipeWrite(end.clone())
+            _ => return -7
+        }
+        drop(files)
+        match operation {
+            OpenFile.Console => unsafe { kaguya_console_write(input, length) }
+            OpenFile.PipeWrite(end) => end.write(input, length)
+            _ => -7
+        }
+    }
+
+    pub fn seek(self, fd: u64, offset: i64, whence: u64) -> Result(u64, i32) {
+        var files = self.files.lock()
+        if fd >= files.len() as u64 { return Err(-7) }
+        match &files.deref_mut()[fd as i64] {
+            Some(OpenFile.Disk(file)) => {
+                let base: u64 = match whence {
+                    0 => 0
+                    1 => file.offset
+                    2 => self.volume.lock().size(file.id)?
+                    _ => return Err(-2)
+                }
+                var target: u64 = 0
+                if offset < 0 {
+                    let magnitude = (-(offset + 1)) as u64 + 1
+                    if magnitude > base { return Err(-2) }
+                    target = base - magnitude
+                } else {
+                    if offset as u64 > 0xffffffff - base { return Err(-2) }
+                    target = base + offset as u64
+                }
+                file.offset = target
+                Ok(target)
+            }
+            _ => Err(-7)
+        }
+    }
+}
