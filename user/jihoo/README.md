@@ -115,5 +115,7 @@ in `d0b3d31`. Minimal/control cases and the native C console tests pass.
 The standalone jihoo diagnostic now shows visible text after ExitBootServices
 and passes QEMU at 1280x800 and 2560x1440, without Cargo, rustc, or a Rust font
 crate. This image still does not run userspace; the ordinary Rust and mixed
-kernel checkpoints remain separate. CPU initialization and the remaining
-full-port checklist continue next.
+kernel checkpoints remain separate. A separate Rust-free `cpu-test` image also passes GDT/TSS/IDT loading,
+CR3 replacement, frame recycling, `int3` return, and PIT IRQ checks at both
+resolutions. It does not execute user programs yet; syscall/ownership and
+scheduler integration continue next.

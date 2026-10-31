@@ -86,7 +86,17 @@ font and interrupt-safe output locking. QEMU checks pass at 1280x800 and
 `/tmp/kaguya-jihoo-console-1440p`. Kernel collection/cleanup host tests also
 pass on this compiler. No static-data workaround is connected.
 
-Continue with CPU tables, interrupts, and replacement page tables, then
-scheduler/ownership/device work. The standalone image does not yet run
+The separate `cpu-test` EFI now loads jihoo-owned GDT/TSS/IDT tables,
+switches to jihoo identity page tables using a locked frame pool, and passes
+CR3 readback, kernel-only permissions, recycled-frame zeroing/accounting,
+returning `int3`, and ten PIT interrupts in QEMU at both resolutions. The
+packed-table C tests pass at `-O0` and `-O2`; each CPU slot reserves a separate
+double-fault stack. AP startup and double faults have not been exercised.
+Artifacts are in `/tmp/kaguya-jihoo-cpu` and `/tmp/kaguya-jihoo-cpu-1440p`.
+The original diagnostic still stops before these initializations and passes
+its regression in `/tmp/kaguya-jihoo-cpu-diagnostic`.
+
+Continue with CPU-local/syscall state, address-space ownership, KEF loading,
+and scheduling, followed by device work. The standalone image does not yet run
 userspace or drivers. The ordinary kernel remains Rust and complete Rust
 removal has not been achieved. No physical hardware has been tested.

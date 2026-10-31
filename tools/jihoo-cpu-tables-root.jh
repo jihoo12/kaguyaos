@@ -1,0 +1,8 @@
+import cpu_tables
+
+extern fn kaguya_kernel_panic(message: *u8, length: u64) -> never
+
+#[panic_handler]
+fn on_panic(message: str) -> never {
+    unsafe { kaguya_kernel_panic(message.ptr, message.len as u64) }
+}

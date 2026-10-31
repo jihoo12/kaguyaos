@@ -1,0 +1,136 @@
+import cpu_tables
+import runtime
+import pic
+import io
+
+extern fn jihoo_load_gdt(pointer: *u8)
+extern fn jihoo_load_idt(pointer: *u8)
+extern fn jihoo_vector_address(vector: u64) -> u64
+extern fn jihoo_breakpoint()
+extern fn jihoo_wait_interrupt()
+extern fn jihoo_halt() -> never
+extern fn jihoo_read_cr2() -> u64
+
+static GDT: [u64; 448] = zeroed([u64; 448])
+static TSS: [u64; 832] = zeroed([u64; 832])
+static FAULT_STACKS: [u64; 32770] = zeroed([u64; 32770])
+static IDT: [u64; 512] = zeroed([u64; 512])
+static BREAKPOINTS: u64 = 0
+static TICKS: u64 = 0
+
+pub struct InterruptFrame {
+    pub r15: u64
+    pub r14: u64
+    pub r13: u64
+    pub r12: u64
+    pub r11: u64
+    pub r10: u64
+    pub r9: u64
+    pub r8: u64
+    pub rsi: u64
+    pub rdi: u64
+    pub rbp: u64
+    pub rdx: u64
+    pub rcx: u64
+    pub rbx: u64
+    pub rax: u64
+    pub vector: u64
+    pub error: u64
+    pub rip: u64
+    pub cs: u64
+    pub rflags: u64
+    pub rsp: u64
+    pub ss: u64
+}
+
+pub fn init_cpu(index: u64) {
+    if index >= 64 { panic("CPU index out of range") }
+    unsafe {
+        let gdt = &GDT[0] as *u8 + (index * 56) as i64
+        let tss = &TSS[0] as *u8 + (index * 104) as i64
+        let stack_base = ((&FAULT_STACKS[0] as u64) + 15) & !15
+        cpu_tables.jihoo_gdt_build(gdt, tss, stack_base + (index + 1) * 4096)
+        var pointer: [u8; 10] = zeroed([u8; 10])
+        cpu_tables.jihoo_table_pointer(&pointer[0], gdt as u64, 55)
+        jihoo_load_gdt(&pointer[0])
+    }
+}
+
+pub fn set_kernel_stack(index: u64, stack: u64) {
+    if index >= 64 { panic("CPU index out of range") }
+    unsafe { cpu_tables.jihoo_tss_stack(&TSS[0] as *u8 + (index * 104) as i64, stack) }
+}
+
+pub fn init() {
+    init_cpu(0)
+    unsafe {
+        for i in 0..256 {
+            let handler = jihoo_vector_address(i as u64)
+            let ist: u8 = if i == 8 { 1 } else { 0 }
+            cpu_tables.jihoo_idt_gate(&IDT[0] as *u8 + i * 16, handler, ist)
+        }
+        load_idt()
+    }
+    runtime.output("CPU tables: GDT, TSS, per-CPU double-fault stacks and IDT loaded\n")
+}
+
+pub fn load_idt() {
+    unsafe {
+        var pointer: [u8; 10] = zeroed([u8; 10])
+        cpu_tables.jihoo_table_pointer(&pointer[0], &IDT[0] as u64, 4095)
+        jihoo_load_idt(&pointer[0])
+    }
+}
+
+fn hex(value: u64) {
+    let digits = "0123456789abcdef"
+    var shift: i64 = 60
+    while shift >= 0 {
+        let offset = ((value >> shift) & 15) as i64
+        unsafe { runtime.serial(make_str(digits.ptr + offset, 1)) }
+        shift -= 4
+    }
+}
+
+export fn jihoo_interrupt_dispatch(frame: *InterruptFrame) {
+    unsafe {
+        let vector = frame.vector
+        if vector == 3 {
+            atomic_add(&BREAKPOINTS, 1)
+            return
+        }
+        if vector >= 32 && vector < 48 {
+            if vector == 32 { atomic_add(&TICKS, 1) }
+            pic.jihoo_pic_eoi((vector - 32) as u8)
+            return
+        }
+        if vector == 255 { return }
+        runtime.serial("\nEXCEPTION vector=0x")
+        hex(vector)
+        runtime.serial(" error=0x")
+        hex(frame.error)
+        runtime.serial(" rip=0x")
+        hex(frame.rip)
+        runtime.serial(" cs=0x")
+        hex(frame.cs)
+        if vector == 14 {
+            runtime.serial(" cr2=0x")
+            hex(jihoo_read_cr2())
+        }
+        runtime.serial("\n")
+        jihoo_halt()
+    }
+}
+
+pub fn check() {
+    unsafe {
+        let previous = atomic_load(&BREAKPOINTS)
+        jihoo_breakpoint()
+        if atomic_load(&BREAKPOINTS) != previous + 1 { panic("breakpoint return failed") }
+        pic.jihoo_pic_init()
+        io.jihoo_outb(0x21, 0xfe)
+        let start = atomic_load(&TICKS)
+        while atomic_load(&TICKS) - start < 10 { jihoo_wait_interrupt() }
+    }
+    runtime.output("CPU interrupts: breakpoint return and ten PIT ticks passed\n")
+}

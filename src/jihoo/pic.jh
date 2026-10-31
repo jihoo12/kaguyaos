@@ -8,7 +8,7 @@ const SLAVE_DATA: u16 = 0xa1
 unsafe fn out(port: u16, value: u8) { io.jihoo_outb(port, value) }
 unsafe fn delay() { io.jihoo_outb(0x80, 0) }
 
-export fn jihoo_pic_init() {
+pub export fn jihoo_pic_init() {
     unsafe {
         io.jihoo_inb(MASTER_DATA)
         io.jihoo_inb(SLAVE_DATA)
@@ -40,14 +40,14 @@ export fn jihoo_pic_init() {
     }
 }
 
-export fn jihoo_pic_eoi(irq: u8) {
+pub export fn jihoo_pic_eoi(irq: u8) {
     unsafe {
         if irq >= 8 { out(SLAVE_CMD, 0x20) }
         out(MASTER_CMD, 0x20)
     }
 }
 
-export fn jihoo_pic_unmask(irq: u8) -> bool {
+pub export fn jihoo_pic_unmask(irq: u8) -> bool {
     unsafe {
         if irq < 8 {
             out(MASTER_DATA, io.jihoo_inb(MASTER_DATA) & !(1 << irq))

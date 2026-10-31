@@ -28,9 +28,14 @@ parser.add_argument('--network', action='store_true', help='Check ping and wget 
 parser.add_argument('--disk-image', type=Path, help='Use a prepared NVMe image instead of nvme.img')
 parser.add_argument('--kernel-image', type=Path, help='Use an alternate EFI artifact for this boot mode')
 parser.add_argument('--hardware-test', action='store_true', help='Test the isolated diagnostic EFI without NVMe, USB or network devices')
+parser.add_argument('--cpu-test', action='store_true', help='Test the standalone jihoo CPU/page-table EFI without disks or external devices')
 parser.add_argument('--backend', choices=['virtio', 'gop'], default='virtio')
 parser.add_argument('--output', type=Path, default=Path('/tmp/kaguya-gpu-smoke'))
 args = parser.parse_args()
+if args.cpu_test:
+    if args.hardware_test or args.hardware_shell:
+        parser.error('choose cpu-test, hardware-test or hardware-shell')
+    args.hardware_test = True
 if args.hardware_test and args.hardware_shell:
     parser.error('choose hardware-test or hardware-shell')
 if args.shutdown and (args.hardware_test or args.no_keyboard):
@@ -86,6 +91,8 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
     boot = tmp / 'esp/EFI/BOOT'
     boot.mkdir(parents=True)
     kernel = 'target/hardware-test/build/x86_64-unknown-uefi/debug/os.efi' if args.hardware_test else 'target/x86_64-unknown-uefi/debug/os.efi'
+    if args.cpu_test:
+        kernel = 'target/jihoo-kernel/cpu-test/os.efi'
     if args.hardware_shell:
         kernel = 'target/hardware-shell/build/x86_64-unknown-uefi/debug/os.efi'
     shutil.copyfile(args.kernel_image.resolve() if args.kernel_image else root / kernel, boot / 'BOOTX64.EFI')
@@ -159,7 +166,7 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
                 execute('qmp_capabilities')
                 while True:
                     serial = (out / 'serial.log').read_text(errors='replace') if (out / 'serial.log').exists() else ''
-                    marker = 'HARDWARE TEST READY' if args.hardware_test else 'kaguya>'
+                    marker = 'CPU TEST READY' if args.cpu_test else ('HARDWARE TEST READY' if args.hardware_test else 'kaguya>')
                     if marker in serial:
                         break
                     if time.monotonic() > deadline or process.poll() is not None:
@@ -201,7 +208,13 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
                     forbidden = ['PCI: Checking', 'NVMe: Init', 'xHCI:', 'Starting scheduler', 'Formatting...']
                     if any(marker in serial for marker in forbidden):
                         raise RuntimeError('Hardware-test unexpectedly initialized a subsystem')
-                    name = 'hardware-shell.png' if args.hardware_shell else 'hardware-test.png'
+                    if args.cpu_test:
+                        required = ['CPU tables: GDT, TSS, per-CPU double-fault stacks and IDT loaded',
+                                    'Paging replacement: CR3, kernel permissions, frame reuse and zeroing passed',
+                                    'CPU interrupts: breakpoint return and ten PIT ticks passed']
+                        if any(marker not in serial for marker in required):
+                            raise RuntimeError('Standalone CPU/page-table self-check missing; see serial.log')
+                    name = 'cpu-test.png' if args.cpu_test else 'hardware-test.png'
                     execute('screendump', {'filename': str(out / name), 'format': 'png'})
                     if args.hardware_shell and 'kaguya>' not in serial:
                         raise RuntimeError('Missing userspace prompt')
@@ -344,7 +357,7 @@ with ExitStack() as resources, tempfile.TemporaryDirectory(prefix='kaguya-qmp-')
                 else:
                     execute('quit')
                 process.wait(timeout=10)
-                label = 'hardware-test: diagnostic boot passed' if args.hardware_test else f'{args.backend}: boot, GPU/console and shell help passed'
+                label = 'cpu-test: CPU/page-table checks passed' if args.cpu_test else ('hardware-test: diagnostic boot passed' if args.hardware_test else f'{args.backend}: boot, GPU/console and shell help passed')
                 if args.hardware_shell:
                     label = 'hardware-shell: no-keyboard boot passed' if args.no_keyboard else 'hardware-shell: USB keyboard, clear and help passed'
                     if args.keyboard_stress:

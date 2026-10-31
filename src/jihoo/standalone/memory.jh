@@ -1,0 +1,61 @@
+import frame
+import paging
+import sync
+import runtime
+
+extern fn jihoo_read_cr3() -> u64
+extern fn jihoo_write_cr3(root: u64)
+
+static LOCK: u8 = 0
+static ROOT: u64 = 0
+
+pub export fn kaguya_alloc_frame() -> u64 {
+    unsafe {
+        let flags = sync.jihoo_lock_acquire(&LOCK)
+        let address = frame.jihoo_pool_alloc()
+        sync.jihoo_lock_release(&LOCK, flags & 0x200 != 0)
+        if address != 0 { frame.jihoo_frame_zero(address) }
+        address
+    }
+}
+
+pub export fn kaguya_free_frame(address: u64) {
+    unsafe {
+        let flags = sync.jihoo_lock_acquire(&LOCK)
+        frame.jihoo_pool_free(address)
+        sync.jihoo_lock_release(&LOCK, flags & 0x200 != 0)
+    }
+}
+
+export fn allocate_table(context: *u8) -> u64 { kaguya_alloc_frame() }
+
+pub fn root() -> u64 { unsafe { ROOT } }
+
+pub fn init(map: *u8, map_size: u64, stride: u64, framebuffer: u64, framebuffer_size: u64) {
+    frame.jihoo_pool_commit(map, map_size, stride, 0, 0)
+    let address = paging.jihoo_paging_init(map, map_size, stride, framebuffer, framebuffer_size,
+                                          null, allocate_table)
+    if address == 0 { panic("boot page tables out of memory") }
+    unsafe {
+        ROOT = address
+        jihoo_write_cr3(address)
+        if jihoo_read_cr3() != address { panic("CR3 switch failed") }
+        if !paging.jihoo_range_mapped(address as *u64, map as u64, map_size, false) ||
+            paging.jihoo_range_mapped(address as *u64, map as u64, map_size, true) {
+            panic("kernel map permissions failed")
+        }
+        let before = frame.jihoo_pool_in_use()
+        let page = kaguya_alloc_frame()
+        if page == 0 { panic("frame allocation failed") }
+        mem_fill(page as *u8, 0xa5, 4096)
+        kaguya_free_frame(page)
+        let reused = kaguya_alloc_frame()
+        if reused != page { panic("frame reuse failed") }
+        for i in 0..4096 {
+            if (reused as *u8)[i] != 0 { panic("frame zeroing failed") }
+        }
+        kaguya_free_frame(reused)
+        if frame.jihoo_pool_in_use() != before { panic("frame accounting failed") }
+    }
+    runtime.output("Paging replacement: CR3, kernel permissions, frame reuse and zeroing passed\n")
+}

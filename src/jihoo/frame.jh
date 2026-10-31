@@ -15,7 +15,7 @@ static POOL_OFFSET: u64 = 0
 static FREE_HEAD: u64 = 0
 static IN_USE: u64 = 0
 
-export fn jihoo_pool_commit(memory_map: *u8, map_size: u64, stride: u64,
+pub export fn jihoo_pool_commit(memory_map: *u8, map_size: u64, stride: u64,
                            descriptor_index: u64, page_offset: u64) {
     unsafe {
         POOL_MAP = memory_map
@@ -26,7 +26,7 @@ export fn jihoo_pool_commit(memory_map: *u8, map_size: u64, stride: u64,
     }
 }
 
-export fn jihoo_pool_alloc() -> u64 {
+pub export fn jihoo_pool_alloc() -> u64 {
     unsafe {
         var frame: u64 = 0
         if FREE_HEAD != 0 {
@@ -42,7 +42,7 @@ export fn jihoo_pool_alloc() -> u64 {
     }
 }
 
-export fn jihoo_pool_free(frame: u64) {
+pub export fn jihoo_pool_free(frame: u64) {
     unsafe {
         *(frame as *u64) = FREE_HEAD
         FREE_HEAD = frame
@@ -50,15 +50,15 @@ export fn jihoo_pool_free(frame: u64) {
     }
 }
 
-export fn jihoo_pool_in_use() -> u64 {
+pub export fn jihoo_pool_in_use() -> u64 {
     unsafe { IN_USE }
 }
 
-export fn jihoo_frame_zero(frame: u64) {
+pub export fn jihoo_frame_zero(frame: u64) {
     unsafe { mem_fill(frame as *u8, 0, 4096) }
 }
 
-export fn jihoo_boot_frame_alloc(memory_map: *u8, map_size: u64, stride: u64,
+pub export fn jihoo_boot_frame_alloc(memory_map: *u8, map_size: u64, stride: u64,
                                 descriptor_index: *u64, page_offset: *u64) -> u64 {
     unsafe {
         let count = map_size / stride
@@ -78,7 +78,7 @@ export fn jihoo_boot_frame_alloc(memory_map: *u8, map_size: u64, stride: u64,
     }
 }
 
-export fn jihoo_boot_frames_alloc(memory_map: *u8, map_size: u64, stride: u64,
+pub export fn jihoo_boot_frames_alloc(memory_map: *u8, map_size: u64, stride: u64,
                                  descriptor_index: *u64, page_offset: *u64, count: u64) -> u64 {
     if count == 0 { return 0 }
     var start = jihoo_boot_frame_alloc(memory_map, map_size, stride, descriptor_index, page_offset)

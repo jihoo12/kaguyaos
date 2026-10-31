@@ -1,0 +1,58 @@
+pub const KERNEL_CODE: u16 = 0x08
+pub const KERNEL_DATA: u16 = 0x10
+pub const USER_DATA: u16 = 0x1b
+pub const USER_CODE: u16 = 0x23
+pub const TSS_SELECTOR: u16 = 0x28
+
+unsafe fn store16(bytes: *u8, value: u16) {
+    bytes[0] = value as u8
+    bytes[1] = (value >> 8) as u8
+}
+
+unsafe fn store64(bytes: *u8, value: u64) {
+    for i in 0..8 { bytes[i] = (value >> (i * 8)) as u8 }
+}
+
+pub export fn jihoo_table_pointer(bytes: *u8, base: u64, limit: u16) {
+    unsafe {
+        store16(bytes, limit)
+        store64(bytes + 2, base)
+    }
+}
+
+pub export fn jihoo_tss_stack(tss: *u8, stack: u64) {
+    unsafe { store64(tss + 4, stack) }
+}
+
+pub export fn jihoo_gdt_build(gdt: *u8, tss: *u8, fault_stack: u64) {
+    unsafe {
+        mem_fill(gdt, 0, 56)
+        mem_fill(tss, 0, 104)
+        store64(tss + 36, fault_stack)
+        store16(tss + 102, 104)
+        store64(gdt + 8, 0x00af9a000000ffff)
+        store64(gdt + 16, 0x00cf92000000ffff)
+        store64(gdt + 24, 0x00cff2000000ffff)
+        store64(gdt + 32, 0x00affa000000ffff)
+        let base = tss as u64
+        gdt[40] = 103
+        gdt[42] = base as u8
+        gdt[43] = (base >> 8) as u8
+        gdt[44] = (base >> 16) as u8
+        gdt[45] = 0x89
+        gdt[47] = (base >> 24) as u8
+        for i in 0..4 { gdt[48 + i] = (base >> (32 + i * 8)) as u8 }
+    }
+}
+
+pub export fn jihoo_idt_gate(gate: *u8, handler: u64, ist: u8) {
+    unsafe {
+        mem_fill(gate, 0, 16)
+        store16(gate, handler as u16)
+        store16(gate + 2, KERNEL_CODE)
+        gate[4] = ist & 7
+        gate[5] = 0x8e
+        store16(gate + 6, (handler >> 16) as u16)
+        for i in 0..4 { gate[8 + i] = (handler >> (32 + i * 8)) as u8 }
+    }
+}

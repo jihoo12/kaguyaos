@@ -5,11 +5,11 @@ const USER: u64 = 4
 const HUGE: u64 = 128
 const FRAME_MASK: u64 = 0x000ffffffffff000
 
-export fn jihoo_page_zero(table: *u64) {
+pub export fn jihoo_page_zero(table: *u64) {
     unsafe { mem_fill(table as *u8, 0, 4096) }
 }
 
-export fn jihoo_paging_init(memory_map: *u8, map_size: u64, stride: u64,
+pub export fn jihoo_paging_init(memory_map: *u8, map_size: u64, stride: u64,
                            framebuffer: u64, framebuffer_size: u64,
                            context: *u8, allocate: fnptr(*u8) -> u64) -> u64 {
     unsafe {
@@ -41,7 +41,7 @@ export fn jihoo_paging_init(memory_map: *u8, map_size: u64, stride: u64,
     }
 }
 
-export fn jihoo_page_map(root: *u64, address: u64, physical: u64, flags: u64,
+pub export fn jihoo_page_map(root: *u64, address: u64, physical: u64, flags: u64,
                         context: *u8, allocate: fnptr(*u8) -> u64) -> bool {
     unsafe {
         var table = root
@@ -74,7 +74,7 @@ unsafe fn page_present(root: *u64, address: u64, required: u64) -> bool {
     false
 }
 
-export fn jihoo_range_mapped(root: *u64, start: u64, length: u64, user: bool) -> bool {
+pub export fn jihoo_range_mapped(root: *u64, start: u64, length: u64, user: bool) -> bool {
     if length == 0 { return true }
     if length > 0xffffffffffffffff - start { return false }
     let end = start + length

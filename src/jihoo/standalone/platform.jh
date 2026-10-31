@@ -1,0 +1,137 @@
+import std.uefi
+import heap
+import runtime
+import runtime_check
+import cpu
+import memory
+
+struct GopInfo {
+    version: u32
+    width: u32
+    height: u32
+    format: u32
+    masks: [u32; 4]
+    stride: u32
+}
+
+struct GopMode {
+    max_mode: u32
+    mode: u32
+    info: *GopInfo
+    info_size: u64
+    framebuffer: u64
+    framebuffer_size: u64
+}
+
+struct Gop {
+    query_mode: *u8
+    set_mode: *u8
+    blt: *u8
+    mode: *GopMode
+}
+
+static MEMORY_MAP: [u64; 32768] = zeroed([u64; 32768])
+static HEAP: [u64; 131072] = zeroed([u64; 131072])
+
+extern fn jihoo_disable_interrupts()
+extern fn jihoo_halt() -> never
+
+#[panic_handler]
+fn on_panic(message: str) -> never {
+    runtime.serial("jihoo kernel panic: ")
+    runtime.serial(message)
+    runtime.serial("\n")
+    unsafe { jihoo_halt() }
+}
+
+fn rsdp(table: *uefi.SystemTable) -> u64 {
+    unsafe {
+        var legacy: u64 = 0
+        var i: u64 = 0
+        let modern: [u8; 8] = [0xbc, 0x22, 0, 0x80, 0xc7, 0x3c, 0x88, 0x81]
+        let old: [u8; 8] = [0x9a, 0x16, 0, 0x90, 0x27, 0x3f, 0xc1, 0x4d]
+        while i < table.number_of_table_entries {
+            let entry = table.configuration_table + i as i64
+            let guid = entry.vendor_guid
+            var match_modern = guid.a == 0x8868e871 && guid.b == 0xe4f1 && guid.c == 0x11d3
+            var match_old = guid.a == 0xeb9d2d30 && guid.b == 0x2d88 && guid.c == 0x11d3
+            for j in 0..8 {
+                if guid.d[j] != modern[j] { match_modern = false }
+                if guid.d[j] != old[j] { match_old = false }
+            }
+            if match_modern { return entry.vendor_table as u64 }
+            if match_old { legacy = entry.vendor_table as u64 }
+            i += 1
+        }
+        legacy
+    }
+}
+
+pub fn run(cpu_test: bool) -> i32 {
+    runtime.serial("kaguyaOS jihoo-only diagnostic entry\n")
+    let table = uefi.system_table()
+    uefi.disable_watchdog()
+    var guid = uefi.Guid { a: 0x9042a9de, b: 0x23dc, c: 0x4a38,
+                          d: [0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a] }
+    var interface: *u8 = null
+    unsafe {
+        let services = table.boot_services
+        if services.locate_protocol(&guid, null, &interface) != 0 { return 3 }
+        let gop = interface as *Gop
+        if gop == null || gop.mode == null || gop.mode.info == null { return 3 }
+        let mode = gop.mode
+        let info = mode.info
+        let width = info.width
+        let height = info.height
+        let stride = info.stride
+        let format = info.format
+        let framebuffer = mode.framebuffer
+        let framebuffer_size = mode.framebuffer_size
+        let required = stride as u64 * height as u64
+        if framebuffer == 0 || framebuffer & 3 != 0 || width < 8 || height < 16 ||
+            stride < width || format > 1 || required > 0x3fffffffffffffff ||
+            required * 4 > framebuffer_size || framebuffer_size > 0xffffffffffffffff - framebuffer { return 3 }
+        let acpi = rsdp(table)
+        var map_size: u64 = 262144
+        var key: u64 = 0
+        var descriptor_size: u64 = 0
+        var descriptor_version: u32 = 0
+        let map = &MEMORY_MAP[0] as *uefi.MemoryDescriptor
+        var status = services.get_memory_map(&map_size, map, &key, &descriptor_size, &descriptor_version)
+        if status != 0 { return 9 }
+        status = services.exit_boot_services(uefi.image(), key)
+        if status != 0 {
+            map_size = 262144
+            status = services.get_memory_map(&map_size, map, &key, &descriptor_size, &descriptor_version)
+            if status != 0 { return 9 }
+            status = services.exit_boot_services(uefi.image(), key)
+            if status != 0 { return 9 }
+        }
+        jihoo_disable_interrupts()
+        if descriptor_size < 40 || map_size % descriptor_size != 0 { panic("invalid memory map") }
+        heap.jihoo_heap_init(&HEAP[0] as u64, 1048576)
+        runtime.init_console(framebuffer as *u32, stride as u64, width as u64, height as u64, format)
+        runtime.output(if cpu_test { "kaguyaOS - CPU TEST (storage writes disabled)\n" } else { "kaguyaOS - HARDWARE TEST (storage writes disabled)\n" })
+        println("UEFI ExitBootServices: OK")
+        println("GOP: " + width.to_string().as_str() + " x " + height.to_string().as_str())
+        println("Memory map: " + (map_size / descriptor_size).to_string().as_str() + " entries")
+        println("ACPI RSDP: " + acpi.to_string().as_str())
+        if runtime_check.jihoo_runtime_check() != 8128 { panic("collection self-check failed") }
+        if runtime.live_allocations() != 0 { panic("collection allocation leak") }
+        runtime.output("jihoo kernel runtime: collections and cleanup passed\n")
+        if cpu_test {
+            cpu.init()
+            memory.init(map as *u8, map_size, descriptor_size, framebuffer, framebuffer_size)
+            cpu.check()
+        }
+        runtime.output("PCI/NVMe/USB/network/GPU drivers: NOT STARTED\n")
+        if cpu_test {
+            runtime.output("APs, scheduler, syscalls, userspace: NOT STARTED\n")
+            runtime.output("CPU TEST READY - reset or power off to exit\n")
+        } else {
+            runtime.output("Paging replacement, timers, APs, userspace: NOT STARTED\n")
+            runtime.output("HARDWARE TEST READY - reset or power off to exit\n")
+        }
+        jihoo_halt()
+    }
+}

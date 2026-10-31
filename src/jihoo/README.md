@@ -335,3 +335,37 @@ page tables, CPU tables/interrupts, drivers, scheduling, or userspace.
 No physical hardware has been tested. Continue CPU initialization using the
 [full-port checklist](../../docs/jihoo-full-port.md); full Rust removal is
 still incomplete.
+
+## Standalone CPU/page-table checkpoint
+
+With compiler `d0b3d3182a33e602ef687561633d6e2be9d0472b`:
+
+```sh
+CC=clang bash tools/test-jihoo-cpu-tables.sh
+CC=clang bash tools/build-jihoo-kernel.sh cpu-test
+python3 tools/gpu-smoke.py --cpu-test --output /tmp/kaguya-jihoo-cpu
+python3 tools/gpu-smoke.py --cpu-test --resolution 2560x1440 --output /tmp/kaguya-jihoo-cpu-1440p
+```
+
+This separate EFI owns GDT/TSS/IDT storage in jihoo and uses assembly only
+for privileged instructions and interrupt register frames. Packed table
+records are written byte by byte, avoiding assumptions about jihoo packed
+struct layout. The C harness passes at `-O0` and `-O2`, including unaligned
+buffers, exact segment/TSS/gate bytes, full-width addresses, all IST-bit
+inputs, and boundary canaries. Each of 64 CPU slots has a separate reserved
+double-fault stack; the Rust reference used one shared stack. AP startup and
+actual double-fault recovery are not yet exercised.
+
+The standalone frame-pool wrapper uses the jihoo interrupt-safe lock. It
+builds and switches to the existing jihoo identity page tables without Rust
+callbacks. QEMU confirms CR3 readback, kernel-only mapping permissions,
+recycled frame zeroing/accounting, a returning `int3`, and ten real PIT IRQs.
+The common entry code now lives in `standalone/platform.jh`; the original
+`hardware-test` entry still stops before CPU/page-table/PIC initialization
+and its regression passes in `/tmp/kaguya-jihoo-cpu-diagnostic`.
+
+Both CPU-test resolutions pass. Storage, USB, network, virtio GPU, APs,
+scheduling, syscall entry and userspace are not started in this mode.
+This is an incremental validation artifact, not the complete OS or the
+physical-hardware diagnostic milestone. Continue with CPU-local/syscall
+state, address-space ownership, KEF loading, and scheduling.
