@@ -6,8 +6,9 @@ mod fat;
 #[cfg(feature = "jihoo-kernel")]
 use fat::{
     alloc_cluster_unlocked, find_file_unlocked, find_free_dir_slot_unlocked,
-    free_cluster_chain_unlocked, read_dir_entry_unlocked, read_fat_entry_unlocked,
-    walk_chain_unlocked, write_dir_entry_unlocked, write_fat_entry_unlocked,
+    free_cluster_chain_unlocked, read_at_unlocked, read_dir_entry_unlocked,
+    read_fat_entry_unlocked, read_file_unlocked, write_at_unlocked,
+    write_dir_entry_unlocked, write_fat_entry_unlocked,
 };
 
 #[cfg(not(feature = "hardware-shell"))]
@@ -641,6 +642,7 @@ fn create_file_unlocked(name: &str, data: &[u8]) -> FsResult<()> {
     Ok(())
 }
 
+#[cfg(not(feature = "jihoo-kernel"))]
 fn read_file_unlocked(name: &str) -> FsResult<alloc::vec::Vec<u8>> {
     let (_, entry) = find_file_unlocked(name)?.ok_or(FsError::FileNotFound)?;
 
@@ -787,6 +789,7 @@ fn open_file_unlocked(name: &str, create: bool, truncate: bool) -> FsResult<File
     }
 }
 
+#[cfg(not(feature = "jihoo-kernel"))]
 fn read_at_unlocked(id: FileId, offset: u64, buf: &mut [u8]) -> FsResult<usize> {
     let entry = open_entry_unlocked(id)?;
     let size = entry.size as u64;
@@ -819,6 +822,7 @@ fn read_at_unlocked(id: FileId, offset: u64, buf: &mut [u8]) -> FsResult<usize> 
 /// Bytes between the old end and `offset` read back as zero. Returns the
 /// offset actually used and the number of bytes written; a write cut short by
 /// a full disk keeps the bytes that reached it.
+#[cfg(not(feature = "jihoo-kernel"))]
 fn write_at_unlocked(
     id: FileId,
     offset: Option<u64>,

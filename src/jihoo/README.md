@@ -24,6 +24,8 @@ The feature currently selects jihoo implementations of:
   reader/writer ends.
 - FAT entry reads/writes, bounded cluster allocation, chain walking/freeing,
   root-directory entry reads/writes, filename lookup, and free-slot search.
+- Whole-file and offset-based data reads, cluster data writes, sparse-gap
+  zeroing, and partial-write accounting.
 
 The bridge uses the UEFI calling convention. `arch.S` implements port I/O,
 interrupt flag operations, and pause instructions. Frame allocation and
@@ -40,8 +42,11 @@ lock. Rust owns their backing memory and `Arc` handles, snapshots the event
 generation before inspecting the ring, and releases the pipe lock before
 waiting or waking tasks. FAT helpers use synchronous block-I/O callbacks
 under the existing filesystem lock. Packed directory records cross the ABI
-as 32 raw bytes; no packed jihoo struct layout is assumed. Slot generations
-and high-level file operations remain Rust.
+as 32 raw bytes; no packed jihoo struct layout is assumed. File data uses a
+small C-compatible metadata record, callbacks for one-sector and eight-sector
+I/O, and a Rust-owned 4 KiB workspace. Rust validates handles and updates the
+directory entry after writes, preserving partial-write and error behavior.
+Slot generations and create/open/delete/list/format orchestration remain Rust.
 
 The port uses `-mno-red-zone -mgeneral-regs-only`, a custom panic handler,
 and volatile device accesses. It does not use Linux syscalls or UEFI boot
@@ -54,7 +59,7 @@ used for the Windows/UEFI object target.
 
 ## Verification
 
-With compiler commit `84d4a54a0de4a8c12f7584ee390e64083ac3a8b8`:
+With compiler commit `12f3827bd2574255934b7c730c1746ace14e5197`:
 
 ```sh
 nix build path:../jihoo#jihoo --no-link --print-out-paths
@@ -64,6 +69,7 @@ bash tools/test-jihoo-paging.sh
 bash tools/test-jihoo-pci.sh
 bash tools/test-jihoo-pipe.sh
 bash tools/test-jihoo-fat.sh
+bash tools/test-jihoo-file-data.sh
 ```
 
 The scripts build the current adjacent compiler unless `JIHOO_BIN` is set.
@@ -111,6 +117,16 @@ the actual jihoo implementations through native C ABI objects at `-O0` and
   final addressable entry, chain traversal and cyclic-chain release, injected
   read/write errors, exact packed directory bytes, and unchanged output on
   failed reads. These tests do not access host disks.
+- File data: the actual Rust and jihoo filesystem variants run against the
+  same mock block device. At both optimization levels, 289 cases compare
+  returned results, file sizes, output-buffer and disk-image hashes, and
+  exact I/O traces. They include 259 injected failure positions across
+  reads/writes of empty and populated files, cluster/sector boundaries,
+  append, sparse gaps, empty/overflowing writes, and malformed chains.
+  Another 500 rounds compare whole-file and offset reads/writes with a byte
+  vector model, checking untouched output tails. The existing RAM-disk tests
+  additionally cover partial writes when the FAT is full. No host disk is
+  involved.
 
 See [the userspace README](../../user/jihoo/README.md) for smoke commands.
 QEMU boot, framebuffer updates, shell input, gateway ping, and HTTP
@@ -158,6 +174,16 @@ Current artifacts are in
 `/tmp/kaguya-rust-fat-network`; normal boots use a snapshot of the disposable
 copy `/tmp/kaguya-jihoo-fat-nvme.img`.
 
+The file-data stage passed the same diskless and normal network checks on
+the new compiler, including KEF loading through the jihoo whole-file reader,
+file overwrite/append/redirection, eight-stage pipes, forty sequential execs
+with constant frame use, and the 10,200-byte HTTP pipeline/file readback.
+Artifacts are in `/tmp/kaguya-jihoo-file-data-shell` and
+`/tmp/kaguya-jihoo-file-data-network`; normal boots use a snapshot of the copy
+`/tmp/kaguya-jihoo-file-data-nvme.img`. The Rust reference build and network
+regression use `target/rust-reference-check` and
+`/tmp/kaguya-rust-file-data-network`.
+
 Host tests check allocator edge cases; QEMU checks the UEFI ABI, boot,
 locking, and integration with real kernel allocations. Physical hardware,
 concurrent allocator stress on multiple CPUs, and the ring-3 compatibility
@@ -195,8 +221,8 @@ truncate to `u16` and scan beyond the actual 16,384-entry FAT on the normal
 and the table's addressable entries, reporting `NoSpace` at capacity.
 This does not change the on-disk layout or enable automatic formatting.
 
-Scheduling, syscall dispatch, file descriptor tables, high-level FAT16
-create/read/write/format operations, PCI device registration and
+Scheduling, syscall dispatch, file descriptor tables, FAT16
+create/open/delete/list/format orchestration, PCI device registration and
 storage/USB/network driver state machines still require migration.
 Pipe ownership/locking and scheduler waits, filesystem slot generations,
 and block-I/O backends remain in Rust bridges.
@@ -204,32 +230,26 @@ Rust ABI bridges, address-space bookkeeping, frame-source objects, CR3/TLB
 assembly, boot assembly, and UEFI setup also remain. This is not a completed
 kernel port.
 
-## Current stop: issue #20
+## Issue #20 resolution
 
-Further file-data migration stopped at
-[jihoo issue #20](https://github.com/jihoolang/jihoo/issues/20) on compiler
-commit `84d4a54a0de4a8c12f7584ee390e64083ac3a8b8`. Calling a `fnptr` field
-through a raw struct pointer, such as `callbacks.call(value)`, is rejected
-as a missing method. Calling the field on a borrowed struct, loading it
-into a local first, and explicitly dereferencing the pointer all check and
-run successfully. The three executable controls each print `42`.
-The minimal reproduction fails in both native and UEFI profiles before
-code generation. See the
+[Issue #20](https://github.com/jihoolang/jihoo/issues/20) is fixed in compiler
+commit `12f3827bd2574255934b7c730c1746ace14e5197`. Calling a `fnptr` field
+through a raw struct pointer now checks in both native and UEFI profiles.
+The pointer case and three executable controls each produce `42`; the
+compiler's own regression also passes, and a pointer call outside `unsafe`
+remains correctly rejected. See the
 [reproduction and controls](../../tools/jihoo-regressions/fnptr-field/README.md).
 
-[drafts/fat_file_data.jh](drafts/fat_file_data.jh) preserves the unfinished
-file-data source fragment intended for the `fat.jh` module. It is not a
-standalone module, is not imported by the kernel, and has not passed
-compilation, allocator/I/O failure tests, or QEMU checks. No successful
-control has been applied as a workaround. The selected `fat.jh` and all
-other runtime sources remain those of the last completed, QEMU-verified
-migration, commit `833b1e9`.
+The excluded file-data fragment has been incorporated into `fat.jh`, connected
+through `fat.rs`, and removed from the draft directory. No explicit-dereference
+or local-callee workaround was needed. The original Rust implementations
+remain selected by builds without `jihoo-kernel`.
 
-After the compiler fix, incorporate the fragment into `fat.jh`, resolve
-any remaining ordinary porting errors, connect the Rust buffer/handle
-bridge, and test cross-cluster reads/writes, sparse gaps, partial writes,
-callback errors, and the existing diskless/network regressions. Continue
-using disposable disk copies with QEMU snapshots.
+The failure tests preserve existing API semantics, including zero-filled
+tails for premature chain endings in the legacy whole-file reader and an
+error for the same condition in offset-based reads. Crash recovery, atomic
+metadata updates, and physical-hardware error injection are not verified
+by this stage.
 
 If a new language/compiler problem appears, reduce it, compare control
 cases, file an issue in `jihoolang/jihoo` with `gh`, and stop migration.

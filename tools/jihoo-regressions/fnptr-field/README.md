@@ -10,10 +10,16 @@ compiler="$compiler_package/bin/jihoo"
 "$compiler" check --lib tools/jihoo-regressions/fnptr-field/pointer.jh
 ```
 
-The last command currently exits 1 with `` `Callbacks` has no method `call` ``.
-It should accept the declared `fnptr` field through the raw pointer.
-The same reproduction prefixed with `#![uefi]` also fails during checking;
-LLVM, linking, kernel register options, and QEMU are not involved.
+On `84d4a54`, the last command exited 1 with
+`` `Callbacks` has no method `call` ``. The same reproduction prefixed with
+`#![uefi]` failed during checking too; LLVM, linking, kernel register options,
+and QEMU were not involved.
+
+Compiler commit `12f3827bd2574255934b7c730c1746ace14e5197` fixes the issue.
+The pointer case now passes `check --lib` in both profiles and produces `42`
+when run with the same local `increment` callback as the controls. The
+compiler's own `fnptr_field_call.jh` test passes too; its pointer call outside
+`unsafe` is still rejected. No workaround is used in the kernel port.
 
 The controls check successfully and each prints `42` when run:
 
@@ -24,7 +30,7 @@ for control in borrowed local dereferenced; do
 done
 ```
 
-| Source | Receiver/callee | Check on `84d4a54` | Run |
+| Source | Receiver/callee | Check on `84d4a54` | Run on `84d4a54` |
 |--------|-----------------|---------------------|-----|
 | `pointer.jh` | `callbacks.call(value)` through `*Callbacks` | Exit 1 | Not built |
 | `borrowed.jh` | Same field call on a borrowed struct | Exit 0 | `42` |
@@ -33,5 +39,5 @@ done
 
 These controls isolate field-call resolution from field projection, pointer
 representation, and the function-pointer calling convention. They are
-diagnostic cases, not workarounds connected to the kernel. Once the compiler
-is fixed, the pointer case should pass `check --lib` too.
+diagnostic cases, not workarounds connected to the kernel. All four check
+successfully on `12f3827`.

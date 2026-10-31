@@ -145,3 +145,125 @@ export fn jihoo_dir_free(context: *u8, read: fnptr(*u8, u64, *u8) -> i32) -> i32
     }
     256
 }
+
+struct FileData {
+    first: u16
+    size: u32
+}
+
+struct DataIo {
+    context: *u8
+    read: fnptr(*u8, u64, u32, *u8) -> i32
+    write: fnptr(*u8, u64, u32, *u8) -> i32
+    clusters: u32
+}
+
+fn minimum(a: u64, b: u64) -> u64 { if a < b { a } else { b } }
+fn maximum(a: u64, b: u64) -> u64 { if a > b { a } else { b } }
+fn data_cluster(cluster: u16) -> bool { cluster >= 2 && cluster < 0xfff0 }
+
+fn read_sector(context: *u8, lba: u64, output: *u8) -> i32 {
+    unsafe {
+        let io = context as *DataIo
+        io.read(io.context, lba, 1, output)
+    }
+}
+
+fn write_sector(context: *u8, lba: u64, input: *u8) -> i32 {
+    unsafe {
+        let io = context as *DataIo
+        io.write(io.context, lba, 1, input)
+    }
+}
+
+export fn jihoo_file_read(file: *FileData, offset: u64, output: *u8, length: u64,
+                          workspace: *u8, io: *DataIo, whole: bool) -> i64 {
+    unsafe {
+        if offset >= file.size as u64 || length == 0 { return 0 }
+        let length = minimum(length, file.size as u64 - offset)
+        var previous: u16 = 0
+        var cluster = file.first
+        let status = jihoo_fat_walk(cluster, offset / 4096, &previous, &cluster, io as *u8, read_sector)
+        if status != 0 { return status as i64 }
+        var within = offset % 4096
+        var done: u64 = 0
+        while done < length {
+            if !data_cluster(cluster) { return if whole { done as i64 } else { -3 } }
+            let status = io.read(io.context, 81 + (cluster as u64 - 2) * 8, 8, workspace)
+            if status != 0 { return status as i64 }
+            let count = minimum(4096 - within, length - done)
+            mem_copy(output + done as i64, workspace + within as i64, count as i64)
+            done += count
+            within = 0
+            if whole || done < length {
+                let status = jihoo_fat_read(cluster, &cluster, io as *u8, read_sector)
+                if status != 0 { return status as i64 }
+            }
+        }
+        done as i64
+    }
+}
+
+unsafe fn write_range(file: *FileData, offset: u64, input: *u8, length: u64,
+                      workspace: *u8, io: *DataIo, reached: *u64) -> i32 {
+    let size = file.size as u64
+    let end = offset + length
+    let start = minimum(offset, size)
+    var cluster_start = start - start % 4096
+    var previous: u16 = 0
+    var cluster = file.first
+    let status = jihoo_fat_walk(cluster, cluster_start / 4096, &previous, &cluster, io as *u8, read_sector)
+    if status != 0 { return status }
+    while true {
+        let cluster_end = cluster_start + 4096
+        if !data_cluster(cluster) {
+            let status = jihoo_fat_alloc(io.clusters, &cluster, io as *u8, read_sector, write_sector)
+            if status != 0 { return status }
+            if previous == 0 { file.first = cluster }
+            else {
+                let status = jihoo_fat_write(previous, cluster, io as *u8, read_sector, write_sector)
+                if status != 0 { return status }
+            }
+            mem_fill(workspace, 0, 4096)
+        } else {
+            if offset > cluster_start || end < cluster_end {
+                let status = io.read(io.context, 81 + (cluster as u64 - 2) * 8, 8, workspace)
+                if status != 0 { return status }
+            }
+        }
+        let gap_lo = maximum(size, cluster_start)
+        let gap_hi = minimum(offset, cluster_end)
+        if gap_lo < gap_hi { mem_fill(workspace + (gap_lo - cluster_start) as i64, 0, (gap_hi - gap_lo) as i64) }
+        let lo = maximum(offset, cluster_start)
+        let hi = minimum(end, cluster_end)
+        if lo < hi {
+            mem_copy(workspace + (lo - cluster_start) as i64, input + (lo - offset) as i64, (hi - lo) as i64)
+        }
+        let status = io.write(io.context, 81 + (cluster as u64 - 2) * 8, 8, workspace)
+        if status != 0 { return status }
+        *reached = maximum(hi, gap_hi)
+        if cluster_end >= end { return 0 }
+        cluster_start = cluster_end
+        previous = cluster
+        let status = jihoo_fat_read(previous, &cluster, io as *u8, read_sector)
+        if status != 0 { return status }
+    }
+    0
+}
+
+export fn jihoo_file_write(file: *FileData, offset: u64, input: *u8, length: u64,
+                           workspace: *u8, io: *DataIo, written: *u64) -> i32 {
+    unsafe {
+        *written = 0
+        if length == 0 { return 0 }
+        if offset > 0xffffffff || length > 0xffffffff - offset { return -5 }
+        let size = file.size as u64
+        var reached = minimum(offset, size)
+        let status = write_range(file, offset, input, length, workspace, io, &reached)
+        if reached > offset {
+            *written = reached - offset
+            file.size = maximum(size, reached) as u32
+        }
+        status
+    }
+}

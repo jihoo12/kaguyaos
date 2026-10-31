@@ -58,8 +58,8 @@ host; no external HTTP service is needed.
 
 ## Verified state
 
-Rechecked with compiler commit `84d4a54a0de4a8c12f7584ee390e64083ac3a8b8`
-(previously verified with `000f9d96473757fe55af170af31d81f0baf31238`):
+Rechecked with compiler commit `12f3827bd2574255934b7c730c1746ace14e5197`
+(previously verified with `84d4a54a0de4a8c12f7584ee390e64083ac3a8b8`):
 
 - All seven programs compile and link as KEF files.
 - The shell passes file creation, reading, overwrite, deletion, pipes
@@ -89,15 +89,15 @@ remaining Rust kernel work. The default build remains Rust.
 
 The kernel feature additionally selects jihoo pipe buffering/end counts and FAT
 entry/cluster/root-directory helpers. Descriptor ownership and scheduling
-waits remain in Rust bridges, as do the filesystem's higher-level file
-operations and formatting policy. Disk regressions use disposable copies
+waits remain in Rust bridges, as do filesystem metadata orchestration
+and formatting policy. Disk regressions use disposable copies
 and QEMU snapshots; unrecognized disks are not automatically formatted.
 
-Further kernel file-data migration is currently stopped at
-[jihoo issue #20](https://github.com/jihoolang/jihoo/issues/20): a function
-pointer field called through a raw struct pointer is treated as a missing
-method. The minimal reproduction fails on compiler `84d4a54`, while three
-controls check and run successfully. The new file-data fragment is excluded
-from the build; the completed userspace and kernel implementations remain
-those verified at `833b1e9`. See the kernel README for the draft and resume
-instructions.
+[Jihoo issue #20](https://github.com/jihoolang/jihoo/issues/20) is fixed in
+`12f3827`. Its pointer-call reproducer and controls now pass. The kernel
+feature selects jihoo whole-file/offset reads and file data writes, including
+sparse gaps and partial-write accounting. Rust retains buffer ownership,
+handle checks, and directory metadata commits. Native failure/model tests
+and QEMU diskless/network regressions pass; create/open/delete/list/format
+orchestration and other kernel work remain to be ported. See the kernel README
+for verification coverage and remaining work.
